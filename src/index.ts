@@ -10,6 +10,10 @@ import "./db";
 import { authRouter } from "./routes/auth";
 import { apiRouter } from "./routes/api";
 import { pagesRouter } from "./routes/pages";
+import { whatsappWebhookRouter } from "./routes/webhooks";
+import { ensureCompanyWhatsAppLine } from "./services/whatsapp";
+
+ensureCompanyWhatsAppLine();
 
 const PORT = Number(process.env.PORT || 3001);
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev-insecure-secret-change-me";
@@ -51,6 +55,7 @@ app.use(
   })
 );
 
+app.use("/api/webhooks/whatsapp", whatsappWebhookRouter);
 app.use("/api/auth", authRouter);
 app.use("/api", apiRouter);
 app.use(pagesRouter);

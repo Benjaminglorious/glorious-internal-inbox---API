@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { requireAuth } from "../auth/middleware";
+import { requireAdmin, requireAuth } from "../auth/middleware";
 import { companyWhatsAppUrl } from "../config";
 import {
   getComment,
@@ -9,7 +9,8 @@ import {
   updateStatus,
   findStaffById,
 } from "../services/comments";
-import type { CommentSource, CommentStatus } from "../types";
+import { addStaffWhatsAppLine, deactivateWhatsAppLine, listWhatsAppLines } from "../services/whatsapp";
+import { isCommentSource, type CommentStatus } from "../types";
 
 export const apiRouter = Router();
 
@@ -44,12 +45,12 @@ apiRouter.get("/me", requireAuth, (req: Request, res: Response) => {
 });
 
 apiRouter.get("/comments", requireAuth, (req: Request, res: Response) => {
-  const source = req.query.source as CommentSource | undefined;
+  const sourceRaw = typeof req.query.source === "string" ? req.query.source : undefined;
+  const source = sourceRaw && isCommentSource(sourceRaw) ? sourceRaw : undefined;
   const status = req.query.status as CommentStatus | undefined;
   const mine = req.query.mine === "1" || req.query.mine === "true";
-  const validSources = ["28car", "glorious_web", "facebook"];
   const validStatuses = ["open", "in_progress", "done"];
-  if (source && !validSources.includes(source)) {
+  if (sourceRaw && !source) {
     res.status(400).json({ error: "無效來源" });
     return;
   }
@@ -116,4 +117,31 @@ apiRouter.post("/comments/:id/assign", requireAuth, (req: Request, res: Response
 
 apiRouter.get("/staff", requireAuth, (_req: Request, res: Response) => {
   res.json({ staff: listStaff() });
+});
+
+apiRouter.get("/whatsapp-lines", requireAdmin, (_req: Request, res: Response) => {
+  res.json({ lines: listWhatsAppLines() });
+});
+
+apiRouter.post("/whatsapp-lines", requireAdmin, (req: Request, res: Response) => {
+  const staffId = Number(req.body?.staff_id);
+  const result = addStaffWhatsAppLine({
+    staffId,
+    phone: String(req.body?.phone ?? ""),
+    displayLabel: req.body?.display_label != null ? String(req.body.display_label) : undefined,
+  });
+  if (!result.ok) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+  res.status(201).json({ line: result.line });
+});
+
+apiRouter.post("/whatsapp-lines/:id/deactivate", requireAdmin, (req: Request, res: Response) => {
+  const result = deactivateWhatsAppLine(Number(req.params.id));
+  if (!result.ok) {
+    res.status(result.error === "找不到線路" ? 404 : 400).json({ error: result.error });
+    return;
+  }
+  res.json({ line: result.line });
 });

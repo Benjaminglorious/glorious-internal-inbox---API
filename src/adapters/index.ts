@@ -12,9 +12,9 @@ export const adapters = {
 export type AdapterName = keyof typeof adapters;
 
 /**
- * WhatsApp 唔係而家三個留言來源之一。
- * click-to-chat 用 COMPANY_WHATSAPP_URL；入站同步見 fetchInboundChats（stub，未連接 Business API）。
- * pollAllSources 故意唔呼叫佢。
+ * WhatsApp 入站唔經 poll。線路綁定同派單見 routeWhatsAppInbound；
+ * webhook stub 係 POST /api/webhooks/whatsapp。真實 Meta／Glorious 連接尚未啟用。
+ * pollAllSources 故意唔呼叫呢度，避免打去 WhatsApp API。
  */
 export const whatsappInbound = whatsapp;
 

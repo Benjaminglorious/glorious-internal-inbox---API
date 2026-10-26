@@ -1,12 +1,10 @@
 /**
- * WhatsApp 入站對話適配器（stub）
+ * WhatsApp 入站適配器（尚未連接 Meta／Glorious）。
  *
- * 而家只提供公司 click-to-chat 連結（COMPANY_WHATSAPP_URL，
- * 預設 https://api.whatsapp.com/send?phone=85221740001）。
- * 留言箱唔會同步 WhatsApp 訊息。
- *
- * TODO: 日後經 WhatsApp Business API（Cloud API）拉取呢個號碼嘅入站對話，
- * 寫入內部留言箱。未接好憑證同 webhook 之前，唔好呼叫任何真實 WhatsApp API。
+ * 出站 click-to-chat 用 COMPANY_WHATSAPP_URL。
+ * 入站派單唔係靠呢度 poll：POST /api/webhooks/whatsapp 會呼叫 routeWhatsAppInbound
+ * （同事個人號 → 綁定同事；公司總機 85221740001 → 最少未完成）。
+ * 真實 Cloud API 稍後先接。呢個函式仍然唔會發出任何網絡請求。
  */
 
 export interface InboundWhatsAppMessage {
@@ -23,7 +21,7 @@ export interface InboundWhatsAppMessage {
 export async function fetchInboundChats(): Promise<InboundWhatsAppMessage[]> {
   // TODO: WhatsApp Business API — 拉取 phone 85221740001 嘅 inbound chats／messages
   console.warn(
-    "[adapter:whatsapp] fetchInboundChats 尚未實作（未連接 WhatsApp Business API，唔會同步對話）"
+    "[adapter:whatsapp] fetchInboundChats 尚未實作。入站請用 webhook stub（WEBHOOK_VERIFY_TOKEN）；而家唔會呼叫 WhatsApp API。"
   );
   return [];
 }

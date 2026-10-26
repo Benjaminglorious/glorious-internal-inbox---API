@@ -1,5 +1,11 @@
-export type CommentSource = "28car" | "glorious_web" | "facebook";
+export const COMMENT_SOURCES = ["28car", "glorious_web", "facebook", "whatsapp"] as const;
+export type CommentSource = (typeof COMMENT_SOURCES)[number];
 export type CommentStatus = "open" | "in_progress" | "done";
+export type WhatsAppLineKind = "company" | "staff";
+
+export function isCommentSource(value: unknown): value is CommentSource {
+  return typeof value === "string" && (COMMENT_SOURCES as readonly string[]).includes(value);
+}
 
 export interface Staff {
   id: number;
@@ -35,6 +41,18 @@ export interface Comment {
 export interface CommentWithAssignee extends Comment {
   assignee_name: string | null;
   assignee_username: string | null;
+}
+
+export interface WhatsAppLine {
+  id: number;
+  phone_e164: string;
+  display_label: string;
+  kind: WhatsAppLineKind;
+  staff_id: number | null;
+  is_active: boolean;
+  created_at: string;
+  staff_display_name: string | null;
+  staff_username: string | null;
 }
 
 declare module "express-session" {
