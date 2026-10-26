@@ -20,7 +20,6 @@
 ## 快速開始
 
 ```bash
-cd glorious-internal-inbox
 cp .env.example .env   # 改 SESSION_SECRET
 npm install
 npm run seed           # 寫入 11 位同事 + 示範留言
