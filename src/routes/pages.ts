@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { requireAuth } from "../auth/middleware";
 import { verifyPassword } from "../auth/passwords";
+import { companyWhatsAppChatUrl, whatsAppSendUrl } from "../config";
 import {
   getComment,
   listComments,
@@ -9,14 +10,28 @@ import {
   updateStatus,
   reassign,
 } from "../services/comments";
-import type { CommentSource, CommentStatus } from "../types";
+import {
+  activeStaffLinesByStaffId,
+  addStaffWhatsAppLine,
+  deactivateWhatsAppLine,
+  formatPhoneE164,
+  listWhatsAppLines,
+} from "../services/whatsapp";
+import {
+  COMMENT_SOURCES,
+  isCommentSource,
+  type CommentStatus,
+  type CommentWithAssignee,
+  type WhatsAppLine,
+} from "../types";
 
 export const pagesRouter = Router();
 
-const SOURCE_LABEL: Record<string, string> = {
+const SOURCE_LABEL: Record<(typeof COMMENT_SOURCES)[number], string> = {
   "28car": "28car",
   glorious_web: "東榮官網",
   facebook: "Facebook",
+  whatsapp: "WhatsApp",
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -32,6 +47,40 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function sessionUser(req: Request): { displayName: string; isAdmin?: boolean } {
+  return { displayName: req.session.displayName || "", isAdmin: req.session.isAdmin };
+}
+
+function whatsAppLinks(
+  c: Pick<CommentWithAssignee, "source" | "vehicle_ref" | "body" | "assignee_staff_id">,
+  staffLines: Map<number, WhatsAppLine>
+): string {
+  const ctx = {
+    sourceLabel: SOURCE_LABEL[c.source] || c.source,
+    vehicleRef: c.vehicle_ref,
+    body: c.body,
+  };
+  const companyHref = companyWhatsAppChatUrl(ctx);
+  const company = `<a class="btn whatsapp" href="${escapeHtml(companyHref)}" target="_blank" rel="noopener noreferrer">WhatsApp</a>`;
+  const line = c.assignee_staff_id != null ? staffLines.get(c.assignee_staff_id) : undefined;
+  if (!line) return `<div class="wa-actions">${company}</div>`;
+  const staffHref = whatsAppSendUrl(line.phone_e164, ctx);
+  const staff = `<a class="btn whatsapp staff" href="${escapeHtml(staffHref)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(line.display_label)}">同事 WhatsApp</a>`;
+  return `<div class="wa-actions">${company}${staff}</div>`;
+}
+
+function requirePageAdmin(req: Request, res: Response): boolean {
+  if (req.session.isAdmin) return true;
+  res.status(403).send(
+    layout({
+      title: "沒有權限",
+      body: `<p>WhatsApp 線路只限管理員管理。</p><p><a href="/">返回留言箱</a></p>`,
+      user: sessionUser(req),
+    })
+  );
+  return false;
 }
 
 function layout(opts: {
@@ -50,6 +99,11 @@ function layout(opts: {
       <nav>
         <a href="/" class="${opts.active === "inbox" ? "active" : ""}">留言箱</a>
         <a href="/staff" class="${opts.active === "staff" ? "active" : ""}">同事</a>
+        ${
+          opts.user.isAdmin
+            ? `<a href="/whatsapp-lines" class="${opts.active === "whatsapp" ? "active" : ""}">WhatsApp 線路</a>`
+            : ""
+        }
       </nav>
       <div class="userbox">
         <span>${escapeHtml(opts.user.displayName)}${opts.user.isAdmin ? " · 管理員" : ""}</span>
@@ -87,7 +141,7 @@ pagesRouter.get("/login", (req: Request, res: Response) => {
   const body = `
     <section class="login-card">
       <h1>東榮汽車 · 內部留言系統</h1>
-      <p class="muted">僅供公司同事登入處理 28car／官網／Facebook 留言</p>
+      <p class="muted">僅供公司同事登入處理 28car／官網／Facebook／WhatsApp 留言</p>
       ${err ? `<p class="error">${escapeHtml(err)}</p>` : ""}
       <form method="POST" action="/login" class="stack">
         <label>帳號
@@ -126,12 +180,11 @@ pagesRouter.post("/logout", (req: Request, res: Response) => {
 });
 
 pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
-  const source = (req.query.source as CommentSource | undefined) || undefined;
+  const sourceRaw = typeof req.query.source === "string" ? req.query.source : undefined;
   const status = (req.query.status as CommentStatus | undefined) || undefined;
   const mine = req.query.mine === "1";
-  const validSources = ["28car", "glorious_web", "facebook"];
   const validStatuses = ["open", "in_progress", "done"];
-  const src = source && validSources.includes(source) ? source : undefined;
+  const src = sourceRaw && isCommentSource(sourceRaw) ? sourceRaw : undefined;
   const st = status && validStatuses.includes(status) ? status : undefined;
 
   const comments = listComments({
@@ -140,6 +193,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     mine,
     staffId: req.session.staffId,
   });
+  const staffLines = activeStaffLinesByStaffId();
 
   const qs = (extra: Record<string, string>) => {
     const p = new URLSearchParams();
@@ -165,6 +219,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
         <td>${c.vehicle_ref ? escapeHtml(c.vehicle_ref) : "—"}</td>
         <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span></td>
         <td>${c.assignee_name ? escapeHtml(c.assignee_name) : "未派"}</td>
+        <td>${whatsAppLinks(c, staffLines)}</td>
       </tr>`;
     })
     .join("");
@@ -178,9 +233,10 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       <label>來源
         <select name="source">
           <option value="">全部</option>
-          <option value="28car" ${src === "28car" ? "selected" : ""}>28car</option>
-          <option value="glorious_web" ${src === "glorious_web" ? "selected" : ""}>東榮官網</option>
-          <option value="facebook" ${src === "facebook" ? "selected" : ""}>Facebook</option>
+          ${COMMENT_SOURCES.map(
+            (source) =>
+              `<option value="${source}" ${src === source ? "selected" : ""}>${SOURCE_LABEL[source]}</option>`
+          ).join("")}
         </select>
       </label>
       <label>狀態
@@ -201,11 +257,11 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       <table>
         <thead>
           <tr>
-            <th>ID</th><th>來源</th><th>留言者</th><th>內容</th><th>車輛</th><th>狀態</th><th>負責人</th>
+            <th>ID</th><th>來源</th><th>留言者</th><th>內容</th><th>車輛</th><th>狀態</th><th>負責人</th><th>WhatsApp</th>
           </tr>
         </thead>
         <tbody>
-          ${rows || `<tr><td colspan="7" class="empty">暫無留言</td></tr>`}
+          ${rows || `<tr><td colspan="8" class="empty">暫無留言</td></tr>`}
         </tbody>
       </table>
     </div>
@@ -217,7 +273,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     layout({
       title: "留言箱",
       body,
-      user: { displayName: req.session.displayName || "", isAdmin: req.session.isAdmin },
+      user: sessionUser(req),
       active: "inbox",
     })
   );
@@ -231,12 +287,13 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       layout({
         title: "找不到",
         body: `<p>找不到留言 #${id}</p><a href="/">返回</a>`,
-        user: { displayName: req.session.displayName || "", isAdmin: req.session.isAdmin },
+        user: sessionUser(req),
       })
     );
     return;
   }
   const staff = listStaff().filter((s) => s.active);
+  const staffLines = activeStaffLinesByStaffId();
   const options = staff
     .map(
       (s) =>
@@ -253,7 +310,9 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         <h1>留言 #${c.id}</h1>
         <span class="badge source-${c.source}">${SOURCE_LABEL[c.source]}</span>
         <span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span>
+        ${whatsAppLinks(c, staffLines)}
       </div>
+      <p class="muted small">WhatsApp 按鈕開新分頁去公司總機 click-to-chat（可預填來源、車輛同留言摘要）。若負責人已綁定個人號碼，會另外顯示同事 WhatsApp。真實 Meta／Glorious 連接尚未啟用。</p>
       <dl class="meta">
         <dt>留言者</dt><dd>${escapeHtml(c.author_name)}</dd>
         <dt>外部 ID</dt><dd><code>${escapeHtml(c.external_id)}</code></dd>
@@ -291,7 +350,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
     layout({
       title: `留言 #${c.id}`,
       body,
-      user: { displayName: req.session.displayName || "", isAdmin: req.session.isAdmin },
+      user: sessionUser(req),
       active: "inbox",
     })
   );
@@ -316,28 +375,32 @@ pagesRouter.post("/comments/:id/assign", requireAuth, (req: Request, res: Respon
 
 pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
   const staff = listStaff();
+  const staffLines = activeStaffLinesByStaffId();
   const rows = staff
-    .map(
-      (s) => `<tr>
+    .map((s) => {
+      const line = staffLines.get(s.id);
+      const phone = line ? `${escapeHtml(formatPhoneE164(line.phone_e164))}（${escapeHtml(line.display_label)}）` : "—";
+      return `<tr>
       <td>${s.id}</td>
       <td>${escapeHtml(s.display_name)}</td>
       <td><code>${escapeHtml(s.username)}</code></td>
       <td>${s.is_admin ? "管理員" : "同事"}</td>
       <td>${s.active ? "啟用" : "停用"}</td>
-    </tr>`
-    )
+      <td>${phone}</td>
+    </tr>`;
+    })
     .join("");
 
   const note = req.session.isAdmin
-    ? "<p class=\"muted\">你係管理員，可睇到完整同事名單。</p>"
-    : "<p class=\"muted\">改派留言時可選以下同事。</p>";
+    ? `<p class="muted">你係管理員，可睇到完整同事名單。<a href="/whatsapp-lines">管理 WhatsApp 線路</a></p>`
+    : `<p class="muted">改派留言時可選以下同事。個人 WhatsApp 由管理員綁定。</p>`;
 
   const body = `
     <div class="page-head"><h1>同事名單</h1></div>
     ${note}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>ID</th><th>姓名</th><th>帳號</th><th>角色</th><th>狀態</th></tr></thead>
+        <thead><tr><th>ID</th><th>姓名</th><th>帳號</th><th>角色</th><th>狀態</th><th>個人 WhatsApp</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -347,10 +410,112 @@ pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
     layout({
       title: "同事",
       body,
-      user: { displayName: req.session.displayName || "", isAdmin: req.session.isAdmin },
+      user: sessionUser(req),
       active: "staff",
     })
   );
+});
+
+pagesRouter.get("/whatsapp-lines", requireAuth, (req: Request, res: Response) => {
+  if (!requirePageAdmin(req, res)) return;
+  const lines = listWhatsAppLines();
+  const boundStaff = new Set(
+    lines.filter((line) => line.is_active && line.kind === "staff" && line.staff_id != null).map((line) => line.staff_id)
+  );
+  const choices = listStaff().filter((s) => s.active && !boundStaff.has(s.id));
+  const staffOptions = choices
+    .map((s) => `<option value="${s.id}">${escapeHtml(s.display_name)} (${escapeHtml(s.username)})</option>`)
+    .join("");
+  const error = typeof req.query.error === "string" ? req.query.error.slice(0, 200) : "";
+  const ok = typeof req.query.ok === "string" ? req.query.ok.slice(0, 200) : "";
+
+  const rows = lines
+    .map((line) => {
+      const who =
+        line.kind === "staff"
+          ? line.staff_display_name
+            ? `${escapeHtml(line.staff_display_name)}（${escapeHtml(line.staff_username || "")}）`
+            : "—"
+          : "—";
+      const action = line.is_active
+        ? `<form method="POST" action="/whatsapp-lines/${line.id}/deactivate" onsubmit="return confirm('停用呢條線路？之後打去呢個號碼唔會再按原規則自動派單。');">
+            <button type="submit" class="btn">停用</button>
+          </form>`
+        : `<span class="muted">已停用</span>`;
+      return `<tr>
+        <td><code>${escapeHtml(formatPhoneE164(line.phone_e164))}</code></td>
+        <td>${escapeHtml(line.display_label)}</td>
+        <td><span class="badge kind-${line.kind}">${line.kind === "company" ? "公司總機" : "同事個人"}</span></td>
+        <td>${who}</td>
+        <td>${line.is_active ? "啟用" : "停用"}</td>
+        <td>${action}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const form = choices.length
+    ? `<form class="filters" method="POST" action="/whatsapp-lines">
+        <label>同事
+          <select name="staff_id" required>${staffOptions}</select>
+        </label>
+        <label>WhatsApp 號碼
+          <input name="phone" required inputmode="tel" placeholder="85291234567" autocomplete="off" />
+        </label>
+        <label>顯示名稱（可選）
+          <input name="display_label" maxlength="80" placeholder="例如 李詠詩 WhatsApp" />
+        </label>
+        <button type="submit" class="btn primary">綁定</button>
+      </form>`
+    : `<p class="muted">所有在職同事都已經有啟用中嘅個人線路。</p>`;
+
+  const body = `
+    <div class="page-head"><h1>WhatsApp 線路</h1></div>
+    <p class="muted">客戶打去<strong>同事個人號</strong>會自動派畀該同事。打去<strong>公司總機 85221740001</strong>就用現有規則：未完成（open + in_progress）最少嘅在職同事，同數則 staff id 較細。未知號碼會入庫但未派。真實 Meta／Glorious 連接尚未啟用。</p>
+    ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
+    ${ok ? `<p class="notice">${escapeHtml(ok)}</p>` : ""}
+    <h2>綁定同事個人號碼</h2>
+    ${form}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>號碼</th><th>名稱</th><th>類型</th><th>同事</th><th>狀態</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="6" class="empty">尚未有線路</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+
+  res.send(
+    layout({
+      title: "WhatsApp 線路",
+      body,
+      user: sessionUser(req),
+      active: "whatsapp",
+    })
+  );
+});
+
+pagesRouter.post("/whatsapp-lines", requireAuth, (req: Request, res: Response) => {
+  if (!requirePageAdmin(req, res)) return;
+  const staffId = Number(req.body?.staff_id);
+  const result = addStaffWhatsAppLine({
+    staffId,
+    phone: String(req.body?.phone ?? ""),
+    displayLabel: String(req.body?.display_label ?? ""),
+  });
+  if (!result.ok) {
+    res.redirect(`/whatsapp-lines?error=${encodeURIComponent(result.error)}`);
+    return;
+  }
+  res.redirect(`/whatsapp-lines?ok=${encodeURIComponent("已綁定同事線路")}`);
+});
+
+pagesRouter.post("/whatsapp-lines/:id/deactivate", requireAuth, (req: Request, res: Response) => {
+  if (!requirePageAdmin(req, res)) return;
+  const result = deactivateWhatsAppLine(Number(req.params.id));
+  if (!result.ok) {
+    res.redirect(`/whatsapp-lines?error=${encodeURIComponent(result.error)}`);
+    return;
+  }
+  res.redirect(`/whatsapp-lines?ok=${encodeURIComponent("已停用線路")}`);
 });
 
 export { SOURCE_LABEL, STATUS_LABEL };

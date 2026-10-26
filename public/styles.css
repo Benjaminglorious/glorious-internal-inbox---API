@@ -92,8 +92,24 @@ input, select {
   border-color: rgba(255,255,255,0.35);
   color: inherit;
 }
+.btn.whatsapp {
+  background: #25d366;
+  border-color: #1ebe57;
+  color: #08301a;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.btn.whatsapp:hover { background: #1ebe57; text-decoration: none; }
+.btn.whatsapp.staff {
+  background: #ecfdf3;
+  border-color: #1ebe57;
+  color: #166534;
+}
+.btn.whatsapp.staff:hover { background: #d1fae5; text-decoration: none; }
+.wa-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .topbar .btn.ghost { color: #fff; }
 .error { color: #b91c1c; background: #fef2f2; padding: 8px 10px; border-radius: 8px; }
+.notice { color: #166534; background: #ecfdf3; padding: 8px 10px; border-radius: 8px; }
 .hint, .muted { color: var(--muted); }
 .hint { font-size: 13px; margin-top: 16px; }
 .small { font-size: 13px; }
@@ -120,7 +136,7 @@ input, select {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
-table { width: 100%; border-collapse: collapse; min-width: 720px; }
+table { width: 100%; border-collapse: collapse; min-width: 860px; }
 th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 th { font-size: 13px; color: var(--muted); font-weight: 700; background: #f8fafc; }
 td.preview { max-width: 320px; }
@@ -137,6 +153,9 @@ td.preview { max-width: 320px; }
 .badge.source-28car { background: #dbeafe; color: #1e40af; }
 .badge.source-glorious_web { background: #dcfce7; color: #166534; }
 .badge.source-facebook { background: #e0e7ff; color: #3730a3; }
+.badge.source-whatsapp { background: #d1fae5; color: #065f46; }
+.badge.kind-company { background: #dbeafe; color: #1e40af; }
+.badge.kind-staff { background: #ecfdf3; color: #166534; }
 .badge.status-open { background: #ffedd5; color: var(--open); }
 .badge.status-in_progress { background: #fef3c7; color: var(--warn); }
 .badge.status-done { background: #d1fae5; color: var(--ok); }

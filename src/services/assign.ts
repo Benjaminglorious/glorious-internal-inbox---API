@@ -1,6 +1,9 @@
 import { db } from "../db";
 
-/** Least open comments, then lowest staff id. Only active staff. */
+/**
+ * Least open comments, then lowest staff id. Only active staff.
+ * 公司 WhatsApp 總機入站（routeWhatsAppInbound）同 seed 都用呢條規則。
+ */
 export function pickLeastLoadedStaffId(): number | null {
   const row = db
     .prepare(

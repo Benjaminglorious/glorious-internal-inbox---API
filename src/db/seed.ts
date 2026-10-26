@@ -2,6 +2,7 @@ import "dotenv/config";
 import { db, getDbPath } from "./index";
 import { hashPassword } from "../auth/passwords";
 import { autoAssignUnassigned } from "../services/assign";
+import { ensureCompanyWhatsAppLine } from "../services/whatsapp";
 import type { CommentSource } from "../types";
 
 /** Default demo password — MUST be changed in production. */
@@ -234,6 +235,11 @@ function seed(): void {
   db.prepare(`UPDATE comments SET assignee_staff_id = NULL`).run();
   const n = autoAssignUnassigned();
   console.log(`已自動派單 ${n} 條`);
+
+  const companyLine = ensureCompanyWhatsAppLine();
+  console.log(
+    `公司 WhatsApp 線路：${companyLine.phone_e164} ${companyLine.display_label}（${companyLine.kind}${companyLine.is_active ? "" : "，已停用"}）`
+  );
 
   const counts = db
     .prepare(

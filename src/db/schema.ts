@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS staff (
 
 CREATE TABLE IF NOT EXISTS comments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  source TEXT NOT NULL CHECK (source IN ('28car', 'glorious_web', 'facebook')),
+  source TEXT NOT NULL CHECK (source IN ('28car', 'glorious_web', 'facebook', 'whatsapp')),
   external_id TEXT NOT NULL,
   author_name TEXT NOT NULL,
   body TEXT NOT NULL,
@@ -26,4 +26,23 @@ CREATE TABLE IF NOT EXISTS comments (
 CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);
 CREATE INDEX IF NOT EXISTS idx_comments_source ON comments(source);
 CREATE INDEX IF NOT EXISTS idx_comments_assignee ON comments(assignee_staff_id);
+
+CREATE TABLE IF NOT EXISTS whatsapp_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone_e164 TEXT NOT NULL UNIQUE,
+  display_label TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('company', 'staff')),
+  staff_id INTEGER REFERENCES staff(id),
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (
+    (kind = 'company' AND staff_id IS NULL) OR
+    (kind = 'staff' AND staff_id IS NOT NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_lines_staff ON whatsapp_lines(staff_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_lines_one_active_staff
+  ON whatsapp_lines(staff_id)
+  WHERE kind = 'staff' AND is_active = 1;
 `;
