@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { requireAuth } from "../auth/middleware";
 import { verifyPassword } from "../auth/passwords";
+import { companyWhatsAppChatUrl } from "../config";
 import {
   getComment,
   listComments,
@@ -9,7 +10,7 @@ import {
   updateStatus,
   reassign,
 } from "../services/comments";
-import type { CommentSource, CommentStatus } from "../types";
+import type { CommentSource, CommentStatus, CommentWithAssignee } from "../types";
 
 export const pagesRouter = Router();
 
@@ -32,6 +33,15 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function whatsAppLink(c: Pick<CommentWithAssignee, "source" | "vehicle_ref" | "body">): string {
+  const href = companyWhatsAppChatUrl({
+    sourceLabel: SOURCE_LABEL[c.source] || c.source,
+    vehicleRef: c.vehicle_ref,
+    body: c.body,
+  });
+  return `<a class="btn whatsapp" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">WhatsApp</a>`;
 }
 
 function layout(opts: {
@@ -165,6 +175,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
         <td>${c.vehicle_ref ? escapeHtml(c.vehicle_ref) : "—"}</td>
         <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span></td>
         <td>${c.assignee_name ? escapeHtml(c.assignee_name) : "未派"}</td>
+        <td>${whatsAppLink(c)}</td>
       </tr>`;
     })
     .join("");
@@ -201,11 +212,11 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       <table>
         <thead>
           <tr>
-            <th>ID</th><th>來源</th><th>留言者</th><th>內容</th><th>車輛</th><th>狀態</th><th>負責人</th>
+            <th>ID</th><th>來源</th><th>留言者</th><th>內容</th><th>車輛</th><th>狀態</th><th>負責人</th><th>WhatsApp</th>
           </tr>
         </thead>
         <tbody>
-          ${rows || `<tr><td colspan="7" class="empty">暫無留言</td></tr>`}
+          ${rows || `<tr><td colspan="8" class="empty">暫無留言</td></tr>`}
         </tbody>
       </table>
     </div>
@@ -253,7 +264,9 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         <h1>留言 #${c.id}</h1>
         <span class="badge source-${c.source}">${SOURCE_LABEL[c.source]}</span>
         <span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span>
+        ${whatsAppLink(c)}
       </div>
+      <p class="muted small">WhatsApp 按鈕開新分頁去公司 click-to-chat（可預填來源、車輛同留言摘要）。入站對話尚未同步。</p>
       <dl class="meta">
         <dt>留言者</dt><dd>${escapeHtml(c.author_name)}</dd>
         <dt>外部 ID</dt><dd><code>${escapeHtml(c.external_id)}</code></dd>

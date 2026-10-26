@@ -92,6 +92,14 @@ input, select {
   border-color: rgba(255,255,255,0.35);
   color: inherit;
 }
+.btn.whatsapp {
+  background: #25d366;
+  border-color: #1ebe57;
+  color: #08301a;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.btn.whatsapp:hover { background: #1ebe57; text-decoration: none; }
 .topbar .btn.ghost { color: #fff; }
 .error { color: #b91c1c; background: #fef2f2; padding: 8px 10px; border-radius: 8px; }
 .hint, .muted { color: var(--muted); }
@@ -120,7 +128,7 @@ input, select {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
-table { width: 100%; border-collapse: collapse; min-width: 720px; }
+table { width: 100%; border-collapse: collapse; min-width: 860px; }
 th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 th { font-size: 13px; color: var(--muted); font-weight: 700; background: #f8fafc; }
 td.preview { max-width: 320px; }

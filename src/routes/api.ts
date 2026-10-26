@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { requireAuth } from "../auth/middleware";
+import { companyWhatsAppUrl } from "../config";
 import {
   getComment,
   listComments,
@@ -13,7 +14,19 @@ import type { CommentSource, CommentStatus } from "../types";
 export const apiRouter = Router();
 
 apiRouter.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "glorious-internal-inbox", ts: new Date().toISOString() });
+  res.json({
+    ok: true,
+    service: "glorious-internal-inbox",
+    ts: new Date().toISOString(),
+    company_whatsapp_url: companyWhatsAppUrl(),
+  });
+});
+
+/** 公開設定，畀網頁／日後客戶端讀公司 WhatsApp 連結，唔使硬編碼。 */
+apiRouter.get("/config", (_req, res) => {
+  res.json({
+    company_whatsapp_url: companyWhatsAppUrl(),
+  });
 });
 
 apiRouter.get("/me", requireAuth, (req: Request, res: Response) => {
