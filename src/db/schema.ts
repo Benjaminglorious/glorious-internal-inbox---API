@@ -45,4 +45,17 @@ CREATE INDEX IF NOT EXISTS idx_whatsapp_lines_staff ON whatsapp_lines(staff_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_lines_one_active_staff
   ON whatsapp_lines(staff_id)
   WHERE kind = 'staff' AND is_active = 1;
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  staff_id INTEGER NOT NULL REFERENCES staff(id),
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_staff ON push_subscriptions(staff_id);
 `;

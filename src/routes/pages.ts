@@ -121,15 +121,25 @@ function layout(opts: {
       ? `<div id="inbox-live" data-latest-id="${opts.liveCursor}" hidden></div>`
       : "";
 
+  const authenticated = opts.user ? ` data-authenticated="1"` : "";
+
   return `<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b3d5c" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <meta name="apple-mobile-web-app-title" content="東榮留言" />
   <title>${escapeHtml(opts.title)} · 東榮內部留言</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icons/icon-192.png" type="image/png" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body>
+<body${authenticated}>
   ${nav}
   <main class="container">
     ${opts.body}

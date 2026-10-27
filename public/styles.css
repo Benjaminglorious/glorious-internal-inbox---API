@@ -204,6 +204,29 @@ td.preview { max-width: 320px; }
 .inbox-notify-ask p { margin: 0; font-size: 14px; }
 .inbox-notify-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
+.inbox-install-ask {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand-2);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+.inbox-install-ask p { margin: 0; font-size: 14px; flex: 1 1 240px; }
+.inbox-install-note { color: var(--muted); flex-basis: 100%; }
+.inbox-install-ask [hidden],
+.inbox-notify-ask [hidden],
+.inbox-toast [hidden],
+.btn[hidden] {
+  display: none !important;
+}
+
 .inbox-toast {
   position: fixed;
   right: 16px;

@@ -1,7 +1,7 @@
 {
   "name": "glorious-internal-inbox",
   "version": "1.0.0",
-  "description": "\u6771\u69ae\u6c7d\u8eca\u5167\u90e8\u540c\u4e8b\u7559\u8a00\u8655\u7406\u7cfb\u7d71\uff0828car\uff0f\u5b98\u7db2\uff0fFacebook\uff09",
+  "description": "東榮汽車內部同事留言處理系統（28car／官網／Facebook）",
   "main": "dist/index.js",
   "private": true,
   "license": "UNLICENSED",
@@ -10,6 +10,8 @@
     "start": "tsx src/index.ts",
     "seed": "tsx src/db/seed.ts",
     "demo:whatsapp-route": "tsx src/demo/whatsapp-route.ts",
+    "vapid:keys": "web-push generate-vapid-keys --json",
+    "icons": "node scripts/generate-pwa-icons.mjs",
     "build": "tsc",
     "start:prod": "node dist/index.js"
   },
@@ -19,7 +21,8 @@
     "connect-sqlite3": "^0.9.15",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "express-session": "^1.18.1"
+    "express-session": "^1.18.1",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
@@ -27,6 +30,7 @@
     "@types/express": "^5.0.0",
     "@types/express-session": "^1.18.1",
     "@types/node": "^22.10.5",
+    "@types/web-push": "^3.6.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   },

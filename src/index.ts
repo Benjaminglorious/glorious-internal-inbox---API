@@ -11,6 +11,7 @@ import { authRouter } from "./routes/auth";
 import { apiRouter } from "./routes/api";
 import { pagesRouter } from "./routes/pages";
 import { whatsappWebhookRouter } from "./routes/webhooks";
+import { isPushConfigured } from "./services/push";
 import { ensureCompanyWhatsAppLine } from "./services/whatsapp";
 
 ensureCompanyWhatsAppLine();
@@ -19,11 +20,26 @@ const PORT = Number(process.env.PORT || 3001);
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev-insecure-secret-change-me";
 
 const app = express();
+const publicDir = path.join(process.cwd(), "public");
 
 app.set("trust proxy", 1);
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
-app.use(express.static(path.join(process.cwd(), "public")));
+
+app.get("/sw.js", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Service-Worker-Allowed", "/");
+  res.type("application/javascript; charset=utf-8");
+  res.sendFile(path.join(publicDir, "sw.js"));
+});
+
+app.get("/manifest.webmanifest", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.type("application/manifest+json; charset=utf-8");
+  res.sendFile(path.join(publicDir, "manifest.webmanifest"));
+});
+
+app.use(express.static(publicDir));
 
 const dataDir = path.join(process.cwd(), "data");
 fs.mkdirSync(dataDir, { recursive: true });
@@ -67,4 +83,9 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 
 app.listen(PORT, () => {
   console.log(`glorious-internal-inbox 已啟動：http://localhost:${PORT}`);
+  console.log(
+    isPushConfigured()
+      ? "Web Push：已設定 VAPID"
+      : "Web Push：未設定 VAPID（PWA 仍可安裝，關閉頁面後唔會推送）"
+  );
 });

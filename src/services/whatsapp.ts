@@ -3,6 +3,7 @@ import { db } from "../db";
 import type { CommentStatus, CommentWithAssignee, WhatsAppLine, WhatsAppLineKind } from "../types";
 import { pickLeastLoadedStaffId } from "./assign";
 import { findStaffById, getComment } from "./comments";
+import { notifyNewComment } from "./push";
 
 const MIN_PHONE_DIGITS = 8;
 const MAX_PHONE_DIGITS = 15;
@@ -384,7 +385,20 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
     return { ok: true, outcome, line, assigneeStaffId, comment, created: false };
   });
 
-  return run();
+  const result = run();
+  if (result.ok && result.created) {
+    try {
+      notifyNewComment({
+        id: result.comment.id,
+        source: result.comment.source,
+        author_name: result.comment.author_name,
+        body: result.comment.body,
+      });
+    } catch (err) {
+      console.error("[push] 未能排程推送", err);
+    }
+  }
+  return result;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

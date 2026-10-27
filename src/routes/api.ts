@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { requireAdmin, requireAuth } from "../auth/middleware";
 import { companyWhatsAppUrl } from "../config";
+import { isPushConfigured, removePushSubscription, savePushSubscription, vapidPublicKey } from "../services/push";
 import {
   getComment,
   listCommentUpdates,
@@ -21,6 +22,7 @@ apiRouter.get("/health", (_req, res) => {
     service: "glorious-internal-inbox",
     ts: new Date().toISOString(),
     company_whatsapp_url: companyWhatsAppUrl(),
+    push_enabled: isPushConfigured(),
   });
 });
 
@@ -164,4 +166,32 @@ apiRouter.post("/whatsapp-lines/:id/deactivate", requireAdmin, (req: Request, re
     return;
   }
   res.json({ line: result.line });
+});
+
+apiRouter.get("/push/config", requireAuth, (_req: Request, res: Response) => {
+  const enabled = isPushConfigured();
+  res.set("Cache-Control", "no-store");
+  res.json({ enabled, public_key: enabled ? vapidPublicKey() : null });
+});
+
+apiRouter.post("/push/subscribe", requireAuth, (req: Request, res: Response) => {
+  if (!isPushConfigured()) {
+    res.status(503).json({ error: "伺服器未設定 Web Push" });
+    return;
+  }
+  const result = savePushSubscription(req.session.staffId!, req.body, req.get("user-agent") ?? null);
+  if (!result.ok) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+apiRouter.post("/push/unsubscribe", requireAuth, (req: Request, res: Response) => {
+  const result = removePushSubscription(req.session.staffId!, req.body);
+  if (!result.ok) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+  res.json({ ok: true, removed: result.removed });
 });
