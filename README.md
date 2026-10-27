@@ -57,6 +57,7 @@ Glorious2026!
 - 留言列表：按來源、狀態、「只睇我嘅」篩選
 - 留言詳情：改狀態（未處理／處理中／已完成）、改派同事
 - 留言列表／詳情：公司 WhatsApp click-to-chat；負責人若已綁定個人號，會另外顯示同事 WhatsApp
+- 新留言提示：留言箱同留言詳情打開期間會偵測新留言（28car、官網、Facebook、WhatsApp 都計），頁面顯示「有新留言」，分頁標題變成 `(3) 內部留言箱`；可選桌面通知
 - 同事名單頁（顯示已綁定嘅個人 WhatsApp）
 - 管理員：WhatsApp 線路頁（綁定／停用同事個人號）
 - JSON API（`/api/...`）方便日後接流動 App 或自動化
@@ -68,6 +69,7 @@ Glorious2026!
 - 公開設定：`GET /api/config` → `{ "company_whatsapp_url": "..." }`
 - 登入 API：`POST /api/auth/login` `{ "username", "password" }`
 - 留言：`GET /api/comments?source=&status=&mine=1`
+- 新留言游標：`GET /api/comments/updates?since_id=`
 - 改狀態：`POST /api/comments/:id/status`
 - 改派：`POST /api/comments/:id/assign`
 - 同事：`GET /api/staff`
@@ -83,6 +85,39 @@ Glorious2026!
 - `DATABASE_PATH`（可選，預設 `./data/inbox.db`）
 - `COMPANY_WHATSAPP_URL`（公司 WhatsApp **出站** click-to-chat。未設定時預設 `https://api.whatsapp.com/send?phone=85221740001`，即 28car／官網／Facebook 用緊嘅號碼 `85221740001`）
 - `WEBHOOK_VERIFY_TOKEN`（入站 webhook 共用密鑰。未設定時 `POST /api/webhooks/whatsapp` 回 503。必須改，唔好提交真實密鑰）
+
+## 新留言提示
+
+留言箱（`/`）同留言詳情（`/comments/:id`）打開期間，頁面會打 `GET /api/comments/updates`（打開後大約 1.5 秒先查一次，之後每 20 秒）。游標係頁面渲染時嘅最新留言 id；之後先寫入資料庫嘅留言先算新。來源包括 28car、東榮官網、Facebook、WhatsApp。範圍跟現有登入規則：已登入同事可見全部留言，所以提示都係呢個範圍，唔係淨係派咗畀自己嘅。
+
+未連接真實 WhatsApp／Meta 入站都唔影響呢個提示。Seed、webhook stub，或者任何已經入咗 `comments` 表嘅留言，都會出提示。
+
+- 頁內提示：「有新留言」，附來源、留言者同短摘要。可以「查看」／「查看最新」，或者「重新整理」刷新而家呢頁。
+- 分頁標題：有未睇嘅新留言時顯示 `(3) 內部留言箱`。重新整理，或者重新打開留言箱，就會清走。
+- 桌面通知：第一次會問一次可唔可以開通知。允許之後，只有分頁喺背景先至彈出。拒絕或者瀏覽器唔支援，頁內提示照常運作。
+
+`GET /api/comments/updates?since_id=19` 回傳：
+
+```json
+{
+  "latest_id": 21,
+  "has_more": false,
+  "comments": [
+    {
+      "id": 21,
+      "source": "whatsapp",
+      "author_name": "陳先生",
+      "preview": "想問 Alphard",
+      "vehicle_ref": null,
+      "created_at": "2026-10-27 09:00:00",
+      "assignee_staff_id": 2,
+      "assignee_name": "李詠詩"
+    }
+  ]
+}
+```
+
+唔帶 `since_id` 時只回 `latest_id` 同空陣列，唔會把舊留言當新訊息。`since_id` 必須係非負整數。每次最多回 30 則；如果仲有，`has_more` 係 `true`，頁面會再取。
 
 ## 公司 WhatsApp click-to-chat
 
