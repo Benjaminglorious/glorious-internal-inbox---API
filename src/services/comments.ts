@@ -8,6 +8,113 @@ export interface CommentFilters {
   staffId?: number;
 }
 
+const PREVIEW_LEN = 80;
+
+export interface CommentUpdateItem {
+  id: number;
+  source: CommentSource;
+  author_name: string;
+  preview: string;
+  vehicle_ref: string | null;
+  created_at: string;
+  assignee_staff_id: number | null;
+  assignee_name: string | null;
+}
+
+export interface CommentUpdates {
+  latest_id: number;
+  has_more: boolean;
+  comments: CommentUpdateItem[];
+}
+
+/** 同 listComments() 唔帶篩選時一樣：已登入同事可以見到全部留言。 */
+export function latestCommentId(): number {
+  const row = db.prepare(`SELECT COALESCE(MAX(id), 0) AS id FROM comments`).get() as { id: number };
+  return Number(row.id) || 0;
+}
+
+/**
+ * 新留言游標。sinceId 為 null 時只回最新 id，唔把舊留言當成新訊息。
+ * MAX(id) 同新留言列表放喺同一個 transaction，避免兩次讀取之間有插入而跳過。
+ */
+export function listCommentUpdates(sinceId: number | null, limit = 30): CommentUpdates {
+  const cap = Math.min(Math.max(Math.floor(limit) || 30, 1), 50);
+  const read = db.transaction((): CommentUpdates => {
+    const latest_id = latestCommentId();
+    if (sinceId == null) {
+      return { latest_id, comments: [], has_more: false };
+    }
+    const rows = db
+      .prepare(
+        `
+        SELECT c.id, c.source, c.author_name, c.body, c.vehicle_ref, c.created_at,
+               c.assignee_staff_id, s.display_name AS assignee_name
+        FROM comments c
+        LEFT JOIN staff s ON s.id = c.assignee_staff_id
+        WHERE c.id > ?
+        ORDER BY c.id ASC
+        LIMIT ?
+      `
+      )
+      .all(sinceId, cap + 1) as Array<{
+      id: number;
+      source: CommentSource;
+      author_name: string;
+      body: string;
+      vehicle_ref: string | null;
+      created_at: string;
+      assignee_staff_id: number | null;
+      assignee_name: string | null;
+    }>;
+    const has_more = rows.length > cap;
+    const slice = has_more ? rows.slice(0, cap) : rows;
+    return {
+      latest_id,
+      has_more,
+      comments: slice.map((row) => ({
+        id: row.id,
+        source: row.source,
+        author_name: row.author_name,
+        preview: previewText(row.body),
+        vehicle_ref: row.vehicle_ref,
+        created_at: row.created_at,
+        assignee_staff_id: row.assignee_staff_id,
+        assignee_name: row.assignee_name,
+      })),
+    };
+  });
+  return read();
+}
+
+/** 列表頁用：留言同最新 id 同一個 snapshot，頁面游標先至對得準。 */
+export function listCommentsWithCursor(filters: CommentFilters = {}): {
+  comments: CommentWithAssignee[];
+  latestId: number;
+} {
+  const read = db.transaction(() => ({
+    comments: listComments(filters),
+    latestId: latestCommentId(),
+  }));
+  return read();
+}
+
+export function getCommentWithCursor(id: number): {
+  comment: CommentWithAssignee | null;
+  latestId: number;
+} {
+  const read = db.transaction(() => ({
+    comment: getComment(id),
+    latestId: latestCommentId(),
+  }));
+  return read();
+}
+
+function previewText(body: string): string {
+  const flat = body.replace(/\s+/g, " ").trim();
+  if (flat.length <= PREVIEW_LEN) return flat;
+  return flat.slice(0, PREVIEW_LEN) + "…";
+}
+
 export function listComments(filters: CommentFilters = {}): CommentWithAssignee[] {
   const where: string[] = ["1=1"];
   const params: unknown[] = [];

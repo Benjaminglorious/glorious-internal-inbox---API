@@ -3,8 +3,8 @@ import { requireAuth } from "../auth/middleware";
 import { verifyPassword } from "../auth/passwords";
 import { companyWhatsAppChatUrl, whatsAppSendUrl } from "../config";
 import {
-  getComment,
-  listComments,
+  getCommentWithCursor,
+  listCommentsWithCursor,
   listStaff,
   findStaffByUsername,
   updateStatus,
@@ -88,6 +88,8 @@ function layout(opts: {
   body: string;
   user?: { displayName: string; isAdmin?: boolean };
   active?: string;
+  /** 有呢個數字先至喺留言箱／詳情輪詢新留言。0 代表暫時未有留言。 */
+  liveCursor?: number;
 }): string {
   const nav = opts.user
     ? `
@@ -114,6 +116,11 @@ function layout(opts: {
     </header>`
     : "";
 
+  const live =
+    typeof opts.liveCursor === "number"
+      ? `<div id="inbox-live" data-latest-id="${opts.liveCursor}" hidden></div>`
+      : "";
+
   return `<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -127,6 +134,7 @@ function layout(opts: {
   <main class="container">
     ${opts.body}
   </main>
+  ${live}
   <script src="/app.js"></script>
 </body>
 </html>`;
@@ -187,7 +195,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
   const src = sourceRaw && isCommentSource(sourceRaw) ? sourceRaw : undefined;
   const st = status && validStatuses.includes(status) ? status : undefined;
 
-  const comments = listComments({
+  const { comments, latestId } = listCommentsWithCursor({
     source: src,
     status: st,
     mine,
@@ -275,13 +283,14 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       body,
       user: sessionUser(req),
       active: "inbox",
+      liveCursor: latestId,
     })
   );
 });
 
 pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  const c = getComment(id);
+  const { comment: c, latestId } = getCommentWithCursor(id);
   if (!c) {
     res.status(404).send(
       layout({
@@ -352,6 +361,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       body,
       user: sessionUser(req),
       active: "inbox",
+      liveCursor: latestId,
     })
   );
 });

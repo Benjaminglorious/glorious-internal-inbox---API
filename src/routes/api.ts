@@ -3,6 +3,7 @@ import { requireAdmin, requireAuth } from "../auth/middleware";
 import { companyWhatsAppUrl } from "../config";
 import {
   getComment,
+  listCommentUpdates,
   listComments,
   listStaff,
   reassign,
@@ -42,6 +43,25 @@ apiRouter.get("/me", requireAuth, (req: Request, res: Response) => {
     display_name: staff.display_name,
     is_admin: !!staff.is_admin,
   });
+});
+
+apiRouter.get("/comments/updates", requireAuth, (req: Request, res: Response) => {
+  const raw = req.query.since_id;
+  let sinceId: number | null = null;
+  if (raw != null && raw !== "") {
+    if (typeof raw !== "string" || !/^\d+$/.test(raw)) {
+      res.status(400).json({ error: "since_id 必須係非負整數" });
+      return;
+    }
+    sinceId = Number(raw);
+    if (!Number.isSafeInteger(sinceId)) {
+      res.status(400).json({ error: "since_id 必須係非負整數" });
+      return;
+    }
+  }
+  const updates = listCommentUpdates(sinceId);
+  res.set("Cache-Control", "no-store");
+  res.json(updates);
 });
 
 apiRouter.get("/comments", requireAuth, (req: Request, res: Response) => {
