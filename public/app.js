@@ -9,7 +9,14 @@
     "28car": "28car",
     glorious_web: "東榮官網",
     facebook: "Facebook",
+    instagram: "東榮 IG",
     whatsapp: "WhatsApp",
+  };
+  var ORIGIN_LABEL = {
+    "28car": "28car",
+    glorious_web: "東榮官網",
+    facebook: "Facebook",
+    instagram: "東榮 IG",
   };
 
   document.addEventListener("DOMContentLoaded", function () {
@@ -40,9 +47,16 @@
 
     function summary(comment) {
       var source = SOURCE_LABEL[comment.source] || comment.source || "留言";
+      var label = source;
+      if (comment.intake_kind === "whatsapp_click") {
+        var origin = comment.origin_site ? ORIGIN_LABEL[comment.origin_site] : "";
+        label = origin ? "來自" + origin + "的 WhatsApp" : "WhatsApp 聯絡";
+      } else if (comment.intake_kind === "site_comment") {
+        label = comment.source === "instagram" ? "東榮 IG 留言" : source + " 網站留言";
+      }
       var author = comment.author_name ? String(comment.author_name) : "（無名）";
       var preview = comment.preview ? String(comment.preview) : "（沒有內容）";
-      return source + " · " + author + "：" + preview;
+      return label + " · " + author + "：" + preview;
     }
 
     function renderTitle() {

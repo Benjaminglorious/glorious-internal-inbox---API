@@ -1,12 +1,15 @@
 import { sendNotification, setVapidDetails, WebPushError } from "web-push";
 import { db } from "../db";
+import { intakeSummary } from "../labels";
 
-/** 新寫入嘅留言。改狀態、改派、附加舊對話都唔經呢度。 */
+/** 新寫入嘅留言。改狀態、改派、同事回覆、附加舊對話都唔經呢度。 */
 export interface NewCommentNotice {
   id: number;
   source: string;
   author_name: string;
   body: string;
+  intake_kind?: string | null;
+  origin_site?: string | null;
 }
 
 interface StoredSubscription {
@@ -15,13 +18,6 @@ interface StoredSubscription {
   p256dh: string;
   auth: string;
 }
-
-const SOURCE_LABEL: Record<string, string> = {
-  "28car": "28car",
-  glorious_web: "東榮官網",
-  facebook: "Facebook",
-  whatsapp: "WhatsApp",
-};
 
 const MAX_PER_STAFF = 10;
 const FLUSH_MS = 300;
@@ -180,7 +176,7 @@ function previewText(body: string): string {
 }
 
 function oneLine(comment: NewCommentNotice): string {
-  const source = SOURCE_LABEL[comment.source] || comment.source || "留言";
+  const source = intakeSummary(comment);
   const author = comment.author_name.replace(/\s+/g, " ").trim() || "（無名）";
   return `${source} · ${author}：${previewText(comment.body)}`;
 }
