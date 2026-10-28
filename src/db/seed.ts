@@ -3,6 +3,7 @@ import { db, getDbPath } from "./index";
 import { hashPassword } from "../auth/passwords";
 import { autoAssignUnassigned } from "../services/assign";
 import { ensureCompanyWhatsAppLine } from "../services/whatsapp";
+import { notifyNewComment } from "../services/push";
 import type { CommentSource } from "../types";
 
 /** Default demo password — MUST be changed in production. */
@@ -216,8 +217,13 @@ function seed(): void {
       updated_at = datetime('now')
   `);
 
+  const findExisting = db.prepare(
+    `SELECT id FROM comments WHERE source = ? AND external_id = ?`
+  );
+  const insertedKeys: Array<{ source: CommentSource; external_id: string }> = [];
   const commentTx = db.transaction(() => {
     for (const c of COMMENTS) {
+      const existing = findExisting.get(c.source, c.external_id);
       insertComment.run({
         source: c.source,
         external_id: c.external_id,
@@ -226,6 +232,7 @@ function seed(): void {
         vehicle_ref: c.vehicle_ref,
         status: c.status ?? "open",
       });
+      if (!existing) insertedKeys.push({ source: c.source, external_id: c.external_id });
     }
   });
   commentTx();
@@ -237,6 +244,20 @@ function seed(): void {
   console.log(`已自動派單 ${n} 條`);
 
   const companyLine = ensureCompanyWhatsAppLine();
+  const loadInserted = db.prepare(
+    `SELECT id, source, author_name, body FROM comments WHERE source = ? AND external_id = ?`
+  );
+  for (const item of insertedKeys) {
+    const row = loadInserted.get(item.source, item.external_id) as
+      | { id: number; source: string; author_name: string; body: string }
+      | undefined;
+    if (!row) continue;
+    try {
+      notifyNewComment(row);
+    } catch (err) {
+      console.error("[push] seed 推送未排程", err);
+    }
+  }
   console.log(
     `公司 WhatsApp 線路：${companyLine.phone_e164} ${companyLine.display_label}（${companyLine.kind}${companyLine.is_active ? "" : "，已停用"}）`
   );

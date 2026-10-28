@@ -73,6 +73,7 @@
 
     function maybeNotify(batch) {
       if (!batch.length || !document.hidden) return;
+      if (document.documentElement.getAttribute("data-push-active") === "1") return;
       if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
       var latest = batch[batch.length - 1];
       var body =
@@ -164,6 +165,13 @@
       hideToast();
     });
 
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.addEventListener("message", function (event) {
+        var data = event.data || {};
+        if (data.type === "inbox-push") poll();
+      });
+    }
+
     document.addEventListener("visibilitychange", function () {
       if (document.visibilityState === "visible") poll();
     });
@@ -234,7 +242,7 @@
     bar.className = "inbox-notify-ask";
 
     var text = document.createElement("p");
-    text.textContent = "有新留言時，可以彈出桌面通知（只會喺呢個分頁喺背景時顯示）。";
+    text.textContent = "有新留言時可以彈出通知。開住嘅分頁會繼續用頁面提示；允許之後，背景分頁或者已安裝嘅程式都可以收到「有新留言」。";
 
     var actions = document.createElement("div");
     actions.className = "inbox-notify-actions";
@@ -257,11 +265,20 @@
       }
     }
 
+    function afterPermission(perm) {
+      if (perm === "granted" && typeof window.gloriousSyncPush === "function") window.gloriousSyncPush();
+    }
+
     allow.addEventListener("click", function () {
       remember();
       bar.remove();
       try {
-        Notification.requestPermission().catch(function () {});
+        var ask = Notification.requestPermission(function (perm) {
+          afterPermission(perm);
+        });
+        if (ask && typeof ask.then === "function") {
+          ask.then(afterPermission).catch(function () {});
+        }
       } catch (err) {
         // 舊瀏覽器可能用 callback 形式；失敗都唔影響頁內提示。
       }
@@ -282,3 +299,229 @@
     return bar;
   }
 })();
+
+// 安裝 PWA、登記 service worker，以及（已允許通知而且伺服器有 VAPID 時）訂閱 Web Push。
+// 頁內 toast／分頁標題仍然由上面嘅輪詢負責。
+(function () {
+  var INSTALL_KEY = "glorious.inbox.installDismissed";
+  var deferredPrompt = null;
+
+  window.gloriousSyncPush = function () {
+    syncPush().catch(function () {});
+  };
+
+  var offerInstallButton = document.body && document.body.getAttribute("data-authenticated") === "1";
+
+  window.addEventListener("beforeinstallprompt", function (event) {
+    if (!offerInstallButton || dismissed()) return;
+    event.preventDefault();
+    deferredPrompt = event;
+    var button = document.getElementById("pwa-install-btn");
+    if (button) button.hidden = false;
+  });
+
+  window.addEventListener("appinstalled", function () {
+    var bar = document.getElementById("pwa-install");
+    if (bar) bar.remove();
+    deferredPrompt = null;
+  });
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", function (event) {
+      var data = event.data || {};
+      if (data.type === "inbox-open" && isSafePath(data.url)) window.location.assign(data.url);
+    });
+    navigator.serviceWorker.register("/sw.js").catch(function () {});
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    if (!document.body || document.body.getAttribute("data-authenticated") !== "1") return;
+    showInstallHint();
+    if (notificationState() === "granted") syncPush().catch(function () {});
+    else if (notificationState() === "denied") dropPush().catch(function () {});
+  });
+
+  function notificationState() {
+    if (typeof Notification === "undefined") return "unsupported";
+    return Notification.permission;
+  }
+
+  function isSafePath(url) {
+    return typeof url === "string" && url.charAt(0) === "/" && url.charAt(1) !== "/" && url.indexOf("\\") === -1;
+  }
+
+  function isStandalone() {
+    var media = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
+    return !!(media || navigator.standalone);
+  }
+
+  function isIos() {
+    var ua = navigator.userAgent || "";
+    if (/iphone|ipad|ipod/i.test(ua)) return true;
+    return navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  }
+
+  function dismissed() {
+    try {
+      return localStorage.getItem(INSTALL_KEY) === "1";
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function rememberDismiss() {
+    try {
+      localStorage.setItem(INSTALL_KEY, "1");
+    } catch (err) {
+      // 私隱模式寫唔到就當呢次頁面問過。
+    }
+  }
+
+  function showInstallHint() {
+    if (isStandalone() || dismissed()) return;
+
+    var bar = document.createElement("div");
+    bar.id = "pwa-install";
+    bar.className = "inbox-install-ask";
+    bar.setAttribute("role", "region");
+    bar.setAttribute("aria-label", "安裝應用程式");
+
+    var text = document.createElement("p");
+    text.textContent = isIos()
+      ? "用 Safari 撳「分享」→「加入主畫面」，再開啟通知，就可以喺程式未開喺前面時收到「有新留言」。iPhone 嘅 Safari 分頁本身收唔到背景推送。"
+      : "可以安裝「東榮內部留言」到主畫面。安裝並開啟通知之後，即使個頁面未開喺前面，都可以收到「有新留言」。";
+
+    var note = document.createElement("p");
+    note.className = "inbox-install-note";
+    note.hidden = true;
+
+    var actions = document.createElement("div");
+    actions.className = "inbox-notify-actions";
+
+    var install = document.createElement("button");
+    install.type = "button";
+    install.id = "pwa-install-btn";
+    install.className = "btn primary";
+    install.textContent = "安裝";
+    install.hidden = !deferredPrompt;
+
+    var later = document.createElement("button");
+    later.type = "button";
+    later.className = "btn";
+    later.textContent = "稍後";
+
+    install.addEventListener("click", function () {
+      if (!deferredPrompt) return;
+      var promptEvent = deferredPrompt;
+      deferredPrompt = null;
+      install.hidden = true;
+      var choice = promptEvent.userChoice;
+      try {
+        promptEvent.prompt();
+      } catch (err) {
+        return;
+      }
+      if (choice && typeof choice.then === "function") {
+        choice
+          .then(function (result) {
+            if (result && result.outcome === "accepted") bar.remove();
+          })
+          .catch(function () {});
+      }
+    });
+
+    later.addEventListener("click", function () {
+      rememberDismiss();
+      bar.remove();
+    });
+
+    actions.appendChild(install);
+    actions.appendChild(later);
+    bar.appendChild(text);
+    bar.appendChild(note);
+    bar.appendChild(actions);
+
+    var main = document.querySelector("main.container");
+    if (main) main.insertBefore(bar, main.firstChild);
+    else document.body.appendChild(bar);
+
+    fetch("/api/push/config", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    })
+      .then(function (res) {
+        return res.ok ? res.json() : null;
+      })
+      .then(function (data) {
+        if (!data || data.enabled) return;
+        note.hidden = false;
+        note.textContent = "伺服器未設定推送金鑰，關閉程式之後暫時收唔到。開住呢頁仍然會有頁內提示。";
+      })
+      .catch(function () {});
+  }
+
+  function urlBase64ToUint8Array(base64String) {
+    var padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+    var base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+    var raw = window.atob(base64);
+    var output = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i);
+    return output;
+  }
+
+  function syncPush() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return Promise.resolve();
+    if (notificationState() !== "granted") return Promise.resolve();
+    return fetch("/api/push/config", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    })
+      .then(function (res) {
+        return res.ok ? res.json() : null;
+      })
+      .then(function (cfg) {
+        if (!cfg || !cfg.enabled || !cfg.public_key) return null;
+        return navigator.serviceWorker.ready.then(function (reg) {
+          return reg.pushManager.getSubscription().then(function (existing) {
+            if (existing) return existing;
+            return reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: urlBase64ToUint8Array(cfg.public_key),
+            });
+          });
+        });
+      })
+      .then(function (sub) {
+        if (!sub) return null;
+        return fetch("/api/push/subscribe", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(sub),
+        }).then(function (res) {
+          if (res.ok) document.documentElement.setAttribute("data-push-active", "1");
+        });
+      });
+  }
+
+  function dropPush() {
+    if (!("serviceWorker" in navigator)) return Promise.resolve();
+    return navigator.serviceWorker.ready.then(function (reg) {
+      if (!reg.pushManager) return null;
+      return reg.pushManager.getSubscription().then(function (sub) {
+        if (!sub) return null;
+        return fetch("/api/push/unsubscribe", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ endpoint: sub.endpoint }),
+        }).then(function () {
+          return sub.unsubscribe();
+        });
+      });
+    });
+  }
+})();
+
