@@ -73,12 +73,21 @@ function main(): number {
     const commentCount = appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number };
     check("舊留言遷移後仍在", commentCount.n === 1);
     check("comments.source 包含 whatsapp", ddl.sql.includes("whatsapp"));
+    check("comments.source 包含 instagram", ddl.sql.includes("'instagram'"));
+    check("comments 有 intake_kind", ddl.sql.includes("intake_kind"));
 
     const survived = appDb.prepare(`SELECT body, assignee_staff_id FROM comments WHERE id = 1`).get() as {
       body: string;
       assignee_staff_id: number;
     };
     check("遷移保留內容同負責人", survived.body === "遷移前留言" && survived.assignee_staff_id === 1);
+    const legacyKind = appDb
+      .prepare(`SELECT intake_kind, origin_site FROM comments WHERE external_id = 'legacy-1'`)
+      .get() as { intake_kind: string; origin_site: string | null };
+    check(
+      "舊 28car 留言係網站留言",
+      legacyKind.intake_kind === "site_comment" && legacyKind.origin_site == null
+    );
 
     const staffB = appDb
       .prepare(
@@ -285,6 +294,189 @@ function main(): number {
 
     const bad = wa.parseWhatsAppWebhookPayload({ foo: 1 });
     check("認唔到嘅 JSON 回報錯誤", !!bad.error && bad.messages.length === 0);
+
+    const fromIg = wa.routeWhatsAppInbound({
+      toPhone: COMPANY_WHATSAPP_PHONE,
+      fromPhone: "85296660001",
+      body: "IG 別名",
+      externalId: "m-ig-1",
+      originSite: "ig",
+    });
+    check(
+      "origin ig 正規化成 instagram，來源仍然係 whatsapp",
+      fromIg.ok &&
+        fromIg.comment.source === "whatsapp" &&
+        fromIg.comment.intake_kind === "whatsapp_click" &&
+        fromIg.comment.origin_site === "instagram",
+      fromIg.ok ? `origin=${fromIg.comment.origin_site}` : fromIg.error
+    );
+    const retryOrigin = wa.routeWhatsAppInbound({
+      toPhone: COMPANY_WHATSAPP_PHONE,
+      fromPhone: "85296660001",
+      body: "IG 別名",
+      externalId: "m-ig-1",
+      originSite: "facebook",
+    });
+    check(
+      "已有來源唔會被後續 webhook 改走",
+      retryOrigin.ok && retryOrigin.created === false && retryOrigin.comment.origin_site === "instagram"
+    );
+
+    const bioUrl = "http://glorious.hk/?utm_source=ig&utm_medium=social&utm_content=link_in_bio";
+    const parsedIg = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85296660002",
+      body: "link in bio",
+      external_id: "m-ig-utm",
+      referral: { source_url: bioUrl },
+    });
+    check(
+      "glorious.hk?utm_source=ig 係 Instagram 而唔係官網",
+      !parsedIg.error && parsedIg.messages[0]?.originSite === "instagram"
+    );
+    const routedIg = parsedIg.messages[0] ? wa.routeWhatsAppInbound(parsedIg.messages[0]) : null;
+    check(
+      "bio link 入庫係 whatsapp + origin instagram",
+      !!routedIg?.ok && routedIg.comment.origin_site === "instagram" && routedIg.comment.source === "whatsapp"
+    );
+
+    const wrapped =
+      "https://l.instagram.com/?u=" +
+      encodeURIComponent("http://glorious.hk/?utm_source=ig&utm_medium=social&utm_content=link_in_bio");
+    const wrappedParsed = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85296660003",
+      body: "wrapped bio",
+      external_id: "m-ig-wrap",
+      referral: { source_url: wrapped },
+    });
+    check("l.instagram.com 展開後仍係 Instagram", wrappedParsed.messages[0]?.originSite === "instagram");
+
+    const webOnly = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85296660004",
+      body: "官網掣",
+      external_id: "m-web-1",
+      referral: { source_url: "https://glorious.hk/cn2/" },
+    });
+    check("冇 utm 嘅官網連結仍然係 glorious_web", webOnly.messages[0]?.originSite === "glorious_web");
+
+    const bioContentOnly = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85296660005",
+      body: "只有 link_in_bio",
+      external_id: "m-ig-content",
+      referral: { source_url: "http://glorious.hk/?utm_medium=social&utm_content=link_in_bio" },
+    });
+    check("utm_content=link_in_bio 亦當 Instagram", bioContentOnly.messages[0]?.originSite === "instagram");
+
+    const badOrigin = wa.routeWhatsAppInbound({
+      toPhone: COMPANY_WHATSAPP_PHONE,
+      fromPhone: "85296660009",
+      body: "bad origin",
+      externalId: "m-bad-origin",
+      originSite: "craigslist",
+    });
+    check("拒絕未知 origin_site", !badOrigin.ok);
+
+    let rejectedKind = false;
+    try {
+      appDb
+        .prepare(
+          `INSERT INTO comments (source, external_id, author_name, body, intake_kind)
+           VALUES ('whatsapp', 'bad-kind', 'x', 'y', 'site_comment')`
+        )
+        .run();
+    } catch {
+      rejectedKind = true;
+    }
+    check("whatsapp 唔可以係網站留言", rejectedKind);
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const replies = require("../services/replies") as typeof import("../services/replies");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const commentsApi = require("../services/comments") as typeof import("../services/comments");
+    if (routedIg?.ok) {
+      const sent = replies.createStaffReply({
+        commentId: routedIg.comment.id,
+        staffId: staffBId,
+        body: "系統內回覆 IG WhatsApp",
+      });
+      check(
+        "WhatsApp 回覆標為 stub 並改處理中",
+        sent.ok &&
+          sent.reply.delivery_status === "stub" &&
+          sent.reply.direction === "outbound" &&
+          sent.comment.status === "in_progress" &&
+          sent.comment.reply_count === 1,
+        sent.ok ? `status=${sent.comment.status}` : sent.error
+      );
+      const pending = commentsApi.listComments({ status: "pending" });
+      check(
+        "回覆後仍喺擱置／未處理",
+        sent.ok && pending.some((row) => row.id === sent.comment.id && (row.last_reply_body || "").includes("系統內回覆"))
+      );
+      const openOnly = commentsApi.listComments({ status: "open" });
+      check("已回覆唔再標未處理", sent.ok && !openOnly.some((row) => row.id === sent.comment.id));
+      const igOrigin = commentsApi.listComments({ origin: "instagram", intake: "whatsapp_click" });
+      check(
+        "篩選來自 IG 的 WhatsApp",
+        igOrigin.some((row) => row.id === routedIg.comment.id)
+      );
+      const asWeb = commentsApi.listComments({ source: "glorious_web" });
+      check(
+        "IG bio 唔出現喺官網來源",
+        !asWeb.some((row) => row.id === routedIg.comment.id)
+      );
+    } else {
+      check("有 IG bio 留言先至測回覆", false);
+    }
+
+    const igInsert = appDb
+      .prepare(
+        `INSERT INTO comments (
+           source, external_id, author_name, body, intake_kind, origin_site, status, assignee_staff_id
+         ) VALUES ('instagram', 'ig-demo', 'IG用戶', '帖文留言', 'site_comment', NULL, 'open', ?)`
+      )
+      .run(staffBId);
+    const igReply = replies.createStaffReply({
+      commentId: Number(igInsert.lastInsertRowid),
+      staffId: staffBId,
+      body: "IG 留言回覆",
+    });
+    check(
+      "東榮 IG 留言可喺系統內回覆",
+      igReply.ok &&
+        igReply.comment.source === "instagram" &&
+        igReply.comment.intake_kind === "site_comment" &&
+        igReply.comment.origin_site == null &&
+        igReply.reply.delivery_status === "stub" &&
+        igReply.comment.status === "in_progress",
+      igReply.ok ? `source=${igReply.comment.source}` : igReply.error
+    );
+    const igList = commentsApi.listComments({ source: "instagram", intake: "site_comment" });
+    check(
+      "IG 留言篩選",
+      igReply.ok && igList.some((row) => row.id === igReply.comment.id)
+    );
+    const emptyReply = replies.createStaffReply({
+      commentId: Number(igInsert.lastInsertRowid),
+      staffId: staffBId,
+      body: "   ",
+    });
+    check("空回覆拒絕", !emptyReply.ok);
+    if (igReply.ok) {
+      commentsApi.updateStatus(igReply.comment.id, "done");
+      const afterDone = replies.createStaffReply({
+        commentId: igReply.comment.id,
+        staffId: staffBId,
+        body: "完成後再補一句",
+      });
+      check(
+        "已完成唔會因為回覆重新打開",
+        afterDone.ok && afterDone.comment.status === "done" && afterDone.comment.reply_count === 2
+      );
+    }
 
     const openCounts = appDb
       .prepare(

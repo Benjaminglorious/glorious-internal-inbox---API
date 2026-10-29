@@ -1,9 +1,23 @@
 import { db } from "../db";
-import type { CommentSource, CommentStatus, CommentWithAssignee, StaffPublic } from "../types";
+import type {
+  CommentSource,
+  CommentStatus,
+  CommentStatusFilter,
+  CommentWithAssignee,
+  DeliveryStatus,
+  IntakeKind,
+  OriginFilter,
+  OriginSite,
+  ReplyDirection,
+  StaffPublic,
+} from "../types";
+import { isDeliveryStatus, isIntakeKind, isOriginSite } from "../types";
 
 export interface CommentFilters {
   source?: CommentSource;
-  status?: CommentStatus;
+  status?: CommentStatusFilter;
+  intake?: IntakeKind;
+  origin?: OriginFilter;
   mine?: boolean;
   staffId?: number;
 }
@@ -13,6 +27,8 @@ const PREVIEW_LEN = 80;
 export interface CommentUpdateItem {
   id: number;
   source: CommentSource;
+  intake_kind: IntakeKind;
+  origin_site: OriginSite | null;
   author_name: string;
   preview: string;
   vehicle_ref: string | null;
@@ -25,6 +41,54 @@ export interface CommentUpdates {
   latest_id: number;
   has_more: boolean;
   comments: CommentUpdateItem[];
+}
+
+interface CommentRow extends Omit<CommentWithAssignee, "reply_count"> {
+  reply_count: number | null;
+}
+
+const COMMENT_SELECT = `
+  SELECT c.*,
+         s.display_name AS assignee_name,
+         s.username AS assignee_username,
+         COALESCE(rc.reply_count, 0) AS reply_count,
+         lr.body AS last_reply_body,
+         lr.created_at AS last_reply_at,
+         lr.delivery_status AS last_reply_delivery_status,
+         lr.direction AS last_reply_direction,
+         rs.display_name AS last_reply_staff_name
+  FROM comments c
+  LEFT JOIN staff s ON s.id = c.assignee_staff_id
+  LEFT JOIN (
+    SELECT comment_id, COUNT(*) AS reply_count, MAX(id) AS last_id
+    FROM comment_replies
+    GROUP BY comment_id
+  ) rc ON rc.comment_id = c.id
+  LEFT JOIN comment_replies lr ON lr.id = rc.last_id
+  LEFT JOIN staff rs ON rs.id = lr.staff_id
+`;
+
+function asDelivery(value: unknown): DeliveryStatus | null {
+  return isDeliveryStatus(value) ? value : null;
+}
+
+function asDirection(value: unknown): ReplyDirection | null {
+  if (value === "outbound" || value === "inbound") return value;
+  return null;
+}
+
+function mapComment(row: CommentRow): CommentWithAssignee {
+  return {
+    ...row,
+    intake_kind: isIntakeKind(row.intake_kind) ? row.intake_kind : "site_comment",
+    origin_site: isOriginSite(row.origin_site) ? row.origin_site : null,
+    reply_count: Number(row.reply_count) || 0,
+    last_reply_body: row.last_reply_body ?? null,
+    last_reply_at: row.last_reply_at ?? null,
+    last_reply_staff_name: row.last_reply_staff_name ?? null,
+    last_reply_delivery_status: asDelivery(row.last_reply_delivery_status),
+    last_reply_direction: asDirection(row.last_reply_direction),
+  };
 }
 
 /** 同 listComments() 唔帶篩選時一樣：已登入同事可以見到全部留言。 */
@@ -47,8 +111,8 @@ export function listCommentUpdates(sinceId: number | null, limit = 30): CommentU
     const rows = db
       .prepare(
         `
-        SELECT c.id, c.source, c.author_name, c.body, c.vehicle_ref, c.created_at,
-               c.assignee_staff_id, s.display_name AS assignee_name
+        SELECT c.id, c.source, c.intake_kind, c.origin_site, c.author_name, c.body,
+               c.vehicle_ref, c.created_at, c.assignee_staff_id, s.display_name AS assignee_name
         FROM comments c
         LEFT JOIN staff s ON s.id = c.assignee_staff_id
         WHERE c.id > ?
@@ -59,6 +123,8 @@ export function listCommentUpdates(sinceId: number | null, limit = 30): CommentU
       .all(sinceId, cap + 1) as Array<{
       id: number;
       source: CommentSource;
+      intake_kind: string;
+      origin_site: string | null;
       author_name: string;
       body: string;
       vehicle_ref: string | null;
@@ -74,6 +140,8 @@ export function listCommentUpdates(sinceId: number | null, limit = 30): CommentU
       comments: slice.map((row) => ({
         id: row.id,
         source: row.source,
+        intake_kind: isIntakeKind(row.intake_kind) ? row.intake_kind : "site_comment",
+        origin_site: isOriginSite(row.origin_site) ? row.origin_site : null,
         author_name: row.author_name,
         preview: previewText(row.body),
         vehicle_ref: row.vehicle_ref,
@@ -123,9 +191,24 @@ export function listComments(filters: CommentFilters = {}): CommentWithAssignee[
     where.push("c.source = ?");
     params.push(filters.source);
   }
-  if (filters.status) {
+  if (filters.status === "pending") {
+    where.push("c.status IN ('open', 'in_progress')");
+  } else if (filters.status) {
     where.push("c.status = ?");
     params.push(filters.status);
+  }
+  if (filters.intake) {
+    where.push("c.intake_kind = ?");
+    params.push(filters.intake);
+  }
+  if (filters.origin === "direct") {
+    where.push("c.source = 'whatsapp' AND c.origin_site IS NULL AND c.intake_kind = 'whatsapp_click'");
+  } else if (filters.origin) {
+    where.push(`(
+      (c.intake_kind = 'site_comment' AND c.source = ?)
+      OR (c.intake_kind = 'whatsapp_click' AND c.origin_site = ?)
+    )`);
+    params.push(filters.origin, filters.origin);
   }
   if (filters.mine && filters.staffId != null) {
     where.push("c.assignee_staff_id = ?");
@@ -133,40 +216,23 @@ export function listComments(filters: CommentFilters = {}): CommentWithAssignee[
   }
 
   const sql = `
-    SELECT c.*,
-           s.display_name AS assignee_name,
-           s.username AS assignee_username
-    FROM comments c
-    LEFT JOIN staff s ON s.id = c.assignee_staff_id
+    ${COMMENT_SELECT}
     WHERE ${where.join(" AND ")}
     ORDER BY
       CASE c.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,
       c.created_at DESC,
       c.id DESC
   `;
-  return db.prepare(sql).all(...params) as CommentWithAssignee[];
+  return (db.prepare(sql).all(...params) as CommentRow[]).map(mapComment);
 }
 
 export function getComment(id: number): CommentWithAssignee | null {
-  const row = db
-    .prepare(
-      `
-      SELECT c.*,
-             s.display_name AS assignee_name,
-             s.username AS assignee_username
-      FROM comments c
-      LEFT JOIN staff s ON s.id = c.assignee_staff_id
-      WHERE c.id = ?
-    `
-    )
-    .get(id) as CommentWithAssignee | undefined;
-  return row ?? null;
+  const row = db.prepare(`${COMMENT_SELECT} WHERE c.id = ?`).get(id) as CommentRow | undefined;
+  return row ? mapComment(row) : null;
 }
 
 export function updateStatus(id: number, status: CommentStatus): CommentWithAssignee | null {
-  db.prepare(
-    `UPDATE comments SET status = ?, updated_at = datetime('now') WHERE id = ?`
-  ).run(status, id);
+  db.prepare(`UPDATE comments SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(status, id);
   return getComment(id);
 }
 
@@ -175,17 +241,16 @@ export function reassign(id: number, staffId: number | null): CommentWithAssigne
     const staff = db.prepare(`SELECT id FROM staff WHERE id = ? AND active = 1`).get(staffId);
     if (!staff) return null;
   }
-  db.prepare(
-    `UPDATE comments SET assignee_staff_id = ?, updated_at = datetime('now') WHERE id = ?`
-  ).run(staffId, id);
+  db.prepare(`UPDATE comments SET assignee_staff_id = ?, updated_at = datetime('now') WHERE id = ?`).run(
+    staffId,
+    id
+  );
   return getComment(id);
 }
 
 export function listStaff(): StaffPublic[] {
   const rows = db
-    .prepare(
-      `SELECT id, username, display_name, is_admin, active FROM staff ORDER BY id ASC`
-    )
+    .prepare(`SELECT id, username, display_name, is_admin, active FROM staff ORDER BY id ASC`)
     .all() as Array<{
     id: number;
     username: string;

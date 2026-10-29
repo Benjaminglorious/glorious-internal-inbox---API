@@ -11,8 +11,15 @@ import {
   updateStatus,
   findStaffById,
 } from "../services/comments";
+import { createStaffReply, listReplies } from "../services/replies";
 import { addStaffWhatsAppLine, deactivateWhatsAppLine, listWhatsAppLines } from "../services/whatsapp";
-import { isCommentSource, type CommentStatus } from "../types";
+import {
+  isCommentSource,
+  isCommentStatus,
+  isCommentStatusFilter,
+  isIntakeKind,
+  isOriginFilter,
+} from "../types";
 
 export const apiRouter = Router();
 
@@ -69,24 +76,61 @@ apiRouter.get("/comments/updates", requireAuth, (req: Request, res: Response) =>
 apiRouter.get("/comments", requireAuth, (req: Request, res: Response) => {
   const sourceRaw = typeof req.query.source === "string" ? req.query.source : undefined;
   const source = sourceRaw && isCommentSource(sourceRaw) ? sourceRaw : undefined;
-  const status = req.query.status as CommentStatus | undefined;
+  const statusRaw = typeof req.query.status === "string" ? req.query.status : undefined;
+  const status = statusRaw && isCommentStatusFilter(statusRaw) ? statusRaw : undefined;
+  const intakeRaw = typeof req.query.intake === "string" ? req.query.intake : undefined;
+  const intake = intakeRaw && isIntakeKind(intakeRaw) ? intakeRaw : undefined;
+  const originRaw = typeof req.query.origin === "string" ? req.query.origin : undefined;
+  const origin = originRaw && isOriginFilter(originRaw) ? originRaw : undefined;
   const mine = req.query.mine === "1" || req.query.mine === "true";
-  const validStatuses = ["open", "in_progress", "done"];
   if (sourceRaw && !source) {
     res.status(400).json({ error: "無效來源" });
     return;
   }
-  if (status && !validStatuses.includes(status)) {
+  if (statusRaw && !status) {
     res.status(400).json({ error: "無效狀態" });
+    return;
+  }
+  if (intakeRaw && !intake) {
+    res.status(400).json({ error: "無效形式" });
+    return;
+  }
+  if (originRaw && !origin) {
+    res.status(400).json({ error: "無效相關網站" });
     return;
   }
   const rows = listComments({
     source,
     status,
+    intake,
+    origin,
     mine,
     staffId: req.session.staffId,
   });
   res.json({ comments: rows });
+});
+
+apiRouter.get("/comments/:id/replies", requireAuth, (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!getComment(id)) {
+    res.status(404).json({ error: "找不到留言" });
+    return;
+  }
+  res.json({ replies: listReplies(id) });
+});
+
+apiRouter.post("/comments/:id/replies", requireAuth, (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const result = createStaffReply({
+    commentId: id,
+    staffId: req.session.staffId!,
+    body: typeof req.body?.body === "string" ? req.body.body : "",
+  });
+  if (!result.ok) {
+    res.status(result.status).json({ error: result.error });
+    return;
+  }
+  res.status(201).json({ reply: result.reply, comment: result.comment });
 });
 
 apiRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
@@ -96,13 +140,13 @@ apiRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
     res.status(404).json({ error: "找不到留言" });
     return;
   }
-  res.json({ comment: row });
+  res.json({ comment: row, replies: listReplies(id) });
 });
 
 apiRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  const status = String(req.body?.status || "") as CommentStatus;
-  if (!["open", "in_progress", "done"].includes(status)) {
+  const status = req.body?.status;
+  if (!isCommentStatus(status)) {
     res.status(400).json({ error: "狀態必須係 open / in_progress / done" });
     return;
   }

@@ -79,6 +79,8 @@ whatsappWebhookRouter.post("/", (req: Request, res: Response) => {
       assignee_staff_id: routed.assigneeStaffId,
       created: routed.created,
       line_id: routed.line?.id ?? null,
+      intake_kind: routed.comment.intake_kind,
+      origin_site: routed.comment.origin_site,
     };
   });
   const anyOk = results.some((result) => result.ok);

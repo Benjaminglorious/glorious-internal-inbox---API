@@ -136,7 +136,7 @@ input, select {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
-table { width: 100%; border-collapse: collapse; min-width: 860px; }
+table { width: 100%; border-collapse: collapse; min-width: 980px; }
 th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 th { font-size: 13px; color: var(--muted); font-weight: 700; background: #f8fafc; }
 td.preview { max-width: 320px; }
@@ -154,6 +154,12 @@ td.preview { max-width: 320px; }
 .badge.source-glorious_web { background: #dcfce7; color: #166534; }
 .badge.source-facebook { background: #e0e7ff; color: #3730a3; }
 .badge.source-whatsapp { background: #d1fae5; color: #065f46; }
+.badge.source-instagram { background: #fce7f3; color: #9d174d; }
+.badge.intake-site_comment { background: #e0f2fe; color: #075985; }
+.badge.intake-whatsapp_click { background: #d1fae5; color: #065f46; }
+.badge.origin { background: #fef3c7; color: #92400e; }
+.badge.origin.direct { background: #f1f5f9; color: #334155; }
+.badge-stack { display: flex; flex-wrap: wrap; gap: 4px; max-width: 220px; }
 .badge.kind-company { background: #dbeafe; color: #1e40af; }
 .badge.kind-staff { background: #ecfdf3; color: #166534; }
 .badge.status-open { background: #ffedd5; color: var(--open); }
@@ -186,6 +192,26 @@ td.preview { max-width: 320px; }
 .actions { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 16px; }
 .actions h2 { font-size: 1rem; margin: 16px 0 8px; }
 .inline-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.actions-cell { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.reply-preview { margin-top: 6px; font-size: 12px; line-height: 1.45; color: var(--brand); }
+.reply-preview.none { color: var(--muted); }
+.thread, .reply-panel { margin-top: 20px; }
+.thread h2, .reply-panel h2, .secondary-box h2 { font-size: 1rem; margin: 0 0 10px; }
+.bubble { border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+.bubble.customer { background: #f8fafc; border: 1px solid var(--line); }
+.bubble.staff { background: #ecfdf3; border: 1px solid #bbf7d0; }
+.bubble .who { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.bubble-body { white-space: pre-wrap; line-height: 1.6; }
+.reply-form { display: grid; gap: 10px; }
+.reply-form textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+.secondary-box { margin-top: 20px; padding-top: 12px; border-top: 1px dashed var(--line); }
 
 .inbox-notify-ask {
   display: flex;

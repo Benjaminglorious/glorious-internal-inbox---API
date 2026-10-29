@@ -3,6 +3,15 @@ import { requireAuth } from "../auth/middleware";
 import { verifyPassword } from "../auth/passwords";
 import { companyWhatsAppChatUrl, whatsAppSendUrl } from "../config";
 import {
+  DELIVERY_LABEL,
+  ORIGIN_LABEL,
+  SOURCE_LABEL,
+  STATUS_LABEL,
+  deliveryDetail,
+  intakeBadgeText,
+  intakeSummary,
+} from "../labels";
+import {
   getCommentWithCursor,
   listCommentsWithCursor,
   listStaff,
@@ -10,6 +19,7 @@ import {
   updateStatus,
   reassign,
 } from "../services/comments";
+import { createStaffReply, listReplies } from "../services/replies";
 import {
   activeStaffLinesByStaffId,
   addStaffWhatsAppLine,
@@ -19,26 +29,19 @@ import {
 } from "../services/whatsapp";
 import {
   COMMENT_SOURCES,
+  ORIGIN_FILTERS,
   isCommentSource,
-  type CommentStatus,
+  isCommentStatus,
+  isCommentStatusFilter,
+  isIntakeKind,
+  isOriginFilter,
   type CommentWithAssignee,
+  type IntakeKind,
+  type OriginFilter,
   type WhatsAppLine,
 } from "../types";
 
 export const pagesRouter = Router();
-
-const SOURCE_LABEL: Record<(typeof COMMENT_SOURCES)[number], string> = {
-  "28car": "28car",
-  glorious_web: "東榮官網",
-  facebook: "Facebook",
-  whatsapp: "WhatsApp",
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  open: "未處理",
-  in_progress: "處理中",
-  done: "已完成",
-};
 
 function escapeHtml(s: string): string {
   return s
@@ -54,11 +57,11 @@ function sessionUser(req: Request): { displayName: string; isAdmin?: boolean } {
 }
 
 function whatsAppLinks(
-  c: Pick<CommentWithAssignee, "source" | "vehicle_ref" | "body" | "assignee_staff_id">,
+  c: Pick<CommentWithAssignee, "source" | "vehicle_ref" | "body" | "assignee_staff_id" | "intake_kind" | "origin_site">,
   staffLines: Map<number, WhatsAppLine>
 ): string {
   const ctx = {
-    sourceLabel: SOURCE_LABEL[c.source] || c.source,
+    sourceLabel: intakeSummary(c),
     vehicleRef: c.vehicle_ref,
     body: c.body,
   };
@@ -81,6 +84,32 @@ function requirePageAdmin(req: Request, res: Response): boolean {
     })
   );
   return false;
+}
+
+function renderSourceBadges(c: Pick<CommentWithAssignee, "source" | "intake_kind" | "origin_site">): string {
+  const origin =
+    c.intake_kind === "whatsapp_click"
+      ? c.origin_site
+        ? `<span class="badge origin">來自${escapeHtml(ORIGIN_LABEL[c.origin_site])}</span>`
+        : `<span class="badge origin direct">直接 WhatsApp</span>`
+      : "";
+  return `<div class="badge-stack">
+    <span class="badge source-${c.source}">${escapeHtml(SOURCE_LABEL[c.source] || c.source)}</span>
+    <span class="badge intake-${c.intake_kind}">${escapeHtml(intakeBadgeText(c.intake_kind, c.source))}</span>
+    ${origin}
+  </div>`;
+}
+
+function replyPreview(c: CommentWithAssignee): string {
+  if (!c.reply_count || !c.last_reply_body) {
+    return `<div class="reply-preview none">未有同事回覆</div>`;
+  }
+  const who = c.last_reply_staff_name || "同事";
+  const delivery = c.last_reply_delivery_status ? DELIVERY_LABEL[c.last_reply_delivery_status] : "";
+  const flat = c.last_reply_body.replace(/\s+/g, " ").trim();
+  const text = flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
+  const count = c.reply_count > 1 ? `（${c.reply_count}）` : "";
+  return `<div class="reply-preview">最新回覆${count} · ${escapeHtml(who)} · ${escapeHtml(delivery)}：${escapeHtml(text)}</div>`;
 }
 
 function layout(opts: {
@@ -159,7 +188,7 @@ pagesRouter.get("/login", (req: Request, res: Response) => {
   const body = `
     <section class="login-card">
       <h1>東榮汽車 · 內部留言系統</h1>
-      <p class="muted">僅供公司同事登入處理 28car／官網／Facebook／WhatsApp 留言</p>
+      <p class="muted">僅供公司同事登入。可以喺系統內回覆 28car、東榮官網、Facebook、東榮 IG 同公司 WhatsApp。</p>
       ${err ? `<p class="error">${escapeHtml(err)}</p>` : ""}
       <form method="POST" action="/login" class="stack">
         <label>帳號
@@ -199,15 +228,20 @@ pagesRouter.post("/logout", (req: Request, res: Response) => {
 
 pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
   const sourceRaw = typeof req.query.source === "string" ? req.query.source : undefined;
-  const status = (req.query.status as CommentStatus | undefined) || undefined;
+  const statusRaw = typeof req.query.status === "string" ? req.query.status : undefined;
+  const intakeRaw = typeof req.query.intake === "string" ? req.query.intake : undefined;
+  const originRaw = typeof req.query.origin === "string" ? req.query.origin : undefined;
   const mine = req.query.mine === "1";
-  const validStatuses = ["open", "in_progress", "done"];
   const src = sourceRaw && isCommentSource(sourceRaw) ? sourceRaw : undefined;
-  const st = status && validStatuses.includes(status) ? status : undefined;
+  const st = statusRaw && isCommentStatusFilter(statusRaw) ? statusRaw : undefined;
+  const intake: IntakeKind | undefined = intakeRaw && isIntakeKind(intakeRaw) ? intakeRaw : undefined;
+  const origin: OriginFilter | undefined = originRaw && isOriginFilter(originRaw) ? originRaw : undefined;
 
   const { comments, latestId } = listCommentsWithCursor({
     source: src,
     status: st,
+    intake,
+    origin,
     mine,
     staffId: req.session.staffId,
   });
@@ -217,6 +251,8 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     const p = new URLSearchParams();
     if (src) p.set("source", src);
     if (st) p.set("status", st);
+    if (intake) p.set("intake", intake);
+    if (origin) p.set("origin", origin);
     if (mine) p.set("mine", "1");
     for (const [k, v] of Object.entries(extra)) {
       if (v === "") p.delete(k);
@@ -231,13 +267,13 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       const preview = c.body.length > 80 ? c.body.slice(0, 80) + "…" : c.body;
       return `<tr>
         <td><a href="/comments/${c.id}">#${c.id}</a></td>
-        <td><span class="badge source-${c.source}">${SOURCE_LABEL[c.source] || c.source}</span></td>
+        <td>${renderSourceBadges(c)}</td>
         <td>${escapeHtml(c.author_name)}</td>
-        <td class="preview">${escapeHtml(preview)}</td>
+        <td class="preview">${escapeHtml(preview)}${replyPreview(c)}</td>
         <td>${c.vehicle_ref ? escapeHtml(c.vehicle_ref) : "—"}</td>
         <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span></td>
         <td>${c.assignee_name ? escapeHtml(c.assignee_name) : "未派"}</td>
-        <td>${whatsAppLinks(c, staffLines)}</td>
+        <td class="actions-cell"><a class="btn primary" href="/comments/${c.id}#reply">回覆</a>${whatsAppLinks(c, staffLines)}</td>
       </tr>`;
     })
     .join("");
@@ -257,9 +293,26 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
           ).join("")}
         </select>
       </label>
+      <label>形式
+        <select name="intake">
+          <option value="">全部</option>
+          <option value="site_comment" ${intake === "site_comment" ? "selected" : ""}>網站／IG 留言</option>
+          <option value="whatsapp_click" ${intake === "whatsapp_click" ? "selected" : ""}>WhatsApp 聯絡</option>
+        </select>
+      </label>
+      <label>相關網站
+        <select name="origin">
+          <option value="">全部</option>
+          ${ORIGIN_FILTERS.map((item) => {
+            const label = item === "direct" ? "直接 WhatsApp" : ORIGIN_LABEL[item];
+            return `<option value="${item}" ${origin === item ? "selected" : ""}>${label}</option>`;
+          }).join("")}
+        </select>
+      </label>
       <label>狀態
         <select name="status">
           <option value="">全部</option>
+          <option value="pending" ${st === "pending" ? "selected" : ""}>擱置／未處理</option>
           <option value="open" ${st === "open" ? "selected" : ""}>未處理</option>
           <option value="in_progress" ${st === "in_progress" ? "selected" : ""}>處理中</option>
           <option value="done" ${st === "done" ? "selected" : ""}>已完成</option>
@@ -275,7 +328,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       <table>
         <thead>
           <tr>
-            <th>ID</th><th>來源</th><th>留言者</th><th>內容</th><th>車輛</th><th>狀態</th><th>負責人</th><th>WhatsApp</th>
+            <th>ID</th><th>來源／形式</th><th>留言者</th><th>內容</th><th>車輛</th><th>狀態</th><th>負責人</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -283,8 +336,11 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
         </tbody>
       </table>
     </div>
+    <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。回覆請入去留言，WhatsApp 按鈕只係次要。</p>
     <p class="muted small">快捷：<a href="${qs({ mine: "1" })}">我的留言</a> ·
-      <a href="${qs({ status: "open", mine: "" })}">全部未處理</a></p>
+      <a href="${qs({ status: "pending", mine: "" })}">擱置／未處理</a> ·
+      <a href="${qs({ status: "open", mine: "" })}">只睇未處理</a> ·
+      <a href="${qs({ intake: "whatsapp_click", origin: "instagram", status: "" })}">來自東榮 IG 的 WhatsApp</a></p>
   `;
 
   res.send(
@@ -313,6 +369,9 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   }
   const staff = listStaff().filter((s) => s.active);
   const staffLines = activeStaffLinesByStaffId();
+  const replies = listReplies(c.id);
+  const error = typeof req.query.error === "string" ? req.query.error.slice(0, 200) : "";
+  const sent = req.query.sent === "1";
   const options = staff
     .map(
       (s) =>
@@ -321,18 +380,34 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         )} (${escapeHtml(s.username)})</option>`
     )
     .join("");
+  const originText =
+    c.intake_kind === "whatsapp_click"
+      ? c.origin_site
+        ? `來自${ORIGIN_LABEL[c.origin_site]}`
+        : "直接 WhatsApp（冇經網站或 IG）"
+      : "—";
+  const thread = replies
+    .map((reply) => {
+      const who = reply.staff_name || "同事";
+      return `<article class="bubble staff">
+        <div class="who">同事 · ${escapeHtml(who)} · ${escapeHtml(reply.created_at)} · ${escapeHtml(deliveryDetail(reply.delivery_status, c.source))}</div>
+        <div class="bubble-body">${escapeHtml(reply.body)}</div>
+      </article>`;
+    })
+    .join("");
 
   const body = `
     <p><a href="/">← 返回留言箱</a></p>
     <article class="detail">
       <div class="page-head">
         <h1>留言 #${c.id}</h1>
-        <span class="badge source-${c.source}">${SOURCE_LABEL[c.source]}</span>
+        ${renderSourceBadges(c)}
         <span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span>
-        ${whatsAppLinks(c, staffLines)}
       </div>
-      <p class="muted small">WhatsApp 按鈕開新分頁去公司總機 click-to-chat（可預填來源、車輛同留言摘要）。若負責人已綁定個人號碼，會另外顯示同事 WhatsApp。真實 Meta／Glorious 連接尚未啟用。</p>
+      <p class="muted small">主要喺下面回覆。回覆會留喺呢條對話，並標為示範待發送（尚未連接 Meta、Glorious、28car、官網、Facebook 或 Instagram）。如果原本係未處理，會改做處理中，並且繼續出現喺「擱置／未處理」。</p>
       <dl class="meta">
+        <dt>形式</dt><dd>${escapeHtml(intakeBadgeText(c.intake_kind, c.source))}</dd>
+        <dt>相關網站</dt><dd>${escapeHtml(originText)}</dd>
         <dt>留言者</dt><dd>${escapeHtml(c.author_name)}</dd>
         <dt>外部 ID</dt><dd><code>${escapeHtml(c.external_id)}</code></dd>
         <dt>車輛</dt><dd>${c.vehicle_ref ? escapeHtml(c.vehicle_ref) : "—"}</dd>
@@ -340,7 +415,33 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         <dt>建立</dt><dd>${escapeHtml(c.created_at)}</dd>
         <dt>更新</dt><dd>${escapeHtml(c.updated_at)}</dd>
       </dl>
-      <div class="body-box">${escapeHtml(c.body)}</div>
+
+      <section class="thread" id="thread">
+        <h2>對話</h2>
+        <article class="bubble customer">
+          <div class="who">客戶 · ${escapeHtml(c.author_name)} · ${escapeHtml(c.created_at)}</div>
+          <div class="bubble-body">${escapeHtml(c.body)}</div>
+        </article>
+        ${thread || `<p class="muted small">未有同事回覆。</p>`}
+      </section>
+
+      <section class="reply-panel" id="reply">
+        <h2>在系統內回覆</h2>
+        ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
+        ${sent ? `<p class="notice">已儲存回覆，並標為示範待發送。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。</p>` : ""}
+        <form method="POST" action="/comments/${c.id}/replies" class="reply-form">
+          <label>回覆內容
+            <textarea name="body" required maxlength="4000" rows="5" placeholder="輸入回覆。客戶唔使你開 WhatsApp 網頁。"></textarea>
+          </label>
+          <button type="submit" class="btn primary">發送回覆</button>
+        </form>
+      </section>
+
+      <section class="secondary-box">
+        <h2>次要：開 WhatsApp 網頁</h2>
+        <p class="muted small">如果要喺 WhatsApp 網頁睇對話，可以開新分頁。主要回覆請用上面個表格。真實 Meta／Glorious 連接尚未啟用，呢度唔會代你發送。</p>
+        ${whatsAppLinks(c, staffLines)}
+      </section>
 
       <section class="actions">
         <h2>更新狀態</h2>
@@ -350,7 +451,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
             <option value="in_progress" ${c.status === "in_progress" ? "selected" : ""}>處理中</option>
             <option value="done" ${c.status === "done" ? "selected" : ""}>已完成</option>
           </select>
-          <button type="submit" class="btn primary">儲存狀態</button>
+          <button type="submit" class="btn">儲存狀態</button>
         </form>
 
         <h2>改派同事</h2>
@@ -376,10 +477,34 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   );
 });
 
+pagesRouter.post("/comments/:id/replies", requireAuth, (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!getCommentWithCursor(id).comment) {
+    res.status(404).send(
+      layout({
+        title: "找不到",
+        body: `<p>找不到留言 #${escapeHtml(String(req.params.id))}</p><a href="/">返回</a>`,
+        user: sessionUser(req),
+      })
+    );
+    return;
+  }
+  const result = createStaffReply({
+    commentId: id,
+    staffId: req.session.staffId!,
+    body: typeof req.body?.body === "string" ? req.body.body : "",
+  });
+  if (!result.ok) {
+    res.redirect(`/comments/${id}?error=${encodeURIComponent(result.error)}#reply`);
+    return;
+  }
+  res.redirect(`/comments/${id}?sent=1#thread`);
+});
+
 pagesRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  const status = String(req.body?.status || "") as CommentStatus;
-  if (["open", "in_progress", "done"].includes(status)) {
+  const status = req.body?.status;
+  if (isCommentStatus(status)) {
     updateStatus(id, status);
   }
   res.redirect(`/comments/${id}`);
