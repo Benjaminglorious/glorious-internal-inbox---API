@@ -1,4 +1,5 @@
 import "dotenv/config";
+import path from "path";
 import { db, getDbPath } from "./index";
 import { hashPassword } from "../auth/passwords";
 import { autoAssignUnassigned } from "../services/assign";
@@ -10,18 +11,26 @@ import type { CommentSource, IntakeKind, OriginSite } from "../types";
 /** Default demo password — MUST be changed in production. */
 export const DEMO_PASSWORD = "Glorious2026!";
 
-const STAFF: Array<{ username: string; display_name: string; is_admin: number }> = [
-  { username: "tony", display_name: "陳東榮", is_admin: 1 },
-  { username: "wing", display_name: "李詠詩", is_admin: 0 },
-  { username: "kaixin", display_name: "張嘉欣", is_admin: 0 },
-  { username: "ming", display_name: "王明軒", is_admin: 0 },
-  { username: "mei", display_name: "陳美玲", is_admin: 0 },
-  { username: "ho", display_name: "何志豪", is_admin: 0 },
-  { username: "yan", display_name: "林雅雯", is_admin: 0 },
-  { username: "chun", display_name: "黃俊傑", is_admin: 0 },
-  { username: "sze", display_name: "鄭詩敏", is_admin: 0 },
-  { username: "kit", display_name: "吳家傑", is_admin: 0 },
-  { username: "yuki", display_name: "趙雪兒", is_admin: 0 },
+/** 可登入：兩位管理員 + 兩位在職同事。其餘種子同事收藏（active=0），保留列但登入唔到。 */
+export const SEED_STAFF: Array<{
+  username: string;
+  display_name: string;
+  is_admin: number;
+  active: number;
+}> = [
+  { username: "tony", display_name: "Tony Chan", is_admin: 1, active: 1 },
+  { username: "eddie", display_name: "Eddie Lau", is_admin: 1, active: 1 },
+  { username: "wing", display_name: "Wing Cheng", is_admin: 0, active: 1 },
+  { username: "jason", display_name: "Jason Cheng", is_admin: 0, active: 1 },
+  { username: "kaixin", display_name: "張嘉欣", is_admin: 0, active: 0 },
+  { username: "ming", display_name: "王明軒", is_admin: 0, active: 0 },
+  { username: "mei", display_name: "陳美玲", is_admin: 0, active: 0 },
+  { username: "ho", display_name: "何志豪", is_admin: 0, active: 0 },
+  { username: "yan", display_name: "林雅雯", is_admin: 0, active: 0 },
+  { username: "chun", display_name: "黃俊傑", is_admin: 0, active: 0 },
+  { username: "sze", display_name: "鄭詩敏", is_admin: 0, active: 0 },
+  { username: "kit", display_name: "吳家傑", is_admin: 0, active: 0 },
+  { username: "yuki", display_name: "趙雪兒", is_admin: 0, active: 0 },
 ];
 
 interface DemoComment {
@@ -265,7 +274,7 @@ const DEMO_REPLIES: Array<{ source: CommentSource; external_id: string; username
   {
     source: "facebook",
     external_id: "fb-3001",
-    username: "kaixin",
+    username: "jason",
     body: "黑色 Alphard 仲喺度。詳細規格我留喺呢條 Facebook 留言。",
   },
   {
@@ -300,32 +309,40 @@ const DEMO_REPLIES: Array<{ source: CommentSource; external_id: string; username
   },
 ];
 
-function seed(): void {
-  console.log(`資料庫：${getDbPath()}`);
-
+/** 以 username 做 upsert：衝突時更新 display_name、is_admin、active（同密碼）。 */
+export function applySeedStaff(): void {
   const insertStaff = db.prepare(`
     INSERT INTO staff (username, display_name, password_hash, is_admin, active)
-    VALUES (@username, @display_name, @password_hash, @is_admin, 1)
+    VALUES (@username, @display_name, @password_hash, @is_admin, @active)
     ON CONFLICT(username) DO UPDATE SET
       display_name = excluded.display_name,
       password_hash = excluded.password_hash,
       is_admin = excluded.is_admin,
-      active = 1
+      active = excluded.active
   `);
 
   const passwordHash = hashPassword(DEMO_PASSWORD);
   const staffTx = db.transaction(() => {
-    for (const s of STAFF) {
+    for (const s of SEED_STAFF) {
       insertStaff.run({
         username: s.username,
         display_name: s.display_name,
         password_hash: passwordHash,
         is_admin: s.is_admin,
+        active: s.active,
       });
     }
   });
   staffTx();
-  console.log(`已寫入 ${STAFF.length} 位同事（預設密碼：${DEMO_PASSWORD}）`);
+}
+
+export function seed(): void {
+  console.log(`資料庫：${getDbPath()}`);
+  applySeedStaff();
+  const activeCount = SEED_STAFF.filter((s) => s.active === 1).length;
+  console.log(
+    `已寫入 ${SEED_STAFF.length} 位同事（${activeCount} 位可登入，其餘收藏；預設密碼：${DEMO_PASSWORD}）`
+  );
 
   const insertComment = db.prepare(`
     INSERT INTO comments (
@@ -435,4 +452,10 @@ function seed(): void {
   console.log("Seed 完成。");
 }
 
-seed();
+function isDirectRun(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  return path.resolve(entry) === path.resolve(__filename);
+}
+
+if (isDirectRun()) seed();

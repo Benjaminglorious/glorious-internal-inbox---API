@@ -13,6 +13,20 @@ import type {
 } from "../types";
 import { isDeliveryStatus, isIntakeKind, isOriginSite } from "../types";
 
+/** 已登入嘅人。管理員見全部（包括未派）；在職同事只見 assignee 係自己嘅留言。 */
+export interface CommentViewer {
+  staffId: number;
+  isAdmin: boolean;
+}
+
+export function canViewComment(
+  comment: { assignee_staff_id: number | null },
+  viewer: CommentViewer
+): boolean {
+  if (viewer.isAdmin) return true;
+  return comment.assignee_staff_id != null && comment.assignee_staff_id === viewer.staffId;
+}
+
 export interface CommentFilters {
   source?: CommentSource;
   status?: CommentStatusFilter;
@@ -20,6 +34,8 @@ export interface CommentFilters {
   origin?: OriginFilter;
   mine?: boolean;
   staffId?: number;
+  /** 有傳而且唔係管理員時，強制只返回派咗畀該同事嘅留言。 */
+  viewer?: CommentViewer;
 }
 
 const PREVIEW_LEN = 80;
@@ -91,7 +107,7 @@ function mapComment(row: CommentRow): CommentWithAssignee {
   };
 }
 
-/** 同 listComments() 唔帶篩選時一樣：已登入同事可以見到全部留言。 */
+/** 全庫最新留言 id，用嚟做游標。列表同更新內容會再按角色篩走其他人嘅留言。 */
 export function latestCommentId(): number {
   const row = db.prepare(`SELECT COALESCE(MAX(id), 0) AS id FROM comments`).get() as { id: number };
   return Number(row.id) || 0;
@@ -101,13 +117,24 @@ export function latestCommentId(): number {
  * 新留言游標。sinceId 為 null 時只回最新 id，唔把舊留言當成新訊息。
  * MAX(id) 同新留言列表放喺同一個 transaction，避免兩次讀取之間有插入而跳過。
  */
-export function listCommentUpdates(sinceId: number | null, limit = 30): CommentUpdates {
+export function listCommentUpdates(
+  sinceId: number | null,
+  limit = 30,
+  viewer?: CommentViewer
+): CommentUpdates {
   const cap = Math.min(Math.max(Math.floor(limit) || 30, 1), 50);
   const read = db.transaction((): CommentUpdates => {
     const latest_id = latestCommentId();
     if (sinceId == null) {
       return { latest_id, comments: [], has_more: false };
     }
+    const where = ["c.id > ?"];
+    const params: unknown[] = [sinceId];
+    if (viewer && !viewer.isAdmin) {
+      where.push("c.assignee_staff_id = ?");
+      params.push(viewer.staffId);
+    }
+    params.push(cap + 1);
     const rows = db
       .prepare(
         `
@@ -115,12 +142,12 @@ export function listCommentUpdates(sinceId: number | null, limit = 30): CommentU
                c.vehicle_ref, c.created_at, c.assignee_staff_id, s.display_name AS assignee_name
         FROM comments c
         LEFT JOIN staff s ON s.id = c.assignee_staff_id
-        WHERE c.id > ?
+        WHERE ${where.join(" AND ")}
         ORDER BY c.id ASC
         LIMIT ?
       `
       )
-      .all(sinceId, cap + 1) as Array<{
+      .all(...params) as Array<{
       id: number;
       source: CommentSource;
       intake_kind: string;
@@ -210,7 +237,10 @@ export function listComments(filters: CommentFilters = {}): CommentWithAssignee[
     )`);
     params.push(filters.origin, filters.origin);
   }
-  if (filters.mine && filters.staffId != null) {
+  if (filters.viewer && !filters.viewer.isAdmin) {
+    where.push("c.assignee_staff_id = ?");
+    params.push(filters.viewer.staffId);
+  } else if (filters.mine && filters.staffId != null) {
     where.push("c.assignee_staff_id = ?");
     params.push(filters.staffId);
   }

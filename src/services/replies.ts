@@ -2,7 +2,7 @@ import { queueOutboundReply } from "../adapters";
 import { db } from "../db";
 import type { CommentReply, CommentWithAssignee, DeliveryStatus } from "../types";
 import { isDeliveryStatus } from "../types";
-import { findStaffById, getComment } from "./comments";
+import { canViewComment, findStaffById, getComment, type CommentViewer } from "./comments";
 
 const MAX_BODY = 4000;
 
@@ -71,7 +71,13 @@ function getReply(id: number): CommentReply | null {
  * 同事喺收件箱回覆。內容寫入 comment_replies，出站只經 stub（delivery_status 通常係 stub）。
  * 原本係未處理（open）會改做處理中，唔會標已完成，所以仍然出現喺擱置／未處理。
  */
-export function createStaffReply(input: { commentId: number; staffId: number; body: string }): ReplyMutation {
+export function createStaffReply(input: {
+  commentId: number;
+  staffId: number;
+  body: string;
+  /** 有傳就按可見範圍拒絕。Seed 等內部寫入唔傳，所以示範回覆可以跨負責人。 */
+  viewer?: CommentViewer;
+}): ReplyMutation {
   if (!Number.isInteger(input.commentId)) return { ok: false, status: 400, error: "無效留言 id" };
   if (!Number.isInteger(input.staffId)) return { ok: false, status: 400, error: "無效同事 id" };
 
@@ -80,7 +86,9 @@ export function createStaffReply(input: { commentId: number; staffId: number; bo
   if (body.length > MAX_BODY) return { ok: false, status: 400, error: `回覆不可長過 ${MAX_BODY} 字` };
 
   const comment = getComment(input.commentId);
-  if (!comment) return { ok: false, status: 404, error: "找不到留言" };
+  if (!comment || (input.viewer && !canViewComment(comment, input.viewer))) {
+    return { ok: false, status: 404, error: "找不到留言" };
+  }
 
   const staff = findStaffById(input.staffId);
   if (!staff || !staff.active) return { ok: false, status: 403, error: "找不到這位在職同事" };

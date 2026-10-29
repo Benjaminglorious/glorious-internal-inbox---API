@@ -1,6 +1,7 @@
 import { sendNotification, setVapidDetails, WebPushError } from "web-push";
 import { db } from "../db";
 import { intakeSummary } from "../labels";
+import { canViewComment } from "./comments";
 
 /** 新寫入嘅留言。改狀態、改派、同事回覆、附加舊對話都唔經呢度。 */
 export interface NewCommentNotice {
@@ -17,6 +18,8 @@ interface StoredSubscription {
   endpoint: string;
   p256dh: string;
   auth: string;
+  is_admin: number;
+  active: number;
 }
 
 const MAX_PER_STAFF = 10;
@@ -161,11 +164,37 @@ function subscriptionCount(): number {
 function listSubscriptions(): StoredSubscription[] {
   return db
     .prepare(
-      `SELECT staff_id, endpoint, p256dh, auth
-       FROM push_subscriptions
-       ORDER BY id ASC`
+      `SELECT p.staff_id, p.endpoint, p.p256dh, p.auth, s.is_admin, s.active
+       FROM push_subscriptions p
+       JOIN staff s ON s.id = p.staff_id
+       WHERE s.active = 1
+       ORDER BY p.id ASC`
     )
     .all() as StoredSubscription[];
+}
+
+/** 推送同列表用同一可見範圍。收藏（active=0）唔收；未派只係管理員。 */
+export function notificationVisibleTo(
+  staff: { id: number; is_admin: number; active: number },
+  assigneeStaffId: number | null
+): boolean {
+  if (!staff.active) return false;
+  return canViewComment(
+    { assignee_staff_id: assigneeStaffId },
+    { staffId: staff.id, isAdmin: !!staff.is_admin }
+  );
+}
+
+function assigneeByCommentId(ids: number[]): Map<number, number | null> {
+  const unique = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+  const found = new Map<number, number | null>();
+  if (!unique.length) return found;
+  const placeholders = unique.map(() => "?").join(", ");
+  const rows = db
+    .prepare(`SELECT id, assignee_staff_id FROM comments WHERE id IN (${placeholders})`)
+    .all(...unique) as Array<{ id: number; assignee_staff_id: number | null }>;
+  for (const row of rows) found.set(row.id, row.assignee_staff_id);
+  return found;
 }
 
 function previewText(body: string): string {
@@ -200,35 +229,62 @@ function safeError(err: unknown): string {
   return status ? `status=${status} ${brief}` : brief;
 }
 
+async function sendOne(sub: StoredSubscription, payload: string): Promise<boolean> {
+  try {
+    await sendNotification(
+      { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+      payload,
+      { TTL: PUSH_TTL_SECONDS, urgency: "high", topic: "glorious-inbox" }
+    );
+    return true;
+  } catch (err) {
+    const status = err instanceof WebPushError ? err.statusCode : 0;
+    if (status === 404 || status === 410) {
+      db.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?`).run(sub.endpoint);
+    }
+    console.error(`[push] 送唔到 staff=${sub.staff_id} ${safeError(err)}`);
+    return false;
+  }
+}
+
 async function deliver(comments: NewCommentNotice[]): Promise<void> {
   if (!comments.length || !isPushConfigured()) return;
   const subs = listSubscriptions();
   if (!subs.length) return;
-  const payload = buildPayload(comments);
-  const ids = comments.map((comment) => comment.id).join(",");
-  console.log(`[push] 新留言 #${ids} → 送 ${subs.length} 個訂閱`);
+  const assignees = assigneeByCommentId(comments.map((comment) => comment.id));
+  const byStaff = new Map<number, StoredSubscription[]>();
+  for (const sub of subs) {
+    const list = byStaff.get(sub.staff_id) ?? [];
+    list.push(sub);
+    byStaff.set(sub.staff_id, list);
+  }
+
   let sent = 0;
   let failed = 0;
-  await Promise.all(
-    subs.map(async (sub) => {
-      try {
-        await sendNotification(
-          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-          payload,
-          { TTL: PUSH_TTL_SECONDS, urgency: "high", topic: "glorious-inbox" }
-        );
-        sent += 1;
-      } catch (err) {
-        failed += 1;
-        const status = err instanceof WebPushError ? err.statusCode : 0;
-        if (status === 404 || status === 410) {
-          db.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?`).run(sub.endpoint);
-        }
-        console.error(`[push] 送唔到 staff=${sub.staff_id} ${safeError(err)}`);
-      }
-    })
-  );
-  console.log(`[push] 已送出 ${sent}，失敗 ${failed}`);
+  const jobs: Promise<void>[] = [];
+  for (const [staffId, staffSubs] of byStaff) {
+    const sample = staffSubs[0];
+    const visible = comments.filter((comment) =>
+      notificationVisibleTo(
+        { id: staffId, is_admin: sample.is_admin, active: sample.active },
+        assignees.get(comment.id) ?? null
+      )
+    );
+    if (!visible.length) continue;
+    const payload = buildPayload(visible);
+    const ids = visible.map((comment) => comment.id).join(",");
+    console.log(`[push] 新留言 #${ids} → staff=${staffId} 訂閱 ${staffSubs.length}`);
+    for (const sub of staffSubs) {
+      jobs.push(
+        sendOne(sub, payload).then((ok) => {
+          if (ok) sent += 1;
+          else failed += 1;
+        })
+      );
+    }
+  }
+  await Promise.all(jobs);
+  if (jobs.length) console.log(`[push] 已送出 ${sent}，失敗 ${failed}`);
 }
 
 function flush(): void {
@@ -243,7 +299,8 @@ function flush(): void {
 }
 
 /**
- * 新留言入庫之後呼叫。會稍為合併同一輪插入，再推送俾所有已訂閱同事。
+ * 新留言入庫之後呼叫。會稍為合併同一輪插入，再按可見範圍推送：
+ * 管理員收到全部（包括未派）；在職同事只收到派咗畀自己嘅。收藏同事唔推。
  * 未設定 VAPID 或未有訂閱時立即返回，唔會拖慢 webhook／seed。
  * 日後 adapter 寫入新留言都要呼叫呢度。
  */
