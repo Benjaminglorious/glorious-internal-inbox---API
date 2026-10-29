@@ -37,7 +37,12 @@ authRouter.post("/logout", (req: Request, res: Response) => {
       res.status(500).json({ error: "登出失敗" });
       return;
     }
-    res.clearCookie("connect.sid");
+    res.clearCookie("connect.sid", {
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+    });
     res.json({ ok: true });
   });
 });
