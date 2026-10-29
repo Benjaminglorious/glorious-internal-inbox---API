@@ -1,8 +1,9 @@
 import { Router, Request, Response } from "express";
-import { requireAdmin, requireAuth } from "../auth/middleware";
+import { requireAdmin, requireAuth, sessionViewer } from "../auth/middleware";
 import { companyWhatsAppUrl } from "../config";
 import { isPushConfigured, removePushSubscription, savePushSubscription, vapidPublicKey } from "../services/push";
 import {
+  canViewComment,
   getComment,
   listCommentUpdates,
   listComments,
@@ -68,7 +69,7 @@ apiRouter.get("/comments/updates", requireAuth, (req: Request, res: Response) =>
       return;
     }
   }
-  const updates = listCommentUpdates(sinceId);
+  const updates = listCommentUpdates(sinceId, 30, sessionViewer(req));
   res.set("Cache-Control", "no-store");
   res.json(updates);
 });
@@ -106,13 +107,20 @@ apiRouter.get("/comments", requireAuth, (req: Request, res: Response) => {
     origin,
     mine,
     staffId: req.session.staffId,
+    viewer: sessionViewer(req),
   });
   res.json({ comments: rows });
 });
 
+function visibleComment(req: Request, id: number) {
+  const comment = getComment(id);
+  if (!comment || !canViewComment(comment, sessionViewer(req))) return null;
+  return comment;
+}
+
 apiRouter.get("/comments/:id/replies", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  if (!getComment(id)) {
+  if (!visibleComment(req, id)) {
     res.status(404).json({ error: "找不到留言" });
     return;
   }
@@ -121,10 +129,12 @@ apiRouter.get("/comments/:id/replies", requireAuth, (req: Request, res: Response
 
 apiRouter.post("/comments/:id/replies", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
+  const viewer = sessionViewer(req);
   const result = createStaffReply({
     commentId: id,
     staffId: req.session.staffId!,
     body: typeof req.body?.body === "string" ? req.body.body : "",
+    viewer,
   });
   if (!result.ok) {
     res.status(result.status).json({ error: result.error });
@@ -135,7 +145,7 @@ apiRouter.post("/comments/:id/replies", requireAuth, (req: Request, res: Respons
 
 apiRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  const row = getComment(id);
+  const row = visibleComment(req, id);
   if (!row) {
     res.status(404).json({ error: "找不到留言" });
     return;
@@ -150,7 +160,7 @@ apiRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Response
     res.status(400).json({ error: "狀態必須係 open / in_progress / done" });
     return;
   }
-  if (!getComment(id)) {
+  if (!visibleComment(req, id)) {
     res.status(404).json({ error: "找不到留言" });
     return;
   }
@@ -158,7 +168,7 @@ apiRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Response
   res.json({ comment: updated });
 });
 
-apiRouter.post("/comments/:id/assign", requireAuth, (req: Request, res: Response) => {
+apiRouter.post("/comments/:id/assign", requireAdmin, (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const staffIdRaw = req.body?.staff_id;
   const staffId =

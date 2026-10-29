@@ -24,7 +24,7 @@
 ```bash
 cp .env.example .env   # 改 SESSION_SECRET，以及 WEBHOOK_VERIFY_TOKEN（要用 webhook 先至需要）
 npm install
-npm run seed           # 寫入 11 位同事 + 示範留言（含 IG、WhatsApp 來源同回覆）+ 公司 WhatsApp 總機
+npm run seed           # 寫入 13 位同事（4 位可登入，其餘收藏）+ 示範留言（含 IG、WhatsApp 來源同回覆）+ 公司 WhatsApp 總機
 npm start              # http://localhost:3001
 ```
 
@@ -59,18 +59,31 @@ Glorious2026!
 
 | 姓名 | 帳號 | 角色 |
 |------|------|------|
-| 陳東榮 | `tony` | 管理員 |
-| 李詠詩 | `wing` | 同事 |
-| 張嘉欣 | `kaixin` | 同事 |
+| Tony Chan | `tony` | 管理員 |
+| Eddie Lau | `eddie` | 管理員 |
+| Wing Cheng | `wing` | 同事 |
+| Jason Cheng | `jason` | 同事 |
 
-其餘帳號見 seed：`ming` `mei` `ho` `yan` `chun` `sze` `kit` `yuki`。
+收藏、而家登入唔到（`active=0`，列仍然保留）：`kaixin` `ming` `mei` `ho` `yan` `chun` `sze` `kit` `yuki`。
+
+## 權限
+
+| 角色 | 登入 | 睇留言 | 回覆／改狀態 | 改派 |
+|------|------|--------|----------------|------|
+| 管理員（`tony`、`eddie`） | 可以 | 全部，包括未派 | 任何一則 | 可以 |
+| 在職同事（`wing`、`jason`） | 可以 | 只係 `assignee_staff_id` 等於自己 | 只係自己負責嗰啲 | 唔可以（403） |
+| 收藏（`active=0`） | 唔可以 | — | — | — |
+
+未派嘅留言只係管理員睇到。網頁（`/`、`/comments/:id`、回覆同狀態表單）同 JSON API（列表、詳情、回覆、改狀態、`/api/comments/updates`）用同一套規則。在職同事唔可以靠輪詢或者推送睇到其他人嘅留言內容。
+
+煙霧測試：`npm run demo:staff-visibility`
 
 ## 功能
 
 - 登入／登出（session cookie + bcrypt 密碼雜湊）
 - 留言列表：按來源、形式（網站／IG 留言 或 WhatsApp 聯絡）、相關網站、狀態、「只睇我嘅」篩選
 - 分得清客戶係喺網站／IG 留低，定係撳咗 WhatsApp（或 IG 簡介連結）先至用 WhatsApp 聯絡
-- 留言詳情：喺系統內回覆（對話會出現喺擱置／未處理）、改狀態（未處理／處理中／已完成）、改派同事
+- 留言詳情：喺系統內回覆（對話會出現喺擱置／未處理）、改狀態（未處理／處理中／已完成）。管理員可以改派；在職同事唔可以
 - 公司 WhatsApp click-to-chat 仍然可以開新分頁，但只係次要；主要路徑係收件箱回覆
 - 新留言提示：留言箱同留言詳情打開期間會偵測新留言（28car、官網、Facebook、東榮 IG、WhatsApp 都計），頁面顯示「有新留言」，分頁標題變成 `(3) 內部留言箱`；可選桌面通知
 - 可安裝 PWA：加到手機主畫面。設定 VAPID 之後，新留言可以用 Web Push 送到已安裝嘅程式（分頁未開喺前面都得，受瀏覽器同 iOS 限制）
@@ -89,7 +102,7 @@ Glorious2026!
 - 對話：`GET /api/comments/:id/replies`、`POST /api/comments/:id/replies` `{ "body" }`
 - Web Push：`GET /api/push/config`、`POST /api/push/subscribe`、`POST /api/push/unsubscribe`（要登入）
 - 改狀態：`POST /api/comments/:id/status`
-- 改派：`POST /api/comments/:id/assign`
+- 改派（只限管理員）：`POST /api/comments/:id/assign`
 - 同事：`GET /api/staff`
 - WhatsApp 線路（管理員）：`GET /api/whatsapp-lines`、`POST /api/whatsapp-lines`、`POST /api/whatsapp-lines/:id/deactivate`
 - 入站 webhook：`POST /api/webhooks/whatsapp`（WhatsApp，稍後先駁真實 API）
@@ -110,7 +123,7 @@ Glorious2026!
 
 ## 新留言提示
 
-留言箱（`/`）同留言詳情（`/comments/:id`）打開期間，頁面會打 `GET /api/comments/updates`（打開後大約 1.5 秒先查一次，之後每 20 秒）。游標係頁面渲染時嘅最新留言 id；之後先寫入資料庫嘅留言先算新。來源包括 28car、東榮官網、Facebook、東榮 IG、WhatsApp。提示文字會寫明係網站留言、IG 留言，定係來自邊個網站嘅 WhatsApp。範圍跟現有登入規則：已登入同事可見全部留言，所以提示都係呢個範圍，唔係淨係派咗畀自己嘅。
+留言箱（`/`）同留言詳情（`/comments/:id`）打開期間，頁面會打 `GET /api/comments/updates`（打開後大約 1.5 秒先查一次，之後每 20 秒）。游標係頁面渲染時嘅最新留言 id；之後先寫入資料庫嘅留言先算新。來源包括 28car、東榮官網、Facebook、東榮 IG、WhatsApp。提示文字會寫明係網站留言、IG 留言，定係來自邊個網站嘅 WhatsApp。範圍跟登入角色：管理員會見到全部新留言（包括未派）；在職同事只會見到派咗畀自己嘅。其他人嘅留言內容唔會出現喺提示。
 
 未連接真實 WhatsApp／Meta 入站都唔影響呢個提示。Seed、webhook stub，或者任何已經入咗 `comments` 表嘅留言，都會出提示。
 
@@ -135,7 +148,7 @@ Glorious2026!
       "vehicle_ref": null,
       "created_at": "2026-10-27 09:00:00",
       "assignee_staff_id": 2,
-      "assignee_name": "李詠詩"
+      "assignee_name": "Wing Cheng"
     }
   ]
 }
@@ -177,7 +190,7 @@ Glorious2026!
 | 已安裝、已允許通知、已設定 VAPID，程式未開喺前面 | 下次打開先見 | 有（Web Push） |
 | 未設定 VAPID | 開住嘅頁照常 | 關閉程式之後冇推送 |
 
-推送對象同頁內提示一樣：所有已登入並訂閱嘅同事都會收到，唔係淨係負責人。來源包括 28car、官網、Facebook、東榮 IG、WhatsApp。同事回覆唔會推送。
+推送對象同頁內提示一樣：已訂閱嘅管理員收到全部新留言（包括未派）；在職同事只收到派咗畀自己嘅。收藏同事唔會收到。來源包括 28car、官網、Facebook、東榮 IG、WhatsApp。同事回覆唔會推送。
 
 ### 點樣觸發一則推送
 
@@ -289,7 +302,7 @@ Instagram 簡介（link in bio）嘅長連結 `l.instagram.com` 展開之後係�
     "id": 1,
     "comment_id": 12,
     "staff_id": 2,
-    "staff_name": "李詠詩",
+    "staff_name": "Wing Cheng",
     "direction": "outbound",
     "body": "星期六可以嚟葵涌陳列室睇。",
     "delivery_status": "stub",
@@ -450,7 +463,7 @@ Verify token = `WEBHOOK_VERIFY_TOKEN`。
 
 SQLite（`better-sqlite3`），檔案喺 `data/inbox.db`（已加入 `.gitignore`）。
 
-派單規則（seed／未指派留言／公司 WhatsApp 總機）：**未完成（open + in_progress）最少嘅同事優先，同數則 staff id 較細者**。
+派單規則（seed／未指派留言／公司 WhatsApp 總機）：**未完成（open + in_progress）最少、而且 `active=1` 嘅同事優先，同數則 staff id 較細者**。在職管理員同在職同事都會計入。收藏（`active=0`）唔會被派單，亦登入唔到。
 
 如果資料庫係舊版本（未有 `whatsapp`、未有 `instagram`，或者未有 `intake_kind`／`origin_site`），啟動時會自動重建 `comments` 表。原有留言 id、內容同負責人都保留。舊嘅網站留言會標成 `site_comment`；舊嘅 WhatsApp 會標成 `whatsapp_click`，`origin_site` 留空（直接 WhatsApp）。
 

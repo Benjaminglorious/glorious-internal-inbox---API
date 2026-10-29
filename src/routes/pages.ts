@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { requireAuth } from "../auth/middleware";
+import { requireAuth, sessionViewer } from "../auth/middleware";
 import { verifyPassword } from "../auth/passwords";
 import { companyWhatsAppChatUrl, whatsAppSendUrl } from "../config";
 import {
@@ -12,6 +12,8 @@ import {
   intakeSummary,
 } from "../labels";
 import {
+  canViewComment,
+  getComment,
   getCommentWithCursor,
   listCommentsWithCursor,
   listStaff,
@@ -242,13 +244,15 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
   const intake: IntakeKind | undefined = intakeRaw && isIntakeKind(intakeRaw) ? intakeRaw : undefined;
   const origin: OriginFilter | undefined = originRaw && isOriginFilter(originRaw) ? originRaw : undefined;
 
+  const viewer = sessionViewer(req);
   const { comments, latestId } = listCommentsWithCursor({
     source: src,
     status: st,
     intake,
     origin,
-    mine,
+    mine: viewer.isAdmin && mine,
     staffId: req.session.staffId,
+    viewer,
   });
   const staffLines = activeStaffLinesByStaffId();
 
@@ -288,6 +292,11 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       <h1>留言箱</h1>
       <p class="muted">共 ${comments.length} 條</p>
     </div>
+    ${
+      viewer.isAdmin
+        ? ""
+        : `<p class="muted">你只會見到派咗畀你嘅留言。未派同其他同事嘅留言只係管理員睇到。</p>`
+    }
     <form class="filters" method="GET" action="/">
       <label>來源
         <select name="source">
@@ -323,9 +332,13 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
           <option value="done" ${st === "done" ? "selected" : ""}>已完成</option>
         </select>
       </label>
-      <label class="check">
+      ${
+        viewer.isAdmin
+          ? `<label class="check">
         <input type="checkbox" name="mine" value="1" ${mine ? "checked" : ""} /> 只睇我嘅
-      </label>
+      </label>`
+          : ""
+      }
       <button type="submit" class="btn">篩選</button>
       <a class="btn ghost" href="/">重設</a>
     </form>
@@ -342,8 +355,9 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       </table>
     </div>
     <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。回覆請入去留言，WhatsApp 按鈕只係次要。</p>
-    <p class="muted small">快捷：<a href="${qs({ mine: "1" })}">我的留言</a> ·
-      <a href="${qs({ status: "pending", mine: "" })}">擱置／未處理</a> ·
+    <p class="muted small">快捷：${
+      viewer.isAdmin ? `<a href="${qs({ mine: "1" })}">我的留言</a> · ` : ""
+    }<a href="${qs({ status: "pending", mine: "" })}">擱置／未處理</a> ·
       <a href="${qs({ status: "open", mine: "" })}">只睇未處理</a> ·
       <a href="${qs({ intake: "whatsapp_click", origin: "instagram", status: "" })}">來自東榮 IG 的 WhatsApp</a></p>
   `;
@@ -359,17 +373,21 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
   );
 });
 
+function commentNotFound(req: Request, res: Response, id: string): void {
+  res.status(404).send(
+    layout({
+      title: "找不到",
+      body: `<p>找不到留言 #${escapeHtml(id)}</p><a href="/">返回</a>`,
+      user: sessionUser(req),
+    })
+  );
+}
+
 pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const { comment: c, latestId } = getCommentWithCursor(id);
-  if (!c) {
-    res.status(404).send(
-      layout({
-        title: "找不到",
-        body: `<p>找不到留言 #${id}</p><a href="/">返回</a>`,
-        user: sessionUser(req),
-      })
-    );
+  if (!c || !canViewComment(c, sessionViewer(req))) {
+    commentNotFound(req, res, String(req.params.id));
     return;
   }
   const staff = listStaff().filter((s) => s.active);
@@ -385,6 +403,16 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         )} (${escapeHtml(s.username)})</option>`
     )
     .join("");
+  const assignBlock = req.session.isAdmin
+    ? `<h2>改派同事</h2>
+        <form method="POST" action="/comments/${c.id}/assign" class="inline-form">
+          <select name="staff_id">
+            <option value="">— 未派 —</option>
+            ${options}
+          </select>
+          <button type="submit" class="btn">改派</button>
+        </form>`
+    : `<p class="muted small">改派只限管理員。</p>`;
   const originText =
     c.intake_kind === "whatsapp_click"
       ? c.origin_site
@@ -459,14 +487,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
           <button type="submit" class="btn">儲存狀態</button>
         </form>
 
-        <h2>改派同事</h2>
-        <form method="POST" action="/comments/${c.id}/assign" class="inline-form">
-          <select name="staff_id">
-            <option value="">— 未派 —</option>
-            ${options}
-          </select>
-          <button type="submit" class="btn">改派</button>
-        </form>
+        ${assignBlock}
       </section>
     </article>
   `;
@@ -484,22 +505,23 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
 
 pagesRouter.post("/comments/:id/replies", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  if (!getCommentWithCursor(id).comment) {
-    res.status(404).send(
-      layout({
-        title: "找不到",
-        body: `<p>找不到留言 #${escapeHtml(String(req.params.id))}</p><a href="/">返回</a>`,
-        user: sessionUser(req),
-      })
-    );
+  const viewer = sessionViewer(req);
+  const existing = getComment(id);
+  if (!existing || !canViewComment(existing, viewer)) {
+    commentNotFound(req, res, String(req.params.id));
     return;
   }
   const result = createStaffReply({
     commentId: id,
     staffId: req.session.staffId!,
     body: typeof req.body?.body === "string" ? req.body.body : "",
+    viewer,
   });
   if (!result.ok) {
+    if (result.status === 404) {
+      commentNotFound(req, res, String(req.params.id));
+      return;
+    }
     res.redirect(`/comments/${id}?error=${encodeURIComponent(result.error)}#reply`);
     return;
   }
@@ -508,6 +530,11 @@ pagesRouter.post("/comments/:id/replies", requireAuth, (req: Request, res: Respo
 
 pagesRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
+  const comment = getComment(id);
+  if (!comment || !canViewComment(comment, sessionViewer(req))) {
+    commentNotFound(req, res, String(req.params.id));
+    return;
+  }
   const status = req.body?.status;
   if (isCommentStatus(status)) {
     updateStatus(id, status);
@@ -516,7 +543,21 @@ pagesRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Respon
 });
 
 pagesRouter.post("/comments/:id/assign", requireAuth, (req: Request, res: Response) => {
+  if (!req.session.isAdmin) {
+    res.status(403).send(
+      layout({
+        title: "沒有權限",
+        body: `<p>改派只限管理員。</p><p><a href="/">返回留言箱</a></p>`,
+        user: sessionUser(req),
+      })
+    );
+    return;
+  }
   const id = Number(req.params.id);
+  if (!getComment(id)) {
+    commentNotFound(req, res, String(req.params.id));
+    return;
+  }
   const raw = req.body?.staff_id;
   const staffId = raw === "" || raw == null ? null : Number(raw);
   reassign(id, Number.isNaN(staffId as number) ? null : staffId);
@@ -535,15 +576,15 @@ pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
       <td>${escapeHtml(s.display_name)}</td>
       <td><code>${escapeHtml(s.username)}</code></td>
       <td>${s.is_admin ? "管理員" : "同事"}</td>
-      <td>${s.active ? "啟用" : "停用"}</td>
+      <td>${s.active ? "啟用" : "收藏"}</td>
       <td>${phone}</td>
     </tr>`;
     })
     .join("");
 
   const note = req.session.isAdmin
-    ? `<p class="muted">你係管理員，可睇到完整同事名單。<a href="/whatsapp-lines">管理 WhatsApp 線路</a></p>`
-    : `<p class="muted">改派留言時可選以下同事。個人 WhatsApp 由管理員綁定。</p>`;
+    ? `<p class="muted">你係管理員，可以睇全部留言（包括未派）同改派。<a href="/whatsapp-lines">管理 WhatsApp 線路</a></p>`
+    : `<p class="muted">你只可以處理派咗畀你嘅留言。改派只限管理員。個人 WhatsApp 由管理員綁定。</p>`;
 
   const body = `
     <div class="page-head"><h1>同事名單</h1></div>
@@ -612,7 +653,7 @@ pagesRouter.get("/whatsapp-lines", requireAuth, (req: Request, res: Response) =>
           <input name="phone" required inputmode="tel" placeholder="85291234567" autocomplete="off" />
         </label>
         <label>顯示名稱（可選）
-          <input name="display_label" maxlength="80" placeholder="例如 李詠詩 WhatsApp" />
+          <input name="display_label" maxlength="80" placeholder="例如 Wing Cheng WhatsApp" />
         </label>
         <button type="submit" class="btn primary">綁定</button>
       </form>`
