@@ -1,4 +1,6 @@
 import { Router, Request, Response } from "express";
+import { changeOwnPassword } from "../auth/change-password";
+import { requireAuth } from "../auth/middleware";
 import { verifyPassword } from "../auth/passwords";
 import { findStaffByUsername } from "../services/comments";
 
@@ -29,6 +31,19 @@ authRouter.post("/login", (req: Request, res: Response) => {
       is_admin: !!staff.is_admin,
     },
   });
+});
+
+authRouter.post("/password", requireAuth, (req: Request, res: Response) => {
+  const result = changeOwnPassword(req.session.staffId, {
+    current_password: req.body?.current_password,
+    new_password: req.body?.new_password,
+    confirm_password: req.body?.confirm_password,
+  });
+  if (!result.ok) {
+    res.status(result.status).json({ error: result.error });
+    return;
+  }
+  res.json({ ok: true });
 });
 
 authRouter.post("/logout", (req: Request, res: Response) => {

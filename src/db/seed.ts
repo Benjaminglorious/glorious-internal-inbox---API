@@ -309,14 +309,17 @@ const DEMO_REPLIES: Array<{ source: CommentSource; external_id: string; username
   },
 ];
 
-/** 以 username 做 upsert：衝突時更新 display_name、is_admin、active（同密碼）。 */
+/**
+ * 以 username 做 upsert：衝突時更新 display_name、is_admin、active。
+ * 密碼只喺新插入嗰陣寫入示範密碼；已存在嘅 password_hash 唔覆寫，
+ * 避免同事改咗密碼之後再跑 seed 被重設。收藏同事同樣唔會被強制改密碼。
+ */
 export function applySeedStaff(): void {
   const insertStaff = db.prepare(`
     INSERT INTO staff (username, display_name, password_hash, is_admin, active)
     VALUES (@username, @display_name, @password_hash, @is_admin, @active)
     ON CONFLICT(username) DO UPDATE SET
       display_name = excluded.display_name,
-      password_hash = excluded.password_hash,
       is_admin = excluded.is_admin,
       active = excluded.active
   `);
@@ -341,7 +344,7 @@ export function seed(): void {
   applySeedStaff();
   const activeCount = SEED_STAFF.filter((s) => s.active === 1).length;
   console.log(
-    `已寫入 ${SEED_STAFF.length} 位同事（${activeCount} 位可登入，其餘收藏；預設密碼：${DEMO_PASSWORD}）`
+    `已寫入 ${SEED_STAFF.length} 位同事（${activeCount} 位可登入，其餘收藏）。新帳號預設密碼：${DEMO_PASSWORD}；已存在嘅密碼唔會改。`
   );
 
   const insertComment = db.prepare(`

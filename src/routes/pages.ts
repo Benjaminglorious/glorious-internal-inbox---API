@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import { PASSWORD_CHANGED_MESSAGE, PASSWORD_CHANGE_ERRORS, changeOwnPassword } from "../auth/change-password";
 import { requireAuth, sessionViewer } from "../auth/middleware";
 import { verifyPassword } from "../auth/passwords";
 import { companyWhatsAppChatUrl, whatsAppSendUrl } from "../config";
@@ -132,6 +133,7 @@ function layout(opts: {
       <nav>
         <a href="/" class="${opts.active === "inbox" ? "active" : ""}">留言箱</a>
         <a href="/staff" class="${opts.active === "staff" ? "active" : ""}">同事</a>
+        <a href="/password" class="${opts.active === "password" ? "active" : ""}">改密碼</a>
         ${
           opts.user.isAdmin
             ? `<a href="/whatsapp-lines" class="${opts.active === "whatsapp" ? "active" : ""}">WhatsApp 線路</a>`
@@ -219,6 +221,69 @@ pagesRouter.post("/login", (req: Request, res: Response) => {
   req.session.displayName = staff.display_name;
   req.session.isAdmin = !!staff.is_admin;
   res.redirect("/");
+});
+
+const PASSWORD_FORM_ERRORS = new Set<string>([
+  PASSWORD_CHANGE_ERRORS.missing,
+  PASSWORD_CHANGE_ERRORS.tooShort,
+  PASSWORD_CHANGE_ERRORS.mismatch,
+  PASSWORD_CHANGE_ERRORS.same,
+  PASSWORD_CHANGE_ERRORS.wrongCurrent,
+]);
+
+function renderPasswordPage(req: Request, opts: { error?: string; notice?: string }): string {
+  const error = opts.error ? `<p class="error">${escapeHtml(opts.error)}</p>` : "";
+  const notice = opts.notice ? `<p class="notice">${escapeHtml(opts.notice)}</p>` : "";
+  const body = `
+    <section class="login-card">
+      <h1>改密碼</h1>
+      <p class="muted">只會改你自己嘅登入密碼。其他同事嘅密碼改唔到。</p>
+      ${notice}
+      ${error}
+      <form method="POST" action="/password" class="stack">
+        <label>而家嘅密碼
+          <input name="current_password" type="password" autocomplete="current-password" required />
+        </label>
+        <label>新密碼
+          <input name="new_password" type="password" autocomplete="new-password" required minlength="8" />
+        </label>
+        <label>確認新密碼
+          <input name="confirm_password" type="password" autocomplete="new-password" required minlength="8" />
+        </label>
+        <button type="submit" class="btn primary">更新密碼</button>
+      </form>
+      <p class="hint">新密碼至少 8 個字，而且要同而家嘅密碼唔同。</p>
+    </section>`;
+  return layout({
+    title: "改密碼",
+    body,
+    user: sessionUser(req),
+    active: "password",
+  });
+}
+
+pagesRouter.get("/password", requireAuth, (req: Request, res: Response) => {
+  const rawError = typeof req.query.error === "string" ? req.query.error : "";
+  const error = PASSWORD_FORM_ERRORS.has(rawError) ? rawError : "";
+  const notice = req.query.ok === "1" ? PASSWORD_CHANGED_MESSAGE : "";
+  res.send(renderPasswordPage(req, { error, notice }));
+});
+
+pagesRouter.post("/password", requireAuth, (req: Request, res: Response) => {
+  const result = changeOwnPassword(req.session.staffId, {
+    current_password: req.body?.current_password,
+    new_password: req.body?.new_password,
+    confirm_password: req.body?.confirm_password,
+  });
+  if (!result.ok) {
+    if (result.status === 401) {
+      res.redirect("/login");
+      return;
+    }
+    res.redirect("/password?error=" + encodeURIComponent(result.error));
+    return;
+  }
+  res.redirect("/password?ok=1");
 });
 
 pagesRouter.post("/logout", (req: Request, res: Response) => {

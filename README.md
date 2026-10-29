@@ -66,6 +66,8 @@ Glorious2026!
 
 收藏、而家登入唔到（`active=0`，列仍然保留）：`kaixin` `ming` `mei` `ho` `yan` `chun` `sze` `kit` `yuki`。
 
+登入之後可以喺頁頂「改密碼」改自己嘅密碼。重新跑 `npm run seed` 會更新同事姓名、角色同在職狀態，但唔會覆寫已經存在嘅 `password_hash`（新插入嘅帳號先至用示範密碼）。收藏同事都唔會被強制改密碼。
+
 ## 權限
 
 | 角色 | 登入 | 睇留言 | 回覆／改狀態 | 改派 |
@@ -74,13 +76,16 @@ Glorious2026!
 | 在職同事（`wing`、`jason`） | 可以 | 只係 `assignee_staff_id` 等於自己 | 只係自己負責嗰啲 | 唔可以（403） |
 | 收藏（`active=0`） | 唔可以 | — | — | — |
 
+在職同事同管理員都只可以改**自己**嘅密碼（`/password`）。冇人可以喺呢個頁面改其他人嘅密碼。
+
 未派嘅留言只係管理員睇到。網頁（`/`、`/comments/:id`、回覆同狀態表單）同 JSON API（列表、詳情、回覆、改狀態、`/api/comments/updates`）用同一套規則。在職同事唔可以靠輪詢或者推送睇到其他人嘅留言內容。
 
-煙霧測試：`npm run demo:staff-visibility`
+煙霧測試：`npm run demo:staff-visibility`、`npm run demo:change-password`
 
 ## 功能
 
 - 登入／登出（session cookie + bcrypt 密碼雜湊）
+- 改密碼：登入後自己改，要對現有密碼；成功之後維持登入
 - 留言列表：按來源、形式（網站／IG 留言 或 WhatsApp 聯絡）、相關網站、狀態、「只睇我嘅」篩選
 - 分得清客戶係喺網站／IG 留低，定係撳咗 WhatsApp（或 IG 簡介連結）先至用 WhatsApp 聯絡
 - 留言詳情：喺系統內回覆（對話會出現喺擱置／未處理）、改狀態（未處理／處理中／已完成）。管理員可以改派；在職同事唔可以
@@ -97,6 +102,8 @@ Glorious2026!
 - 健康檢查：`GET /api/health`（包含 `company_whatsapp_url`、`push_enabled`）
 - 公開設定：`GET /api/config` → `{ "company_whatsapp_url": "..." }`
 - 登入 API：`POST /api/auth/login` `{ "username", "password" }`
+- 改密碼：`GET /password`、`POST /password`（要登入；欄位 `current_password`、`new_password`、`confirm_password`）
+- 改密碼 API：`POST /api/auth/password`（要登入，欄位同上；只改 session 入面嗰位同事）
 - 留言：`GET /api/comments?source=&status=&intake=&origin=&mine=1`（`status=pending` 係未處理＋處理中）
 - 新留言游標：`GET /api/comments/updates?since_id=`
 - 對話：`GET /api/comments/:id/replies`、`POST /api/comments/:id/replies` `{ "body" }`
