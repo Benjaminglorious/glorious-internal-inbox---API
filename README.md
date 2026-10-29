@@ -92,7 +92,9 @@ Glorious2026!
 - 改派：`POST /api/comments/:id/assign`
 - 同事：`GET /api/staff`
 - WhatsApp 線路（管理員）：`GET /api/whatsapp-lines`、`POST /api/whatsapp-lines`、`POST /api/whatsapp-lines/:id/deactivate`
-- 入站 webhook stub：`POST /api/webhooks/whatsapp`（見下面）
+- 入站 webhook：`POST /api/webhooks/whatsapp`（WhatsApp，稍後先駁真實 API）
+- 網站／FB／IG 入站：`POST /api/webhooks/site-comment`（以及 `/28car`、`/glorious-web`、`/facebook`、`/instagram` 別名）
+- Meta Callback：`GET|POST /api/webhooks/meta`（hub 驗證 + Page／IG payload 骨架）
 
 ## 環境變數
 
@@ -102,7 +104,8 @@ Glorious2026!
 - `SESSION_SECRET`（必須改成夠長嘅隨機字串）
 - `DATABASE_PATH`（可選，預設 `./data/inbox.db`）
 - `COMPANY_WHATSAPP_URL`（公司 WhatsApp **出站** click-to-chat。未設定時預設 `https://api.whatsapp.com/send?phone=85221740001`，即 28car／官網／Facebook 用緊嘅號碼 `85221740001`）
-- `WEBHOOK_VERIFY_TOKEN`（入站 webhook 共用密鑰。未設定時 `POST /api/webhooks/whatsapp` 回 503。必須改，唔好提交真實密鑰）
+- `WEBHOOK_VERIFY_TOKEN`（入站 webhook 共用密鑰：WhatsApp、site-comment、Meta hub.verify。未設定回 503。必須改，唔好提交真實密鑰）
+- `META_APP_ID`、`META_APP_SECRET`、`META_PAGE_ID`、`META_PAGE_ACCESS_TOKEN`、`META_IG_BUSINESS_ACCOUNT_ID`（可選。骨架已讀 `META_APP_SECRET` 做簽名；其餘等駁 Graph 出站／進階功能先用。Callback：`/api/webhooks/meta`）
 - `VAPID_PUBLIC_KEY`、`VAPID_PRIVATE_KEY`、`VAPID_SUBJECT`（Web Push。三項都有效先至 `push_enabled`。未設定時 PWA 仍可安裝，但關閉頁面後唔會推送。私鑰唔好提交 git。見下面）
 
 ## 新留言提示
@@ -398,6 +401,51 @@ Meta 訂閱驗證（稍後先用）：
 
 Token 唔啱回 401／403。環境變數未設定回 503。**唔好將真實 token 寫入 git。**
 
+### 網站／FB／IG 留言入站（`site-comment`）
+
+CMS、聯絡表，或者人手腳本可以用：
+
+`POST /api/webhooks/site-comment`
+
+Header：`X-Webhook-Token: <WEBHOOK_VERIFY_TOKEN>`（或 `Authorization: Bearer <token>`）
+
+```json
+{
+  "source": "glorious_web",
+  "external_id": "form-1001",
+  "author_name": "陳先生",
+  "body": "想預約參觀陳列室",
+  "vehicle_ref": "Alphard"
+}
+```
+
+`source`：`28car`、`glorious_web`、`facebook`、`instagram`（別名 `fb`／`ig`／`gw`／`web`／`glorious`）。會入庫為 `intake_kind=site_comment`、`origin_site` 空，並用最少未完成同事派單。同一 `(source, external_id)` 再打會更新內容，唔會開新列。
+
+路徑別名（body 可以唔傳 `source`）：
+
+- `POST /api/webhooks/site-comment/28car`
+- `POST /api/webhooks/site-comment/glorious-web`
+- `POST /api/webhooks/site-comment/facebook`
+- `POST /api/webhooks/site-comment/instagram`
+
+煙霧測試：`npm run demo:site-comment`
+
+### Meta Facebook／Instagram Callback（骨架）
+
+Callback URL（生產）：
+
+`https://glorious-internal-inbox.onrender.com/api/webhooks/meta`
+
+Verify token = `WEBHOOK_VERIFY_TOKEN`。
+
+`GET /api/webhooks/meta?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...` 會回 challenge。
+
+`POST /api/webhooks/meta`：認得 Page `feed` 留言、Messenger `messaging`、Instagram `comments`／私訊時，會 `upsertSiteComment`（`facebook` 或 `instagram`）。狀態回呼等會 `{ "ok": true, "ignored": true }`。有設 `META_APP_SECRET` 就驗證 `X-Hub-Signature-256`；未設就跳過。
+
+**仍然需要 Tony／同事喺 Meta Developer Console 建立 App、訂閱欄位、填 Page token 等。** 出站 Graph 回覆仍然係 stub。WhatsApp Cloud 仍然用 `/api/webhooks/whatsapp`，呢條 PR 唔駁。
+
+官網／28car：最穩係 CMS 或聯絡表 webhook 打去 `site-comment`；28car 若無 API，可用電郵轉送／經銷商匯出，唔好靠爬蟲做第一版。
+
 ## 資料庫
 
 SQLite（`better-sqlite3`），檔案喺 `data/inbox.db`（已加入 `.gitignore`）。
@@ -410,7 +458,7 @@ SQLite（`better-sqlite3`），檔案喺 `data/inbox.db`（已加入 `.gitignore
 
 ## 計劃中嘅真來源（出站而家全部係 stub）
 
-`src/adapters/twentyeightcar.ts`、`glorious-web.ts`、`facebook.ts`、`instagram.ts` 暫時只係 stub，之後再接登入／API／webhook。Instagram 未接 Graph API。
+`src/adapters/twentyeightcar.ts`、`glorious-web.ts`、`facebook.ts`、`instagram.ts` 嘅 poll／出站仍然係 stub。入站可以經 `POST /api/webhooks/site-comment` 或 `POST /api/webhooks/meta`（骨架）入庫；真正 Meta 憑證同官網／28car CMS 配線仍然要做。
 
 `src/adapters/whatsapp.ts` 同樣**未**連接 Meta Cloud API 或 Glorious WhatsApp Business API。而家只係：
 
@@ -424,10 +472,10 @@ SQLite（`better-sqlite3`），檔案喺 `data/inbox.db`（已加入 `.gitignore
 | 客戶所在 | 而家 | 之後先至接 |
 |----------|------|------------|
 | 公司／同事 WhatsApp，包括由網站或 IG 撳過嚟 | 收件箱儲存，標 stub | Meta Cloud API **或** Glorious WhatsApp Business API |
-| 28car 網站留言 | 收件箱儲存，標 stub | 28car |
-| 東榮官網留言 | 收件箱儲存，標 stub | glorious.hk |
-| Facebook 留言 | 收件箱儲存，標 stub | Facebook Graph API |
-| 東榮 IG 留言／私訊 | 收件箱儲存，標 stub | Instagram Graph API |
+| 28car 網站留言 | 可用 `site-comment` webhook 入庫；出站 stub | 28car CMS／電郵匯出 → webhook |
+| 東榮官網留言 | 可用 `site-comment` webhook 入庫；出站 stub | glorious.hk 表單／CMS → webhook |
+| Facebook 留言 | Meta webhook 骨架可入庫；出站 stub | Meta App + Page token + 訂閱欄位 |
+| 東榮 IG 留言／私訊 | Meta webhook 骨架可入庫；出站 stub | 連結 IG Business + 訂閱欄位 |
 
 未駁之前，收件箱回覆同列表都用得。click-to-chat 仍然可以人手開 WhatsApp 網頁。
 
