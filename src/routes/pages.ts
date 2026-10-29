@@ -221,7 +221,12 @@ pagesRouter.post("/login", (req: Request, res: Response) => {
 
 pagesRouter.post("/logout", (req: Request, res: Response) => {
   req.session.destroy(() => {
-    res.clearCookie("connect.sid");
+    res.clearCookie("connect.sid", {
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+    });
     res.redirect("/login");
   });
 });

@@ -34,6 +34,19 @@ npm start              # http://localhost:3001
 npm run dev
 ```
 
+## Render
+
+免費 Web Service：
+
+- **Build command：** `npm install`
+- **Start command：** `npm run seed && npm start`
+
+`npm start` 同 `npm run seed` 用 `tsx` 跑 TypeScript。`tsx` 喺 `dependencies`，所以 `NODE_ENV=production` 時 `npm install` 唔會漏咗佢（唔使 `--include=dev`）。`app.listen(PORT)` 冇指定 host，會聽所有網絡介面，Render 代理夠用。
+
+`NODE_ENV=production` 時 session cookie 會加 `Secure`。程式已設 `trust proxy`，HTTPS 喺 Render 邊緣終止之後仍然有效。請設定夠長嘅 `SESSION_SECRET`。
+
+免費方案大約 15 分鐘冇流量會休眠，下次請求要等喚醒。SQLite（`data/inbox.db`）喺臨時檔案系統；免費方案冇 persistent disk，deploy、重啟或休眠之後資料會消失，要再跑 seed。要留住檔案就要用付費方案掛 disk（掛載路徑要包住 `data/`）。
+
 ## 預設登入（示範）
 
 **全部同事共用示範密碼（正式環境必須更改）：**

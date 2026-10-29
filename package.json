@@ -22,6 +22,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
+    "tsx": "^4.19.2",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
@@ -31,7 +32,6 @@
     "@types/express-session": "^1.18.1",
     "@types/node": "^22.10.5",
     "@types/web-push": "^3.6.4",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   },
   "allowScripts": {
