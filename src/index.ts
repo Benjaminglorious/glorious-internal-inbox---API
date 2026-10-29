@@ -10,7 +10,11 @@ import "./db";
 import { authRouter } from "./routes/auth";
 import { apiRouter } from "./routes/api";
 import { pagesRouter } from "./routes/pages";
-import { whatsappWebhookRouter } from "./routes/webhooks";
+import {
+  metaWebhookRouter,
+  siteCommentWebhookRouter,
+  whatsappWebhookRouter,
+} from "./routes/webhooks";
 import { isPushConfigured } from "./services/push";
 import { ensureCompanyWhatsAppLine } from "./services/whatsapp";
 
@@ -24,7 +28,14 @@ const publicDir = path.join(process.cwd(), "public");
 
 app.set("trust proxy", 1);
 app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      // Meta X-Hub-Signature-256 需要原始 bytes；有 META_APP_SECRET 時先用。
+      (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+    },
+  })
+);
 
 app.get("/sw.js", (_req, res) => {
   res.setHeader("Cache-Control", "no-cache");
@@ -73,6 +84,8 @@ app.use(
 );
 
 app.use("/api/webhooks/whatsapp", whatsappWebhookRouter);
+app.use("/api/webhooks/site-comment", siteCommentWebhookRouter);
+app.use("/api/webhooks/meta", metaWebhookRouter);
 app.use("/api/auth", authRouter);
 app.use("/api", apiRouter);
 app.use(pagesRouter);

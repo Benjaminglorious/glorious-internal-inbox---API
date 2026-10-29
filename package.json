@@ -13,7 +13,8 @@
     "vapid:keys": "web-push generate-vapid-keys --json",
     "icons": "node scripts/generate-pwa-icons.mjs",
     "build": "tsc",
-    "start:prod": "node dist/index.js"
+    "start:prod": "node dist/index.js",
+    "demo:site-comment": "tsx src/demo/site-comment-ingest.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
