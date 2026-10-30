@@ -26,6 +26,7 @@ export const DELIVERY_LABEL: Record<DeliveryStatus, string> = {
   stub: "示範待發送",
   stored: "已儲存",
   failed: "發送失敗",
+  sent: "已發送",
 };
 
 export function intakeBadgeText(kind: IntakeKind, source: CommentSource): string {
@@ -54,10 +55,11 @@ export function intakeSummary(input: {
 
 export function deliveryDetail(status: DeliveryStatus, source: CommentSource): string {
   if (status === "failed") return "發送失敗";
+  if (status === "sent") return source === "whatsapp" ? "已經 WhatsApp 發送" : "已發送";
   if (status === "stored") return "已儲存（未發送）";
   switch (source) {
     case "whatsapp":
-      return "示範待發送 · 尚未連接 Meta／Glorious WhatsApp";
+      return "示範待發送 · 同事個人線路未經公司 Cloud API";
     case "28car":
       return "示範待發送 · 尚未連接 28car";
     case "glorious_web":

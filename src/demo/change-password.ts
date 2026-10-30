@@ -116,7 +116,7 @@ async function main(): Promise<number> {
 
     appDb = dbMod.db;
     const staffCount = appDb.prepare(`SELECT COUNT(*) AS n FROM staff`).get() as { n: number };
-    if (staffCount.n === 0) seedMod.seed();
+    if (staffCount.n === 0) await seedMod.seed();
 
     const verify = (username: string, plain: string): boolean =>
       passwords.verifyPassword(plain, passwordHash(appDb!, username));

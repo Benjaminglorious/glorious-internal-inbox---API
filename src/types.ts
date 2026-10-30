@@ -17,7 +17,7 @@ export type CommentStatus = (typeof COMMENT_STATUSES)[number];
 export const COMMENT_STATUS_FILTERS = ["open", "in_progress", "done", "pending"] as const;
 export type CommentStatusFilter = (typeof COMMENT_STATUS_FILTERS)[number];
 
-export const DELIVERY_STATUSES = ["stored", "stub", "failed"] as const;
+export const DELIVERY_STATUSES = ["stored", "stub", "failed", "sent"] as const;
 export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
 
 export const REPLY_DIRECTIONS = ["outbound", "inbound"] as const;
@@ -84,6 +84,10 @@ export interface Comment {
   updated_at: string;
   intake_kind: IntakeKind;
   origin_site: OriginSite | null;
+  /** 客戶 WhatsApp wa_id（只留數字）。只會喺 WhatsApp 入站寫入。 */
+  wa_from_phone: string | null;
+  /** 收件線路號碼（只留數字）。公司總機係 85221740001。 */
+  wa_to_phone: string | null;
 }
 
 export interface CommentWithAssignee extends Comment {
@@ -105,6 +109,8 @@ export interface CommentReply {
   direction: ReplyDirection;
   body: string;
   delivery_status: DeliveryStatus;
+  /** 出站失敗時嘅可見原因。成功或 stub 為 null。 */
+  delivery_error: string | null;
   created_at: string;
 }
 

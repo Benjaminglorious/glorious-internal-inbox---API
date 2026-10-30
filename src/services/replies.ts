@@ -18,11 +18,13 @@ interface ReplyRow {
   direction: string;
   body: string;
   delivery_status: string;
+  delivery_error: string | null;
   created_at: string;
 }
 
 function mapReply(row: ReplyRow): CommentReply {
   const delivery: DeliveryStatus = isDeliveryStatus(row.delivery_status) ? row.delivery_status : "stub";
+  const deliveryError = typeof row.delivery_error === "string" ? row.delivery_error.trim() : "";
   return {
     id: row.id,
     comment_id: row.comment_id,
@@ -31,6 +33,7 @@ function mapReply(row: ReplyRow): CommentReply {
     direction: row.direction === "inbound" ? "inbound" : "outbound",
     body: row.body,
     delivery_status: delivery,
+    delivery_error: deliveryError || null,
     created_at: row.created_at,
   };
 }
@@ -40,7 +43,7 @@ export function listReplies(commentId: number): CommentReply[] {
   const rows = db
     .prepare(
       `
-      SELECT r.id, r.comment_id, r.staff_id, r.direction, r.body, r.delivery_status, r.created_at,
+      SELECT r.id, r.comment_id, r.staff_id, r.direction, r.body, r.delivery_status, r.delivery_error, r.created_at,
              s.display_name AS staff_name
       FROM comment_replies r
       LEFT JOIN staff s ON s.id = r.staff_id
@@ -56,7 +59,7 @@ function getReply(id: number): CommentReply | null {
   const row = db
     .prepare(
       `
-      SELECT r.id, r.comment_id, r.staff_id, r.direction, r.body, r.delivery_status, r.created_at,
+      SELECT r.id, r.comment_id, r.staff_id, r.direction, r.body, r.delivery_status, r.delivery_error, r.created_at,
              s.display_name AS staff_name
       FROM comment_replies r
       LEFT JOIN staff s ON s.id = r.staff_id
@@ -68,16 +71,18 @@ function getReply(id: number): CommentReply | null {
 }
 
 /**
- * 同事喺收件箱回覆。內容寫入 comment_replies，出站只經 stub（delivery_status 通常係 stub）。
+ * 同事喺收件箱回覆。內容寫入 comment_replies。
+ * 公司 WhatsApp 總機有客戶號碼時會打 Cloud API：成功 sent，失敗 failed 並寫低原因。
+ * 其他渠道同同事個人線路仍然係 stub。
  * 原本係未處理（open）會改做處理中，唔會標已完成，所以仍然出現喺擱置／未處理。
  */
-export function createStaffReply(input: {
+export async function createStaffReply(input: {
   commentId: number;
   staffId: number;
   body: string;
   /** 有傳就按可見範圍拒絕。Seed 等內部寫入唔傳，所以示範回覆可以跨負責人。 */
   viewer?: CommentViewer;
-}): ReplyMutation {
+}): Promise<ReplyMutation> {
   if (!Number.isInteger(input.commentId)) return { ok: false, status: 400, error: "無效留言 id" };
   if (!Number.isInteger(input.staffId)) return { ok: false, status: 400, error: "無效同事 id" };
 
@@ -93,7 +98,7 @@ export function createStaffReply(input: {
   const staff = findStaffById(input.staffId);
   if (!staff || !staff.active) return { ok: false, status: 403, error: "找不到這位在職同事" };
 
-  const queued = queueOutboundReply({
+  const queued = await queueOutboundReply({
     commentId: comment.id,
     externalId: comment.external_id,
     source: comment.source,
@@ -101,16 +106,20 @@ export function createStaffReply(input: {
     originSite: comment.origin_site,
     body,
     staffId: staff.id,
+    waFromPhone: comment.wa_from_phone,
+    waToPhone: comment.wa_to_phone,
   });
   const delivery: DeliveryStatus = isDeliveryStatus(queued.delivery_status) ? queued.delivery_status : "stub";
+  const deliveryError =
+    delivery === "failed" ? (queued.error || "發送失敗").replace(/\s+/g, " ").trim().slice(0, 500) || "發送失敗" : null;
 
   const replyId = db.transaction(() => {
     const info = db
       .prepare(
-        `INSERT INTO comment_replies (comment_id, staff_id, direction, body, delivery_status)
-         VALUES (?, ?, 'outbound', ?, ?)`
+        `INSERT INTO comment_replies (comment_id, staff_id, direction, body, delivery_status, delivery_error)
+         VALUES (?, ?, 'outbound', ?, ?, ?)`
       )
-      .run(comment.id, staff.id, body, delivery);
+      .run(comment.id, staff.id, body, delivery, deliveryError);
     if (comment.status === "open") {
       db.prepare(
         `UPDATE comments SET status = 'in_progress', updated_at = datetime('now') WHERE id = ?`

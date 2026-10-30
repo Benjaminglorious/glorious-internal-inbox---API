@@ -104,7 +104,15 @@ function mapComment(row: CommentRow): CommentWithAssignee {
     last_reply_staff_name: row.last_reply_staff_name ?? null,
     last_reply_delivery_status: asDelivery(row.last_reply_delivery_status),
     last_reply_direction: asDirection(row.last_reply_direction),
+    wa_from_phone: asStoredPhone(row.wa_from_phone),
+    wa_to_phone: asStoredPhone(row.wa_to_phone),
   };
+}
+
+function asStoredPhone(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
 }
 
 /** 全庫最新留言 id，用嚟做游標。列表同更新內容會再按角色篩走其他人嘅留言。 */

@@ -127,20 +127,25 @@ apiRouter.get("/comments/:id/replies", requireAuth, (req: Request, res: Response
   res.json({ replies: listReplies(id) });
 });
 
-apiRouter.post("/comments/:id/replies", requireAuth, (req: Request, res: Response) => {
+apiRouter.post("/comments/:id/replies", requireAuth, async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const viewer = sessionViewer(req);
-  const result = createStaffReply({
-    commentId: id,
-    staffId: req.session.staffId!,
-    body: typeof req.body?.body === "string" ? req.body.body : "",
-    viewer,
-  });
-  if (!result.ok) {
-    res.status(result.status).json({ error: result.error });
-    return;
+  try {
+    const result = await createStaffReply({
+      commentId: id,
+      staffId: req.session.staffId!,
+      body: typeof req.body?.body === "string" ? req.body.body : "",
+      viewer,
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    res.status(201).json({ reply: result.reply, comment: result.comment });
+  } catch (err) {
+    console.error("[replies] 未能寫入回覆", err);
+    res.status(500).json({ error: "未能發送回覆" });
   }
-  res.status(201).json({ reply: result.reply, comment: result.comment });
 });
 
 apiRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {

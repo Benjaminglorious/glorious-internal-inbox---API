@@ -12,6 +12,8 @@ export const COMMENTS_CREATE_COLUMNS = `
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   intake_kind TEXT NOT NULL DEFAULT 'site_comment' CHECK (intake_kind IN ('site_comment', 'whatsapp_click')),
   origin_site TEXT CHECK (origin_site IS NULL OR origin_site IN ('28car', 'glorious_web', 'facebook', 'instagram')),
+  wa_from_phone TEXT,
+  wa_to_phone TEXT,
   UNIQUE (source, external_id),
   CHECK (
     (
@@ -95,7 +97,8 @@ CREATE TABLE IF NOT EXISTS comment_replies (
   staff_id INTEGER REFERENCES staff(id),
   direction TEXT NOT NULL DEFAULT 'outbound' CHECK (direction IN ('outbound', 'inbound')),
   body TEXT NOT NULL,
-  delivery_status TEXT NOT NULL DEFAULT 'stub' CHECK (delivery_status IN ('stored', 'stub', 'failed')),
+  delivery_status TEXT NOT NULL DEFAULT 'stub' CHECK (delivery_status IN ('stored', 'stub', 'failed', 'sent')),
+  delivery_error TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   CHECK (
     (direction = 'outbound' AND staff_id IS NOT NULL) OR
