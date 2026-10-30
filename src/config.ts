@@ -12,6 +12,44 @@ export function companyWhatsAppUrl(): string {
   return raw ? raw : DEFAULT_COMPANY_WHATSAPP_URL;
 }
 
+/**
+ * 公司總機 85221740001 嘅 WhatsApp Cloud API phone number id。
+ * 唔係密鑰。未設定 WHATSAPP_PHONE_NUMBER_ID 時用呢個生產值。
+ */
+export const DEFAULT_WHATSAPP_PHONE_NUMBER_ID = "241163761376752";
+export const DEFAULT_WHATSAPP_GRAPH_VERSION = "v21.0";
+
+export type WhatsAppCloudSettings =
+  | { ok: true; phoneNumberId: string; accessToken: string; messagesUrl: string }
+  | { ok: false; error: string };
+
+/** 公司線出站要用嘅 Graph 設定。Token 只從環境變數讀，唔會有預設密鑰。 */
+export function whatsAppCloudSettings(): WhatsAppCloudSettings {
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN?.trim() ?? "";
+  if (!accessToken) {
+    return { ok: false, error: "WHATSAPP_ACCESS_TOKEN 未設定，公司 WhatsApp 回覆未發送" };
+  }
+
+  const idRaw = process.env.WHATSAPP_PHONE_NUMBER_ID?.trim() ?? "";
+  const phoneNumberId = idRaw || DEFAULT_WHATSAPP_PHONE_NUMBER_ID;
+  if (!/^\d{6,20}$/.test(phoneNumberId)) {
+    return { ok: false, error: "WHATSAPP_PHONE_NUMBER_ID 格式不正確，公司 WhatsApp 回覆未發送" };
+  }
+
+  const versionRaw = process.env.WHATSAPP_GRAPH_VERSION?.trim() ?? "";
+  const version = versionRaw || DEFAULT_WHATSAPP_GRAPH_VERSION;
+  if (!/^v\d+\.\d+$/.test(version)) {
+    return { ok: false, error: "WHATSAPP_GRAPH_VERSION 格式不正確，公司 WhatsApp 回覆未發送" };
+  }
+
+  return {
+    ok: true,
+    phoneNumberId,
+    accessToken,
+    messagesUrl: `https://graph.facebook.com/${version}/${phoneNumberId}/messages`,
+  };
+}
+
 const SNIPPET_MAX = 80;
 
 export function commentSnippet(body: string | null | undefined, max = SNIPPET_MAX): string {

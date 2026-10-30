@@ -16,8 +16,8 @@ export type AdapterName = keyof typeof adapters;
 
 /**
  * WhatsApp 入站唔經 poll。線路綁定同派單見 routeWhatsAppInbound；
- * webhook stub 係 POST /api/webhooks/whatsapp。真實 Meta／Glorious 連接尚未啟用。
- * pollAllSources 故意唔呼叫呢度，避免打去 WhatsApp API。
+ * 收件係 POST /api/webhooks/whatsapp。
+ * pollAllSources 故意唔呼叫呢度。公司總機回覆先至打 Graph messages。
  */
 export const whatsappInbound = whatsapp;
 
@@ -30,10 +30,10 @@ export async function pollAllSources(): Promise<void> {
 }
 
 /**
- * 揀出站 stub。WhatsApp 聯絡（包括由網站或 IG 撳過嚟）走 WhatsApp adapter；
- * 網站／IG 上面嘅留言走對應來源。全部都唔會打真實 API。
+ * WhatsApp 聯絡（包括由網站或 IG 撳過嚟）走 WhatsApp adapter。
+ * 公司總機而且有客戶號碼先至打 Cloud API；其餘來源仍然係 stub。
  */
-export function queueOutboundReply(input: OutboundReplyRequest): OutboundReplyResult {
+export async function queueOutboundReply(input: OutboundReplyRequest): Promise<OutboundReplyResult> {
   if (input.source === "whatsapp" || input.intakeKind === "whatsapp_click") {
     return whatsapp.queueOutboundReply(input);
   }

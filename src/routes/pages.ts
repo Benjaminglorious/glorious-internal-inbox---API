@@ -458,8 +458,9 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   const staff = listStaff().filter((s) => s.active);
   const staffLines = activeStaffLinesByStaffId();
   const replies = listReplies(c.id);
-  const error = typeof req.query.error === "string" ? req.query.error.slice(0, 200) : "";
+  const error = typeof req.query.error === "string" ? req.query.error.slice(0, 500) : "";
   const sent = req.query.sent === "1";
+  const deliveryQuery = typeof req.query.delivery === "string" ? req.query.delivery : "";
   const options = staff
     .map(
       (s) =>
@@ -487,8 +488,12 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   const thread = replies
     .map((reply) => {
       const who = reply.staff_name || "同事";
+      const errorLine = reply.delivery_error
+        ? `<p class="error small">${escapeHtml(reply.delivery_error)}</p>`
+        : "";
       return `<article class="bubble staff">
         <div class="who">同事 · ${escapeHtml(who)} · ${escapeHtml(reply.created_at)} · ${escapeHtml(deliveryDetail(reply.delivery_status, c.source))}</div>
+        ${errorLine}
         <div class="bubble-body">${escapeHtml(reply.body)}</div>
       </article>`;
     })
@@ -502,7 +507,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         ${renderSourceBadges(c)}
         <span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span>
       </div>
-      <p class="muted small">主要喺下面回覆。回覆會留喺呢條對話，並標為示範待發送（尚未連接 Meta、Glorious、28car、官網、Facebook 或 Instagram）。如果原本係未處理，會改做處理中，並且繼續出現喺「擱置／未處理」。</p>
+      <p class="muted small">主要喺下面回覆。公司 WhatsApp 總機（有客戶號碼）會經 Cloud API 發送：成功標「已經 WhatsApp 發送」，失敗會寫低原因。同事個人線路、網站同 IG 留言仍然只係示範待發送。如果原本係未處理，會改做處理中，並且繼續出現喺「擱置／未處理」。</p>
       <dl class="meta">
         <dt>形式</dt><dd>${escapeHtml(intakeBadgeText(c.intake_kind, c.source))}</dd>
         <dt>相關網站</dt><dd>${escapeHtml(originText)}</dd>
@@ -526,7 +531,15 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       <section class="reply-panel" id="reply">
         <h2>在系統內回覆</h2>
         ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
-        ${sent ? `<p class="notice">已儲存回覆，並標為示範待發送。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。</p>` : ""}
+        ${
+          sent
+            ? `<p class="notice">${escapeHtml(
+                deliveryQuery === "sent"
+                  ? "已透過 WhatsApp 發送畀客戶。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。"
+                  : "已儲存回覆，並標為示範待發送。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。"
+              )}</p>`
+            : ""
+        }
         <form method="POST" action="/comments/${c.id}/replies" class="reply-form">
           <label>回覆內容
             <textarea name="body" required maxlength="4000" rows="5" placeholder="輸入回覆。客戶唔使你開 WhatsApp 網頁。"></textarea>
@@ -568,7 +581,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   );
 });
 
-pagesRouter.post("/comments/:id/replies", requireAuth, (req: Request, res: Response) => {
+pagesRouter.post("/comments/:id/replies", requireAuth, async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const viewer = sessionViewer(req);
   const existing = getComment(id);
@@ -576,21 +589,31 @@ pagesRouter.post("/comments/:id/replies", requireAuth, (req: Request, res: Respo
     commentNotFound(req, res, String(req.params.id));
     return;
   }
-  const result = createStaffReply({
-    commentId: id,
-    staffId: req.session.staffId!,
-    body: typeof req.body?.body === "string" ? req.body.body : "",
-    viewer,
-  });
-  if (!result.ok) {
-    if (result.status === 404) {
-      commentNotFound(req, res, String(req.params.id));
+  try {
+    const result = await createStaffReply({
+      commentId: id,
+      staffId: req.session.staffId!,
+      body: typeof req.body?.body === "string" ? req.body.body : "",
+      viewer,
+    });
+    if (!result.ok) {
+      if (result.status === 404) {
+        commentNotFound(req, res, String(req.params.id));
+        return;
+      }
+      res.redirect(`/comments/${id}?error=${encodeURIComponent(result.error)}#reply`);
       return;
     }
-    res.redirect(`/comments/${id}?error=${encodeURIComponent(result.error)}#reply`);
-    return;
+    if (result.reply.delivery_status === "failed") {
+      const message = result.reply.delivery_error || "發送失敗";
+      res.redirect(`/comments/${id}?error=${encodeURIComponent(message)}#reply`);
+      return;
+    }
+    res.redirect(`/comments/${id}?sent=1&delivery=${encodeURIComponent(result.reply.delivery_status)}#thread`);
+  } catch (err) {
+    console.error("[replies] 未能寫入回覆", err);
+    res.redirect(`/comments/${id}?error=${encodeURIComponent("未能發送回覆")}#reply`);
   }
-  res.redirect(`/comments/${id}?sent=1#thread`);
 });
 
 pagesRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Response) => {

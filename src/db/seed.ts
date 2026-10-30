@@ -339,7 +339,7 @@ export function applySeedStaff(): void {
   staffTx();
 }
 
-export function seed(): void {
+export async function seed(): Promise<void> {
   console.log(`資料庫：${getDbPath()}`);
   applySeedStaff();
   const activeCount = SEED_STAFF.filter((s) => s.active === 1).length;
@@ -439,7 +439,7 @@ export function seed(): void {
     if (!comment || !staff) {
       throw new Error(`示範回覆找不到留言或同事：${reply.source} ${reply.external_id} ${reply.username}`);
     }
-    const saved = createStaffReply({ commentId: comment.id, staffId: staff.id, body: reply.body });
+    const saved = await createStaffReply({ commentId: comment.id, staffId: staff.id, body: reply.body });
     if (!saved.ok) throw new Error(saved.error);
     replyCount += 1;
   }
@@ -461,4 +461,9 @@ function isDirectRun(): boolean {
   return path.resolve(entry) === path.resolve(__filename);
 }
 
-if (isDirectRun()) seed();
+if (isDirectRun()) {
+  seed().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

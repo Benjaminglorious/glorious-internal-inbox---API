@@ -10,6 +10,7 @@
     "start": "tsx src/index.ts",
     "seed": "tsx src/db/seed.ts",
     "demo:whatsapp-route": "tsx src/demo/whatsapp-route.ts",
+    "demo:whatsapp-outbound": "tsx src/demo/whatsapp-outbound.ts",
     "demo:staff-visibility": "tsx src/demo/staff-visibility.ts",
     "demo:change-password": "tsx src/demo/change-password.ts",
     "vapid:keys": "web-push generate-vapid-keys --json",

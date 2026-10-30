@@ -133,7 +133,7 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
     const openResult = Array.isArray(open.json.results) ? (open.json.results[0] as Record<string, unknown>) : undefined;
     const stored = appDb
       .prepare(
-        `SELECT source, intake_kind, origin_site, author_name, body, assignee_staff_id
+        `SELECT source, intake_kind, origin_site, author_name, body, assignee_staff_id, wa_from_phone, wa_to_phone
          FROM comments WHERE external_id = ?`
       )
       .get(sampleId) as
@@ -144,6 +144,8 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
           author_name: string;
           body: string;
           assignee_staff_id: number | null;
+          wa_from_phone: string | null;
+          wa_to_phone: string | null;
         }
       | undefined;
     check(
@@ -159,7 +161,9 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
         stored?.origin_site == null &&
         stored?.author_name === "Sheena Nelson" &&
         stored?.body === "Does it come in another color?" &&
-        stored?.assignee_staff_id != null,
+        stored?.assignee_staff_id != null &&
+        stored?.wa_from_phone === "16505551234" &&
+        stored?.wa_to_phone === COMPANY_WHATSAPP_PHONE,
       `status=${open.status} body=${JSON.stringify(open.json)}`
     );
 
@@ -406,6 +410,7 @@ async function main(): Promise<number> {
     legacy.close();
 
     process.env.DATABASE_PATH = dbFile;
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const dbMod = require("../db") as typeof import("../db");
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -643,7 +648,9 @@ async function main(): Promise<number> {
         officialRouted.outcome === "company" &&
         officialRouted.line?.phone_e164 === COMPANY_WHATSAPP_PHONE &&
         officialRouted.comment.source === "whatsapp" &&
-        officialRouted.comment.intake_kind === "whatsapp_click"
+        officialRouted.comment.intake_kind === "whatsapp_click" &&
+        officialRouted.comment.wa_from_phone === "16505551234" &&
+        officialRouted.comment.wa_to_phone === COMPANY_WHATSAPP_PHONE
     );
     const metaRouted = meta.messages[0] ? wa.routeWhatsAppInbound(meta.messages[0]) : null;
     check(
@@ -761,19 +768,20 @@ async function main(): Promise<number> {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const commentsApi = require("../services/comments") as typeof import("../services/comments");
     if (routedIg?.ok) {
-      const sent = replies.createStaffReply({
+      const sent = await replies.createStaffReply({
         commentId: routedIg.comment.id,
         staffId: staffBId,
         body: "系統內回覆 IG WhatsApp",
       });
       check(
-        "WhatsApp 回覆標為 stub 並改處理中",
+        "公司 WhatsApp 冇 token 就標失敗，唔當已發送",
         sent.ok &&
-          sent.reply.delivery_status === "stub" &&
+          sent.reply.delivery_status === "failed" &&
+          (sent.reply.delivery_error || "").includes("WHATSAPP_ACCESS_TOKEN") &&
           sent.reply.direction === "outbound" &&
           sent.comment.status === "in_progress" &&
           sent.comment.reply_count === 1,
-        sent.ok ? `status=${sent.comment.status}` : sent.error
+        sent.ok ? `status=${sent.reply.delivery_status} err=${sent.reply.delivery_error}` : sent.error
       );
       const pending = commentsApi.listComments({ status: "pending" });
       check(
@@ -803,7 +811,7 @@ async function main(): Promise<number> {
          ) VALUES ('instagram', 'ig-demo', 'IG用戶', '帖文留言', 'site_comment', NULL, 'open', ?)`
       )
       .run(staffBId);
-    const igReply = replies.createStaffReply({
+    const igReply = await replies.createStaffReply({
       commentId: Number(igInsert.lastInsertRowid),
       staffId: staffBId,
       body: "IG 留言回覆",
@@ -823,7 +831,7 @@ async function main(): Promise<number> {
       "IG 留言篩選",
       igReply.ok && igList.some((row) => row.id === igReply.comment.id)
     );
-    const emptyReply = replies.createStaffReply({
+    const emptyReply = await replies.createStaffReply({
       commentId: Number(igInsert.lastInsertRowid),
       staffId: staffBId,
       body: "   ",
@@ -831,7 +839,7 @@ async function main(): Promise<number> {
     check("空回覆拒絕", !emptyReply.ok);
     if (igReply.ok) {
       commentsApi.updateStatus(igReply.comment.id, "done");
-      const afterDone = replies.createStaffReply({
+      const afterDone = await replies.createStaffReply({
         commentId: igReply.comment.id,
         staffId: staffBId,
         body: "完成後再補一句",

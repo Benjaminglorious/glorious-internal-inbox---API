@@ -81,7 +81,7 @@ async function main(): Promise<number> {
 
     appDb = dbMod.db;
     const staffCount = appDb.prepare(`SELECT COUNT(*) AS n FROM staff`).get() as { n: number };
-    if (staffCount.n === 0) seedMod.seed();
+    if (staffCount.n === 0) await seedMod.seed();
 
     appDb.prepare(`UPDATE staff SET display_name = '陳東榮', is_admin = 0, active = 0 WHERE username = 'tony'`).run();
     appDb.prepare(`UPDATE staff SET display_name = 'Temp', is_admin = 1, active = 1 WHERE username = 'kaixin'`).run();
