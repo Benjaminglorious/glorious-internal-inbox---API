@@ -368,7 +368,7 @@ Seed 會寫入公司總機：
 `routeWhatsAppInbound({ toPhone, fromPhone, body, externalId })`（`src/services/whatsapp.ts`）：
 
 1. **同事個人號**（`kind = staff` 而且啟用）→ 該對話／留言自動派畀綁定嘅同事。
-2. **公司總機 `85221740001`** → 用現有自動派單：**未完成（open + in_progress）最少嘅在職同事優先，同數則 staff id 較細**。
+2. **公司總機 `85221740001`** → 用現有自動派單：**未完成（open + in_progress）最少嘅在職同事優先，同數則 Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）**。
 3. **未知或已停用號碼** → 仍然入庫（來源 `whatsapp`、狀態未處理），但**未派單**，並喺伺服器 log 記一筆。綁定同事已停用時同樣未派。
 
 有 `external_id` 時用佢做冪等鍵（webhook 重試唔會開新留言，亦唔會改走公司總機已派嘅同事）。冇 `external_id` 時，同一對「收件線路 + 寄件人」合成一條對話，新內容會附加。
@@ -486,7 +486,7 @@ Verify token = `WEBHOOK_VERIFY_TOKEN`。
 
 SQLite（`better-sqlite3`），檔案喺 `data/inbox.db`（已加入 `.gitignore`）。
 
-派單規則（seed／未指派留言／公司 WhatsApp 總機）：**未完成（open + in_progress）最少、而且 `active=1` 嘅同事優先，同數則 staff id 較細者**。在職管理員同在職同事都會計入。收藏（`active=0`）唔會被派單，亦登入唔到。
+派單規則（seed／未指派留言／公司 WhatsApp 總機）：**未完成（open + in_progress）最少、而且 `active=1` 嘅同事優先，同數則 Eddie → Wing → Jason → 其餘（按 staff id，排喺 Jason 後面）**。在職管理員同在職同事都會計入。收藏（`active=0`）唔會被派單，亦登入唔到。優先名單係 `eddie`、`wing`、`jason`；Tony 同日後新同事都排喺 Jason 後面。
 
 如果資料庫係舊版本（未有 `whatsapp`、未有 `instagram`，或者未有 `intake_kind`／`origin_site`），啟動時會自動重建 `comments` 表。原有留言 id、內容同負責人都保留。舊嘅網站留言會標成 `site_comment`；舊嘅 WhatsApp 會標成 `whatsapp_click`，`origin_site` 留空（直接 WhatsApp）。
 
