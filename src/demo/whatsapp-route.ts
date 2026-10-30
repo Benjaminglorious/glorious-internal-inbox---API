@@ -1,6 +1,6 @@
 /**
  * 示範 routeWhatsAppInbound：
- * 公司總機用最少未完成、同數則較細 staff id；
+ * 公司總機用最少未完成、同數則 Eddie → Wing → Jason → 其餘（按 staff id）；
  * 同事個人線路派畀綁定同事；未知線路入庫但未派。
  *
  * 先整一個舊 schema（source 冇 whatsapp）再載入 app，順便確認遷移。
@@ -368,6 +368,67 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
   }
 }
 
+/**
+ * 同數時必須係 Eddie → Wing → Jason → 其餘（按 id），即使 Eddie 嘅 id 最大。
+ * 用 transaction 回滾，唔影響後面嘅線路示範。
+ */
+function checkEqualLoadPriority(appDb: Database.Database): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { pickLeastLoadedStaffId } = require("../services/assign") as typeof import("../services/assign");
+  const probe = appDb.transaction(() => {
+    appDb.prepare(`UPDATE staff SET active = 0`).run();
+    const insertStaff = appDb.prepare(
+      `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
+       VALUES (?, ?, 'x', 0, 1)`
+    );
+    const tonyId = Number(insertStaff.run("tony", "Tony Chan").lastInsertRowid);
+    const futureId = Number(insertStaff.run("newbie", "新同事").lastInsertRowid);
+    const jasonId = Number(insertStaff.run("jason", "Jason Cheng").lastInsertRowid);
+    const wingId = Number(insertStaff.run("wing", "Wing Cheng").lastInsertRowid);
+    const eddieId = Number(insertStaff.run("eddie", "Eddie Lau").lastInsertRowid);
+
+    const insertOpen = appDb.prepare(
+      `INSERT INTO comments (
+         source, external_id, author_name, body, status, assignee_staff_id, intake_kind, origin_site
+       ) VALUES ('28car', ?, '客', 'priority', 'open', ?, 'site_comment', NULL)`
+    );
+
+    insertOpen.run("prio-preload-eddie", eddieId);
+    const whileEddieBusy = pickLeastLoadedStaffId();
+    if (whileEddieBusy !== wingId) {
+      throw new Error(`Eddie 已有未完成時應派 Wing，實際 ${whileEddieBusy}`);
+    }
+    appDb.prepare(`UPDATE comments SET status = 'done' WHERE external_id = 'prio-preload-eddie'`).run();
+
+    const picked: number[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const id = pickLeastLoadedStaffId();
+      if (id == null) throw new Error("沒有在職同事");
+      picked.push(id);
+      insertOpen.run(`prio-eq-${i}`, id);
+    }
+    const expected = [eddieId, wingId, jasonId, tonyId, futureId];
+    if (picked.join(",") !== expected.join(",")) {
+      throw new Error(
+        `次序 ${picked.join(",")}，期望 Eddie → Wing → Jason → Tony → 新同事（${expected.join(",")}）`
+      );
+    }
+    throw new Error("__rollback_priority__");
+  });
+
+  try {
+    probe();
+    check("同數次序 Eddie → Wing → Jason → Tony／新同事", false, "transaction 冇回滾");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    check(
+      "同數次序 Eddie → Wing → Jason → Tony／新同事（即使 Eddie id 最大）",
+      message === "__rollback_priority__",
+      message === "__rollback_priority__" ? undefined : message
+    );
+  }
+}
+
 async function main(): Promise<number> {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "glorious-wa-"));
   const dbFile = path.join(tmp, "inbox.db");
@@ -512,14 +573,15 @@ async function main(): Promise<number> {
     const company3 = wa.routeWhatsAppInbound({
       toPhone: "0085221740001",
       fromPhone: "85290000004",
-      body: "總機第三則（同數取較細 id）",
+      body: "總機第三則（同數、都唔係優先名單，取較細 id）",
       externalId: "m-company-3",
     });
     check(
-      "未完成同數時派 staff id 較細嘅同事甲",
+      "未完成同數、而且都唔喺 Eddie／Wing／Jason 時派 staff id 較細嘅同事甲",
       company3.ok && company3.outcome === "company" && company3.assigneeStaffId === staffAId,
       company3.ok ? `assignee=${company3.assigneeStaffId} A=${staffAId} B=${staffBId}` : company3.error
     );
+    checkEqualLoadPriority(appDb);
 
     const retry = wa.routeWhatsAppInbound({
       toPhone: COMPANY_WHATSAPP_PHONE,

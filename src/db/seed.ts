@@ -11,17 +11,21 @@ import type { CommentSource, IntakeKind, OriginSite } from "../types";
 /** Default demo password — MUST be changed in production. */
 export const DEMO_PASSWORD = "Glorious2026!";
 
-/** 可登入：兩位管理員 + 兩位在職同事。其餘種子同事收藏（active=0），保留列但登入唔到。 */
+/**
+ * 可登入：兩位管理員 + 兩位在職同事。其餘種子同事收藏（active=0），保留列但登入唔到。
+ * 在職帳號次序係 eddie → wing → jason → tony，同自動派單優先名單一致。
+ * 只影響全新資料庫嘅 staff.id；已有生產 id 靠 assign.ts 嘅 username 次序。
+ */
 export const SEED_STAFF: Array<{
   username: string;
   display_name: string;
   is_admin: number;
   active: number;
 }> = [
-  { username: "tony", display_name: "Tony Chan", is_admin: 1, active: 1 },
   { username: "eddie", display_name: "Eddie Lau", is_admin: 1, active: 1 },
   { username: "wing", display_name: "Wing Cheng", is_admin: 0, active: 1 },
   { username: "jason", display_name: "Jason Cheng", is_admin: 0, active: 1 },
+  { username: "tony", display_name: "Tony Chan", is_admin: 1, active: 1 },
   { username: "kaixin", display_name: "張嘉欣", is_admin: 0, active: 0 },
   { username: "ming", display_name: "王明軒", is_admin: 0, active: 0 },
   { username: "mei", display_name: "陳美玲", is_admin: 0, active: 0 },

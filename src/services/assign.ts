@@ -1,9 +1,16 @@
 import { db } from "../db";
 
 /**
- * Least open comments, then lowest staff id.
+ * 公司自動派單次序（未完成數相同時）：Eddie → Wing → Jason → 其餘在職同事。
+ * 其餘包括 Tony 同日後新加入嘅 username（唔喺呢個名單）— 全部排 Jason 後面，以 staff.id 升序。
+ * 只計 active = 1。
+ */
+export const AUTO_ASSIGN_PRIORITY_USERNAMES = ["eddie", "wing", "jason"] as const;
+
+/**
+ * Least open comments, then auto-assign priority (Eddie → Wing → Jason → others by id).
  * 只計 active = 1（在職管理員同在職同事都計；active = 0 收藏唔計）。
- * 公司 WhatsApp 總機入站（routeWhatsAppInbound）同 seed 都用呢條規則。
+ * 公司 WhatsApp 總機入站（routeWhatsAppInbound）、網站留言 ingest、同 seed 都用呢條規則。
  */
 export function pickLeastLoadedStaffId(): number | null {
   const row = db
@@ -15,7 +22,13 @@ export function pickLeastLoadedStaffId(): number | null {
       LEFT JOIN comments c ON c.assignee_staff_id = s.id
       WHERE s.active = 1
       GROUP BY s.id
-      ORDER BY open_count ASC, s.id ASC
+      ORDER BY open_count ASC,
+               CASE s.username
+                 WHEN 'eddie' THEN 0
+                 WHEN 'wing' THEN 1
+                 WHEN 'jason' THEN 2
+                 ELSE 1000 + s.id
+               END ASC
       LIMIT 1
     `
     )
