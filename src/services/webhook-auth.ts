@@ -59,3 +59,26 @@ export function verifyMetaSignature(req: Request): { ok: true } | { ok: false; e
   }
   return { ok: true };
 }
+
+/**
+ * Page／Instagram／WhatsApp Cloud POST 共用。
+ * 有 META_APP_SECRET 就驗證 X-Hub-Signature-256；未設定就跳過。
+ * 請求若帶 X-Webhook-Token 或 Bearer，必須對照 WEBHOOK_VERIFY_TOKEN。
+ * 冇帶自訂 token 唔當失敗（Meta 推送唔會帶）。
+ */
+export function authorizeMetaPost(
+  req: Request
+): { ok: true } | { ok: false; error: string; status: number } {
+  if (!configuredWebhookToken()) {
+    return { ok: false, error: "WEBHOOK_VERIFY_TOKEN 未設定", status: 503 };
+  }
+
+  const sig = verifyMetaSignature(req);
+  if (!sig.ok) return sig;
+
+  const provided = providedWebhookToken(req);
+  if (provided && !webhookTokenMatches(provided)) {
+    return { ok: false, error: "webhook token 不正確", status: 401 };
+  }
+  return { ok: true };
+}
