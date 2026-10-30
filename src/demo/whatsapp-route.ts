@@ -8,6 +8,9 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { createHmac } from "crypto";
+import type { Server } from "http";
+import type { AddressInfo } from "net";
 import Database from "better-sqlite3";
 import { COMPANY_WHATSAPP_PHONE } from "../config";
 
@@ -23,7 +26,349 @@ function check(name: string, cond: boolean, detail?: string): void {
   console.log(`OK   ${name}`);
 }
 
-function main(): number {
+const WEBHOOK_TOKEN = "demo-webhook-token";
+
+/** Meta messages webhook reference 嘅 Incoming text message 形狀；收件號用公司總機。 */
+function metaIncomingSample(messageId: string, messages?: unknown[]): Record<string, unknown> {
+  return {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        id: "102290129340398",
+        changes: [
+          {
+            value: {
+              messaging_product: "whatsapp",
+              metadata: {
+                display_phone_number: COMPANY_WHATSAPP_PHONE,
+                phone_number_id: "106540352242922",
+              },
+              contacts: [
+                {
+                  profile: { name: "Sheena Nelson" },
+                  wa_id: "16505551234",
+                },
+              ],
+              messages: messages ?? [
+                {
+                  from: "16505551234",
+                  id: messageId,
+                  timestamp: "1749416383",
+                  type: "text",
+                  text: { body: "Does it come in another color?" },
+                },
+              ],
+            },
+            field: "messages",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function signBody(secret: string, raw: string): string {
+  return "sha256=" + createHmac("sha256", secret).update(raw).digest("hex");
+}
+
+async function postWhatsApp(
+  base: string,
+  payload: unknown,
+  headers: Record<string, string> = {}
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const raw = JSON.stringify(payload);
+  const res = await fetch(`${base}/api/webhooks/whatsapp`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: raw,
+  });
+  const json = (await res.json()) as Record<string, unknown>;
+  return { status: res.status, json };
+}
+
+async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void> {
+  process.env.WEBHOOK_VERIFY_TOKEN = WEBHOOK_TOKEN;
+  delete process.env.META_APP_SECRET;
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const express = require("express") as typeof import("express");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { whatsappWebhookRouter } = require("../routes/webhooks") as typeof import("../routes/webhooks");
+  const app = express();
+  app.use(
+    express.json({
+      verify: (req, _res, buf) => {
+        (req as import("express").Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+      },
+    })
+  );
+  app.use("/api/webhooks/whatsapp", whatsappWebhookRouter);
+
+  const server = await new Promise<Server>((resolve) => {
+    const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
+  });
+
+  try {
+    const address = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${address.port}`;
+    const company = appDb
+      .prepare(`SELECT id FROM whatsapp_lines WHERE phone_e164 = ? AND kind = 'company' AND is_active = 1`)
+      .get(COMPANY_WHATSAPP_PHONE) as { id: number } | undefined;
+
+    const verify = await fetch(
+      `${base}/api/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(WEBHOOK_TOKEN)}&hub.challenge=challenge-ok`
+    );
+    check(
+      "GET hub.verify 回 challenge",
+      verify.status === 200 && (await verify.text()) === "challenge-ok"
+    );
+    const badVerify = await fetch(
+      `${base}/api/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=nope&hub.challenge=challenge-ok`
+    );
+    check("GET hub.verify token 唔啱回 403", badVerify.status === 403);
+
+    const sampleId = "wamid.HTTP-SAMPLE";
+    const sample = metaIncomingSample(sampleId);
+    const open = await postWhatsApp(base, sample);
+    const openResult = Array.isArray(open.json.results) ? (open.json.results[0] as Record<string, unknown>) : undefined;
+    const stored = appDb
+      .prepare(
+        `SELECT source, intake_kind, origin_site, author_name, body, assignee_staff_id
+         FROM comments WHERE external_id = ?`
+      )
+      .get(sampleId) as
+      | {
+          source: string;
+          intake_kind: string;
+          origin_site: string | null;
+          author_name: string;
+          body: string;
+          assignee_staff_id: number | null;
+        }
+      | undefined;
+    check(
+      "Meta 樣本冇 X-Webhook-Token 入公司總機",
+      open.status === 200 &&
+        open.json.ok === true &&
+        openResult?.outcome === "company" &&
+        openResult?.created === true &&
+        openResult?.line_id === company?.id &&
+        openResult?.intake_kind === "whatsapp_click" &&
+        stored?.source === "whatsapp" &&
+        stored?.intake_kind === "whatsapp_click" &&
+        stored?.origin_site == null &&
+        stored?.author_name === "Sheena Nelson" &&
+        stored?.body === "Does it come in another color?" &&
+        stored?.assignee_staff_id != null,
+      `status=${open.status} body=${JSON.stringify(open.json)}`
+    );
+
+    const wrongToken = await postWhatsApp(base, sample, { "x-webhook-token": "nope" });
+    check(
+      "帶咗錯 X-Webhook-Token 回 401",
+      wrongToken.status === 401 && wrongToken.json.error === "webhook token 不正確"
+    );
+    const wrongBearer = await postWhatsApp(base, sample, { authorization: "Bearer nope" });
+    check(
+      "帶咗錯 Bearer 回 401",
+      wrongBearer.status === 401 && wrongBearer.json.error === "webhook token 不正確"
+    );
+
+    const stub = await postWhatsApp(
+      base,
+      {
+        to: COMPANY_WHATSAPP_PHONE,
+        from: "85290001111",
+        body: "想問 Alphard 有冇現貨",
+        external_id: "stub-token-1",
+      },
+      { "x-webhook-token": WEBHOOK_TOKEN }
+    );
+    const stubResult = Array.isArray(stub.json.results) ? (stub.json.results[0] as Record<string, unknown>) : undefined;
+    check(
+      "stub 帶 X-Webhook-Token 仍然入公司總機",
+      stub.status === 200 && stub.json.ok === true && stubResult?.outcome === "company" && stubResult?.created === true
+    );
+    const bearer = await postWhatsApp(
+      base,
+      {
+        to: COMPANY_WHATSAPP_PHONE,
+        from: "85290001112",
+        body: "Bearer stub",
+        external_id: "stub-bearer-1",
+      },
+      { authorization: `Bearer ${WEBHOOK_TOKEN}` }
+    );
+    check("stub 帶 Bearer 仍然成功", bearer.status === 200 && bearer.json.ok === true);
+
+    const secret = "test-meta-app-secret";
+    process.env.META_APP_SECRET = secret;
+    const unsigned = await postWhatsApp(base, metaIncomingSample("wamid.UNSIGNED"));
+    check(
+      "有 secret 但冇簽名回 401",
+      unsigned.status === 401 && unsigned.json.error === "缺少或無效 X-Hub-Signature-256"
+    );
+    const rawBad = JSON.stringify(metaIncomingSample("wamid.BADSIG"));
+    const badSig = await fetch(`${base}/api/webhooks/whatsapp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-hub-signature-256": "sha256=deadbeef",
+      },
+      body: rawBad,
+    });
+    const badSigJson = (await badSig.json()) as { error?: string };
+    check(
+      "簽名錯誤回 401",
+      badSig.status === 401 && badSigJson.error === "X-Hub-Signature-256 不正確"
+    );
+
+    const signedId = "wamid.SIGNED";
+    const signedPayload = metaIncomingSample(signedId);
+    const signedRaw = JSON.stringify(signedPayload);
+    const signed = await fetch(`${base}/api/webhooks/whatsapp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-hub-signature-256": signBody(secret, signedRaw),
+      },
+      body: signedRaw,
+    });
+    const signedJson = (await signed.json()) as { ok?: boolean; results?: Array<{ outcome?: string; created?: boolean }> };
+    check(
+      "簽名正確且冇自訂 token 入庫",
+      signed.status === 200 &&
+        signedJson.ok === true &&
+        signedJson.results?.[0]?.outcome === "company" &&
+        signedJson.results?.[0]?.created === true
+    );
+    const signedWrongToken = await fetch(`${base}/api/webhooks/whatsapp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-hub-signature-256": signBody(secret, signedRaw),
+        "x-webhook-token": "nope",
+      },
+      body: signedRaw,
+    });
+    check("簽名啱但 token 錯仍回 401", signedWrongToken.status === 401);
+    const signedGoodToken = await fetch(`${base}/api/webhooks/whatsapp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-hub-signature-256": signBody(secret, signedRaw),
+        "x-webhook-token": WEBHOOK_TOKEN,
+      },
+      body: signedRaw,
+    });
+    const signedGoodJson = (await signedGoodToken.json()) as { ok?: boolean; results?: Array<{ created?: boolean }> };
+    check(
+      "簽名同 token 都啱仍然成功",
+      signedGoodToken.status === 200 && signedGoodJson.ok === true && signedGoodJson.results?.[0]?.created === false
+    );
+    delete process.env.META_APP_SECRET;
+
+    const statuses = await postWhatsApp(base, {
+      object: "whatsapp_business_account",
+      entry: [
+        {
+          id: "102290129340398",
+          changes: [
+            {
+              field: "messages",
+              value: {
+                messaging_product: "whatsapp",
+                metadata: {
+                  display_phone_number: COMPANY_WHATSAPP_PHONE,
+                  phone_number_id: "106540352242922",
+                },
+                statuses: [
+                  {
+                    id: "wamid.STATUS",
+                    status: "delivered",
+                    timestamp: "1749416400",
+                    recipient_id: "16505551234",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "狀態回呼忽略",
+      statuses.status === 200 && statuses.json.ok === true && statuses.json.ignored === true
+    );
+
+    const imageOnly = await postWhatsApp(
+      base,
+      metaIncomingSample("wamid.IMAGE-ONLY", [
+        {
+          from: "85290008881",
+          id: "wamid.IMAGE-ONLY",
+          timestamp: "1749416383",
+          type: "image",
+          image: { mime_type: "image/jpeg", sha256: "abc", id: "media-1" },
+        },
+      ])
+    );
+    const imageRow = appDb.prepare(`SELECT id FROM comments WHERE external_id = 'wamid.IMAGE-ONLY'`).get();
+    check(
+      "純媒體訊息忽略（唔下載）",
+      imageOnly.status === 200 && imageOnly.json.ok === true && imageOnly.json.ignored === true && imageRow == null
+    );
+
+    const mixedId = "wamid.MIX-TEXT";
+    const mixed = await postWhatsApp(
+      base,
+      metaIncomingSample(mixedId, [
+        {
+          from: "85290008882",
+          id: mixedId,
+          timestamp: "1749416383",
+          type: "text",
+          text: { body: "文字同圖" },
+        },
+        {
+          from: "85290008882",
+          id: "wamid.MIX-IMG",
+          timestamp: "1749416384",
+          type: "image",
+          image: { mime_type: "image/jpeg", sha256: "def", id: "media-2" },
+        },
+      ])
+    );
+    const mixedText = appDb.prepare(`SELECT body FROM comments WHERE external_id = ?`).get(mixedId) as
+      | { body: string }
+      | undefined;
+    const mixedImage = appDb.prepare(`SELECT id FROM comments WHERE external_id = 'wamid.MIX-IMG'`).get();
+    const mixedResults = Array.isArray(mixed.json.results) ? mixed.json.results : [];
+    check(
+      "文字加圖片只入文字",
+      mixed.status === 200 &&
+        mixed.json.ok === true &&
+        mixedResults.length === 1 &&
+        mixedText?.body === "文字同圖" &&
+        mixedImage == null
+    );
+
+    delete process.env.WEBHOOK_VERIFY_TOKEN;
+    const missingEnv = await postWhatsApp(base, sample);
+    check(
+      "未設 WEBHOOK_VERIFY_TOKEN 回 503",
+      missingEnv.status === 503 && missingEnv.json.error === "WEBHOOK_VERIFY_TOKEN 未設定"
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+    process.env.WEBHOOK_VERIFY_TOKEN = WEBHOOK_TOKEN;
+    delete process.env.META_APP_SECRET;
+  }
+}
+
+async function main(): Promise<number> {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "glorious-wa-"));
   const dbFile = path.join(tmp, "inbox.db");
   let appDb: Database.Database | undefined;
@@ -281,6 +626,25 @@ function main(): number {
       ],
     });
     check("Meta payload 解析到一則文字", meta.messages.length === 1 && meta.messages[0]?.authorName === "阿強");
+    const official = wa.parseWhatsAppWebhookPayload(metaIncomingSample("wamid.OFFICIAL-SAMPLE"));
+    check(
+      "Meta Incoming Message 樣本用 display_phone_number 對公司總機",
+      official.messages.length === 1 &&
+        official.messages[0]?.toPhone === COMPANY_WHATSAPP_PHONE &&
+        official.messages[0]?.fromPhone === "16505551234" &&
+        official.messages[0]?.authorName === "Sheena Nelson" &&
+        official.messages[0]?.body === "Does it come in another color?" &&
+        !official.error
+    );
+    const officialRouted = official.messages[0] ? wa.routeWhatsAppInbound(official.messages[0]) : null;
+    check(
+      "樣本訊息派去公司總機",
+      !!officialRouted?.ok &&
+        officialRouted.outcome === "company" &&
+        officialRouted.line?.phone_e164 === COMPANY_WHATSAPP_PHONE &&
+        officialRouted.comment.source === "whatsapp" &&
+        officialRouted.comment.intake_kind === "whatsapp_click"
+    );
     const metaRouted = meta.messages[0] ? wa.routeWhatsAppInbound(meta.messages[0]) : null;
     check(
       "Meta 總機訊息入庫",
@@ -489,6 +853,8 @@ function main(): number {
       .all();
     console.log("未完成分佈：", openCounts);
 
+    await checkLiveWhatsAppWebhook(appDb);
+
     if (failures.length) {
       console.error(`\n${failures.length} 項失敗`);
       return 1;
@@ -501,5 +867,10 @@ function main(): number {
   }
 }
 
-const code = main();
-process.exit(code);
+main().then(
+  (code) => process.exit(code),
+  (err) => {
+    console.error(err);
+    process.exit(1);
+  }
+);

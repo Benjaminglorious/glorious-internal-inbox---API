@@ -165,6 +165,36 @@ function main(): number {
     delete process.env.META_APP_SECRET;
     check("未設 secret 跳過簽名", auth.verifyMetaSignature({ get: () => undefined } as never).ok);
 
+    const headerReq = (headers: Record<string, string>, rawBody?: Buffer) =>
+      ({
+        get: (name: string) => headers[name.toLowerCase()],
+        rawBody,
+      }) as unknown as import("express").Request;
+
+    const openPost = auth.authorizeMetaPost(headerReq({}));
+    check("POST 冇 token、未設 secret 通過", openPost.ok);
+    const badPost = auth.authorizeMetaPost(headerReq({ "x-webhook-token": "nope" }));
+    check("POST 錯 token 拒絕", !badPost.ok && badPost.status === 401 && badPost.error === "webhook token 不正確");
+    const bearerPost = auth.authorizeMetaPost(headerReq({ authorization: "Bearer demo-webhook-token" }));
+    check("POST Bearer token 通過", bearerPost.ok);
+
+    process.env.META_APP_SECRET = "test-secret";
+    const missingSig = auth.authorizeMetaPost(headerReq({}));
+    check("POST 有 secret 但冇簽名拒絕", !missingSig.ok && missingSig.status === 401);
+    const signedOpen = auth.authorizeMetaPost(headerReq({ "x-hub-signature-256": goodSig }, raw));
+    check("POST 簽名正確且冇自訂 token 通過", signedOpen.ok);
+    const signedBadToken = auth.authorizeMetaPost(
+      headerReq({ "x-hub-signature-256": goodSig, "x-webhook-token": "nope" }, raw)
+    );
+    check("POST 簽名啱但 token 錯仍拒絕", !signedBadToken.ok && signedBadToken.status === 401);
+    delete process.env.META_APP_SECRET;
+
+    const savedToken = process.env.WEBHOOK_VERIFY_TOKEN;
+    delete process.env.WEBHOOK_VERIFY_TOKEN;
+    const missingEnv = auth.authorizeMetaPost(headerReq({}));
+    check("POST 未設 WEBHOOK_VERIFY_TOKEN 回 503", !missingEnv.ok && missingEnv.status === 503);
+    process.env.WEBHOOK_VERIFY_TOKEN = savedToken;
+
     if (failures.length) {
       console.error(`\n${failures.length} 項失敗`);
       return 1;

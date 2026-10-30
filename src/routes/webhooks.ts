@@ -6,10 +6,10 @@ import {
   type SiteCommentSource,
 } from "../services/site-comments";
 import {
+  authorizeMetaPost,
   configuredWebhookToken,
   providedWebhookToken,
   queryString,
-  verifyMetaSignature,
   webhookTokenMatches,
 } from "../services/webhook-auth";
 import { parseWhatsAppWebhookPayload, routeWhatsAppInbound } from "../services/whatsapp";
@@ -49,11 +49,18 @@ function hubVerify(req: Request, res: Response): void {
 whatsappWebhookRouter.get("/", hubVerify);
 
 /**
- * WhatsApp 入站 stub。而家唔會連接 Meta／Glorious。
- * 用 X-Webhook-Token 或 Authorization: Bearer，對照 WEBHOOK_VERIFY_TOKEN。
+ * WhatsApp Cloud API 收件（同 Page／Instagram POST 驗證）。
+ * - 有 META_APP_SECRET 時驗證 X-Hub-Signature-256（失敗回 401）。
+ * - 未設定 secret 時跳過簽名。
+ * - Meta 推送唔帶 X-Webhook-Token；若請求帶咗 token 或 Bearer，就必須啱。
+ * 簡單 JSON stub 仍然可以帶 token 試派單。呢度唔會打去 Meta／媒體下載。
  */
 whatsappWebhookRouter.post("/", (req: Request, res: Response) => {
-  if (!requireWebhookToken(req, res)) return;
+  const auth = authorizeMetaPost(req);
+  if (!auth.ok) {
+    res.status(auth.status).json({ ok: false, error: auth.error });
+    return;
+  }
 
   const parsed = parseWhatsAppWebhookPayload(req.body);
   if (parsed.error) {
@@ -169,24 +176,12 @@ metaWebhookRouter.get("/", hubVerify);
  * - 有 META_APP_SECRET 時驗證 X-Hub-Signature-256（失敗回 401）。
  * - 未設定 secret 時跳過簽名（方便本地／尚未填密鑰）。
  * - 認得嘅留言／私訊會 upsert 為 site_comment（facebook 或 instagram）。
+ * - Meta 推送唔帶 X-Webhook-Token；若同時帶咗 token 就必須啱。
  */
 metaWebhookRouter.post("/", (req: Request, res: Response) => {
-  if (!configuredWebhookToken()) {
-    res.status(503).json({ ok: false, error: "WEBHOOK_VERIFY_TOKEN 未設定" });
-    return;
-  }
-
-  const sig = verifyMetaSignature(req);
-  if (!sig.ok) {
-    res.status(sig.status).json({ ok: false, error: sig.error });
-    return;
-  }
-
-  // Meta 訂閱驗證之後嘅推送唔帶我哋嘅 X-Webhook-Token；簽名（或未設 secret）就夠。
-  // 若同時帶咗 token 就必須啱。
-  const provided = providedWebhookToken(req);
-  if (provided && !webhookTokenMatches(provided)) {
-    res.status(401).json({ ok: false, error: "webhook token 不正確" });
+  const auth = authorizeMetaPost(req);
+  if (!auth.ok) {
+    res.status(auth.status).json({ ok: false, error: auth.error });
     return;
   }
 

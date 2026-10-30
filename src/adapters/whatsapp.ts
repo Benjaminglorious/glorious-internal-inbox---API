@@ -1,10 +1,10 @@
 /**
- * WhatsApp 入站適配器（尚未連接 Meta／Glorious）。
+ * WhatsApp 適配器。入站 webhook 喺 routes；呢度 poll／出站仍然未連接 Meta／Glorious。
  *
  * 出站 click-to-chat 用 COMPANY_WHATSAPP_URL。
  * 入站派單唔係靠呢度 poll：POST /api/webhooks/whatsapp 會呼叫 routeWhatsAppInbound
  * （同事個人號 → 綁定同事；公司總機 85221740001 → 最少未完成）。
- * 真實 Cloud API 稍後先接。呢個檔仍然唔會發出任何網絡請求。
+ * 收 Meta Cloud API messages（display_phone_number）。呢個檔仍然唔會發出任何網絡請求。
  * 同事喺收件箱回覆公司 WhatsApp（包括由 28car／官網／Facebook／IG 撳過嚟）
  * 會呼叫 queueOutboundReply，而家只標 stub。
  */
@@ -24,7 +24,7 @@ export interface InboundWhatsAppMessage {
 export async function fetchInboundChats(): Promise<InboundWhatsAppMessage[]> {
   // TODO: WhatsApp Business API — 拉取 phone 85221740001 嘅 inbound chats／messages
   console.warn(
-    "[adapter:whatsapp] fetchInboundChats 尚未實作。入站請用 webhook stub（WEBHOOK_VERIFY_TOKEN）；而家唔會呼叫 WhatsApp API。"
+    "[adapter:whatsapp] fetchInboundChats 尚未實作。入站請用 POST /api/webhooks/whatsapp；而家唔會呼叫 WhatsApp API。"
   );
   return [];
 }
