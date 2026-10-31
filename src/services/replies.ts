@@ -108,6 +108,7 @@ export async function createStaffReply(input: {
     staffId: staff.id,
     waFromPhone: comment.wa_from_phone,
     waToPhone: comment.wa_to_phone,
+    vehicleRef: comment.vehicle_ref,
   });
   const delivery: DeliveryStatus = isDeliveryStatus(queued.delivery_status) ? queued.delivery_status : "stub";
   const deliveryError =

@@ -1,6 +1,7 @@
 import { db } from "../db";
 import type { CommentSource, CommentStatus, CommentWithAssignee } from "../types";
-import { isCommentSource } from "../types";
+import { isCommentSource, type EntryPath } from "../types";
+import { resolveEntryPath } from "../intake";
 import { pickLeastLoadedStaffId } from "./assign";
 import { getComment } from "./comments";
 import { notifyNewComment } from "./push";
@@ -32,6 +33,8 @@ export interface UpsertSiteCommentInput {
   author_name: string;
   body: string;
   vehicle_ref?: string | null;
+  /** 28car 網頁留言區寫入 `28car_board`。其他來源留空。 */
+  entry_path?: string | null;
 }
 
 export interface UpsertSiteCommentSuccess {
@@ -122,6 +125,17 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
     vehicleRef = String(input.vehicle_ref).replace(/\u0000/g, "").trim().slice(0, MAX_VEHICLE);
   }
 
+  const entryResolved = resolveEntryPath({
+    explicit: input.entry_path,
+    inferred: null,
+    channel: "site",
+  });
+  if (!entryResolved.ok) return { ok: false, error: entryResolved.error };
+  const entryPath: EntryPath | null = entryResolved.entryPath;
+  if (entryPath === "28car_board" && source !== "28car") {
+    return { ok: false, error: "28car_board 只可以配 source=28car" };
+  }
+
   const run = db.transaction((): UpsertSiteCommentResult => {
     const existing = db
       .prepare(
@@ -137,10 +151,10 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
         .prepare(
           `INSERT INTO comments (
              source, external_id, author_name, body, vehicle_ref, status, assignee_staff_id,
-             intake_kind, origin_site
-           ) VALUES (?, ?, ?, ?, ?, 'open', ?, 'site_comment', NULL)`
+             intake_kind, origin_site, entry_path
+           ) VALUES (?, ?, ?, ?, ?, 'open', ?, 'site_comment', NULL, ?)`
         )
-        .run(source, externalId, authorName, body, vehicleRef, assigneeStaffId);
+        .run(source, externalId, authorName, body, vehicleRef, assigneeStaffId, entryPath);
       const comment = getComment(Number(info.lastInsertRowid));
       if (!comment) return { ok: false, error: "入庫後讀唔返留言" };
       return { ok: true, comment, created: true, assigneeStaffId };
@@ -157,9 +171,10 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
       `UPDATE comments
        SET author_name = ?, body = ?, vehicle_ref = ?, status = ?,
            intake_kind = 'site_comment', origin_site = NULL,
+           entry_path = COALESCE(?, entry_path),
            updated_at = datetime('now')
        WHERE id = ?`
-    ).run(authorName, body, vehicleRef, status, existing.id);
+    ).run(authorName, body, vehicleRef, status, entryPath, existing.id);
 
     const comment = getComment(existing.id);
     if (!comment) return { ok: false, error: "更新後讀唔返留言" };
@@ -181,6 +196,7 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
         body: result.comment.body,
         intake_kind: result.comment.intake_kind,
         origin_site: result.comment.origin_site,
+        entry_path: result.comment.entry_path,
       });
     } catch (err) {
       console.error("[push] 未能排程推送", err);

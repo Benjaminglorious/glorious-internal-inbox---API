@@ -10,7 +10,7 @@
 | 東榮 Instagram | 簡介連結會去 `glorious.hk/?utm_source=ig` | `instagram` | 東榮 IG |
 | WhatsApp | 公司總機 `85221740001` 同已綁定嘅同事個人號 | `whatsapp` | WhatsApp |
 
-而家用**示範資料**。網站／IG／Facebook 抓取同出站仍然係 stub。公司 WhatsApp 總機回覆會打 Cloud API（要設定 token）。
+而家用**示範資料**。官網／Facebook／IG 抓取同出站仍然係 stub。28car 車盤同留言板可以入庫；即時連去 28car 要可輪換代理而且旗標先至會開，預設唔出網絡。公司 WhatsApp 總機回覆會打 Cloud API（要設定 token）。
 
 > ⚠️ 呢個系統只供東榮內部同事使用，唔應公開喺互聯網冇保護咁部署。
 
@@ -480,7 +480,7 @@ Verify token = `WEBHOOK_VERIFY_TOKEN`。
 
 **仍然需要 Tony／同事喺 Meta Developer Console 建立 App、訂閱欄位、填 Page token 等。** Facebook／Instagram 出站 Graph 回覆仍然係 stub。WhatsApp Cloud 收件用 `/api/webhooks/whatsapp`，POST 驗證同上面一樣（`X-Hub-Signature-256`；自訂 token 只係帶咗先至核對）。公司總機回覆出站用下面嘅 `WHATSAPP_ACCESS_TOKEN`，唔用 Page token。
 
-官網／28car：最穩係 CMS 或聯絡表 webhook 打去 `site-comment`；28car 若無 API，可用電郵轉送／經銷商匯出，唔好靠爬蟲做第一版。
+官網：最穩係 CMS 或聯絡表 webhook 打去 `site-comment`。28car 車盤同留言板見下面「28car 車盤同留言板」。
 
 ## 資料庫
 
@@ -522,9 +522,56 @@ JSON 係文字訊息，`to` 係客戶 `wa_id`。成功標 `delivery_status=sent`
 npm run demo:whatsapp-outbound
 ```
 
-## 計劃中嘅真來源（除公司 WhatsApp 出站外仍然係 stub）
+## 28car 車盤同留言板
 
-`src/adapters/twentyeightcar.ts`、`glorious-web.ts`、`facebook.ts`、`instagram.ts` 嘅 poll／出站仍然係 stub。入站可以經 `POST /api/webhooks/site-comment` 或 `POST /api/webhooks/meta`（骨架）入庫；真正 Page／IG 出站同官網／28car CMS 配線仍然要做。
+十個車行帳號（只係登入名，密碼放 `TWENTYEIGHT_CAR_ACCOUNTS_JSON`）：
+
+`gmld28013@hotmail.com`、`gmld28022@hotmail.com`、`gmld28035@hotmail.com`、`gmld28038@hotmail.com`、`gmld28040@hotmail.com`、`gmld28049@hotmail.com`、`gmld28050@hotmail.com`、`gmld28100@hotmail.com`、`gmld28112@hotmail.com`、`gmld28115@hotmail.com`
+
+頁面：`/28car`。API：`GET /api/28car/listings`、`GET /api/28car/listings/:stockId`、`GET /api/28car/status`（要登入）。管理員可以 `POST /api/28car/sync` 同 `POST /api/28car/replies/flush`。
+
+| 欄位 | 意思 |
+|------|------|
+| `stock_id` | 庫存編號，例如 `s2806213` |
+| `vid` | `sell_dsp.php?h_vid=` 嘅內部編號。同庫存編號唔同。未同步到之前係空 |
+| `public_url` | 有 vid 先至係 `https://www.28car.com/sell_dsp.php?h_vid={vid}&h_vw=y`。公開頁經常再用 frameset 去一個旋轉子網域 |
+| `comment_count` | 賣車列表「留言」欄，只係數量 |
+| 簡評 | 賣家廣告文字，唔係留言板 |
+| 留言板 | `sell_dsp.php` 嘅 `#msgbox`。`msg_own` 係賣家帖 |
+
+`gmld28013` 觀察到四個車盤（麥拿倫 720S、寶馬 I8、勞斯萊斯 PHANTOM EWB、豐田 ALPHARD）。`npm run seed` 會寫低呢四個，**vid 留空**，因為讀頁先至知道。現場每個車盤只有一則賣家帖（WhatsApp `21740001` 附註），賣家帖放喺車盤頁，唔會變成客戶工單。Seed 另有一則示範買家留言（李先生問 720S），用來顯示「28car 留言板」標籤。
+
+買家一旦寫喺留言板，同步會寫入 `comments`，`source=28car`、`entry_path=28car_board`，畫面係「28car 留言板」，並且用最少未完成同事派單。
+
+另一條路：客戶撳留言區入面嘅 WhatsApp 連結（`https://api.whatsapp.com/send?phone=85221740001`）入公司 WhatsApp。如果 Meta referral 係車輛頁（`sell_dsp.php`、`h_vid`、`h_vw`、`msgbox`），入庫係 `source=whatsapp`、`origin_site=28car`、`entry_path=28car_wa_link`，畫面係「28car 留言區 WhatsApp」。同一條 click-to-chat 官網同 Facebook 都用，所以**淨係**呢條 URL、又冇車輛頁 referral，唔會標成 28car。可以喺 webhook 明確傳 `entry_path: "28car_wa_link"`。
+
+篩選：`GET /api/comments?entry=28car_board` 或 `entry=28car_wa_link`。留言箱有同一個下拉。
+
+同事回覆 `source=28car` 而且對到車盤時，會排入 `car_reply_queue`。代發步驟（旗標同代理都齊先至發生）：
+
+1. 用今次動作嘅代理登入該帳號。
+2. 打開 `sell_dsp.php?h_vid={vid}&h_url_dsp_src=/mbr_sell.php&h_vw=1&h_f_bk=y`，讀 form1 嘅 `h_t`、`h_k`。
+3. POST `/sell_dsp.php`：`h_mode=add`、`h_type=o`（車行身份）、`h_vid`、`h_url_dsp_src=/mbr_sell.php`、`h_msg`。頁面上的「回應此留言」只係 JavaScript 填字，唔係提交。
+4. 唔使用 form2，亦唔會送 `h_mode=del`。
+
+`h_t`／`h_k` 只活喺嗰一次請求，唔會寫入資料庫。遇到 `msg_busy.php`、403 或 Cloudflare 會停，唔會即刻再試。登入失敗會停晒成次運行，避免十個帳號連續打錯密碼。
+
+### 出口 IP
+
+`TWENTYEIGHT_CAR_SYNC_ENABLED` 同 `TWENTYEIGHT_CAR_REPLY_POST_ENABLED` 預設關閉。兩個都要同時有可輪換代理先至會出網絡：
+
+- `TWENTYEIGHT_CAR_PROXY_URLS`：至少兩個 `http://` 或 `https://` 代理，每次動作用下一個，唔重複緊接上一次。
+- 或者 `TWENTYEIGHT_CAR_PROXY_URL` 含 `{session}`。每次動作換 session，供應商要因此派一個新 IP。
+
+一個固定代理、或者完全冇代理，系統會拒絕，**唔會**改為用 Render 機房 IP 直連。SOCKS 唔支援。代理網址唔會寫入 SQLite 或 log。
+
+Render 免費服務係共用 IP，唔好在未接代理之前打開旗標。登入 POST 用 `mbr_login.php` 的 `h_username`、`h_password`、`h_mode=login`、`h_url_login_src`、`h_url_src`（登入頁冇 `h_t`／`h_k`）。未設定 `TWENTYEIGHT_CAR_LOGIN_FORM_JSON` 時用呢組。會員電話頁 `mbr_chg.php` 唔會讀、亦唔會改。
+
+煙霧測試：`npm run demo:28car`
+
+## 計劃中嘅真來源（除公司 WhatsApp 出站同 28car 車盤外）
+
+`src/adapters/glorious-web.ts`、`facebook.ts`、`instagram.ts` 嘅 poll／出站仍然係 stub。入站可以經 `POST /api/webhooks/site-comment` 或 `POST /api/webhooks/meta`（骨架）入庫；真正 Page／IG 出站同官網 CMS 配線仍然要做。28car 即時同步同留言代發見上面，預設關閉。
 
 `src/adapters/whatsapp.ts`：
 
@@ -537,7 +584,8 @@ npm run demo:whatsapp-outbound
 |----------|------|
 | 公司 WhatsApp，包括由網站或 IG 撳過嚟 | 有客戶號碼就 Cloud API 發送；成功 `sent`，失敗 `failed` |
 | 同事個人 WhatsApp | 收件箱儲存，標 `stub`（唔用公司 Cloud API 代發） |
-| 28car 網站留言 | 可用 `site-comment` webhook 入庫；出站 stub |
+| 28car 留言板 | 買家帖入庫為 `entry_path=28car_board`；代發要代理同旗標，否則排入隊列 |
+| 28car 留言區 WhatsApp | 公司 WhatsApp 入站，`entry_path=28car_wa_link`，仍然走現有 Cloud API |
 | 東榮官網留言 | 可用 `site-comment` webhook 入庫；出站 stub |
 | Facebook 留言 | Meta webhook 骨架可入庫；出站 stub |
 | 東榮 IG 留言／私訊 | Meta webhook 骨架可入庫；出站 stub |

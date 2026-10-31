@@ -12,6 +12,8 @@ export interface OutboundReplyRequest {
   waFromPhone: string | null;
   /** 入站寫入嘅收件線路。網站留言係 null。 */
   waToPhone: string | null;
+  /** 留言上嘅車輛編號。28car 用嚟對車盤。 */
+  vehicleRef?: string | null;
 }
 
 export interface OutboundReplyResult {

@@ -25,7 +25,7 @@ export const whatsappInbound = whatsapp;
 export async function pollAllSources(): Promise<void> {
   for (const [name, adapter] of Object.entries(adapters)) {
     const items = await adapter.fetchNewComments();
-    console.log(`[adapters] ${name}: 取得 ${items.length} 條（stub）`);
+    console.log(`[adapters] ${name}: 取得 ${items.length} 條`);
   }
 }
 

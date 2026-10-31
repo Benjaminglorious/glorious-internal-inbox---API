@@ -5,8 +5,9 @@ import { hashPassword } from "../auth/passwords";
 import { autoAssignUnassigned } from "../services/assign";
 import { notifyNewComment } from "../services/push";
 import { createStaffReply } from "../services/replies";
+import { upsertObservedDealerListings } from "../services/twentyeightcar";
 import { ensureCompanyWhatsAppLine } from "../services/whatsapp";
-import type { CommentSource, IntakeKind, OriginSite } from "../types";
+import type { CommentSource, EntryPath, IntakeKind, OriginSite } from "../types";
 
 /** Default demo password — MUST be changed in production. */
 export const DEMO_PASSWORD = "Glorious2026!";
@@ -46,6 +47,8 @@ interface DemoComment {
   status?: "open" | "in_progress" | "done";
   /** 只有 WhatsApp 先至用。網站／IG 留言會強制係 site_comment、origin 空。 */
   origin_site?: OriginSite | null;
+  /** 28car 留言板，或留言區入面嘅 WhatsApp 連結。 */
+  entry_path?: EntryPath | null;
 }
 
 const COMMENTS: DemoComment[] = [
@@ -55,6 +58,14 @@ const COMMENTS: DemoComment[] = [
     author_name: "阿強",
     body: "Alphard 2019 還可以議價嗎？想週末去葵涌陳列室睇車。",
     vehicle_ref: "Alphard 2019",
+  },
+  {
+    source: "28car",
+    external_id: "28car:s2806213:demo-buyer",
+    author_name: "李先生",
+    body: "我想喺 28car 留言板問麥拿倫 720S，星期六下午可唔可以睇車？",
+    vehicle_ref: "s2806213 麥拿倫 720S 2017",
+    entry_path: "28car_board",
   },
   {
     source: "28car",
@@ -204,9 +215,10 @@ const COMMENTS: DemoComment[] = [
     source: "whatsapp",
     external_id: "wa-28car-4002",
     author_name: "陳生",
-    body: "我喺 28car 車輛頁撳咗 WhatsApp 先至聯絡你哋，想問 Vellfire 有冇現貨。呢則唔係 28car 網站留言。",
+    body: "我喺 28car 留言區入面撳咗 WhatsApp 連結（api.whatsapp.com/send?phone=85221740001）先至聯絡你哋，想問 Vellfire 有冇現貨。呢則唔係留言板文字。",
     vehicle_ref: "Vellfire",
     origin_site: "28car",
+    entry_path: "28car_wa_link",
   },
   {
     source: "whatsapp",
@@ -354,11 +366,11 @@ export async function seed(): Promise<void> {
   const insertComment = db.prepare(`
     INSERT INTO comments (
       source, external_id, author_name, body, vehicle_ref, status, assignee_staff_id,
-      intake_kind, origin_site
+      intake_kind, origin_site, entry_path
     )
     VALUES (
       @source, @external_id, @author_name, @body, @vehicle_ref, @status, NULL,
-      @intake_kind, @origin_site
+      @intake_kind, @origin_site, @entry_path
     )
     ON CONFLICT(source, external_id) DO UPDATE SET
       author_name = excluded.author_name,
@@ -367,6 +379,7 @@ export async function seed(): Promise<void> {
       status = excluded.status,
       intake_kind = excluded.intake_kind,
       origin_site = excluded.origin_site,
+      entry_path = COALESCE(excluded.entry_path, comments.entry_path),
       updated_at = datetime('now')
   `);
 
@@ -388,12 +401,15 @@ export async function seed(): Promise<void> {
         status: c.status ?? "open",
         intake_kind: intakeKind,
         origin_site: originSite,
+        entry_path: c.entry_path ?? null,
       });
       if (!existing) insertedKeys.push({ source: c.source, external_id: c.external_id });
     }
   });
   commentTx();
   console.log(`已寫入 ${COMMENTS.length} 條示範留言`);
+  const listingCount = upsertObservedDealerListings();
+  console.log(`已寫入 ${listingCount} 個 28car 觀察車盤（未含未確認 vid）`);
 
   // Clear assignees then rebalance so seed is deterministic-ish with least-open
   db.prepare(`UPDATE comments SET assignee_staff_id = NULL`).run();
@@ -402,7 +418,7 @@ export async function seed(): Promise<void> {
 
   const companyLine = ensureCompanyWhatsAppLine();
   const loadInserted = db.prepare(
-    `SELECT id, source, author_name, body, intake_kind, origin_site
+    `SELECT id, source, author_name, body, intake_kind, origin_site, entry_path
      FROM comments WHERE source = ? AND external_id = ?`
   );
   for (const item of insertedKeys) {
@@ -414,6 +430,7 @@ export async function seed(): Promise<void> {
           body: string;
           intake_kind: string;
           origin_site: string | null;
+          entry_path: string | null;
         }
       | undefined;
     if (!row) continue;

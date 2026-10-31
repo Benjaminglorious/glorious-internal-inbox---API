@@ -5,6 +5,7 @@ import { verifyPassword } from "../auth/passwords";
 import { companyWhatsAppChatUrl, whatsAppSendUrl } from "../config";
 import {
   DELIVERY_LABEL,
+  ENTRY_LABEL,
   ORIGIN_LABEL,
   SOURCE_LABEL,
   STATUS_LABEL,
@@ -12,6 +13,8 @@ import {
   intakeBadgeText,
   intakeSummary,
 } from "../labels";
+import { registerTwentyeightcarPages } from "./twentyeightcar-pages";
+import { listingIndex, stockIdFromText } from "../services/twentyeightcar";
 import {
   canViewComment,
   getComment,
@@ -36,6 +39,7 @@ import {
   isCommentSource,
   isCommentStatus,
   isCommentStatusFilter,
+  isEntryPath,
   isIntakeKind,
   isOriginFilter,
   type CommentWithAssignee,
@@ -89,17 +93,23 @@ function requirePageAdmin(req: Request, res: Response): boolean {
   return false;
 }
 
-function renderSourceBadges(c: Pick<CommentWithAssignee, "source" | "intake_kind" | "origin_site">): string {
+function renderSourceBadges(
+  c: Pick<CommentWithAssignee, "source" | "intake_kind" | "origin_site" | "entry_path">
+): string {
   const origin =
     c.intake_kind === "whatsapp_click"
       ? c.origin_site
         ? `<span class="badge origin">來自${escapeHtml(ORIGIN_LABEL[c.origin_site])}</span>`
         : `<span class="badge origin direct">直接 WhatsApp</span>`
       : "";
+  const entry = c.entry_path
+    ? `<span class="badge entry-${c.entry_path}">${escapeHtml(ENTRY_LABEL[c.entry_path])}</span>`
+    : "";
   return `<div class="badge-stack">
     <span class="badge source-${c.source}">${escapeHtml(SOURCE_LABEL[c.source] || c.source)}</span>
     <span class="badge intake-${c.intake_kind}">${escapeHtml(intakeBadgeText(c.intake_kind, c.source))}</span>
     ${origin}
+    ${entry}
   </div>`;
 }
 
@@ -132,6 +142,7 @@ function layout(opts: {
       </div>
       <nav>
         <a href="/" class="${opts.active === "inbox" ? "active" : ""}">留言箱</a>
+        <a href="/28car" class="${opts.active === "28car" ? "active" : ""}">28car 車盤</a>
         <a href="/staff" class="${opts.active === "staff" ? "active" : ""}">同事</a>
         <a href="/password" class="${opts.active === "password" ? "active" : ""}">改密碼</a>
         ${
@@ -303,11 +314,13 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
   const statusRaw = typeof req.query.status === "string" ? req.query.status : undefined;
   const intakeRaw = typeof req.query.intake === "string" ? req.query.intake : undefined;
   const originRaw = typeof req.query.origin === "string" ? req.query.origin : undefined;
+  const entryRaw = typeof req.query.entry === "string" ? req.query.entry : undefined;
   const mine = req.query.mine === "1";
   const src = sourceRaw && isCommentSource(sourceRaw) ? sourceRaw : undefined;
   const st = statusRaw && isCommentStatusFilter(statusRaw) ? statusRaw : undefined;
   const intake: IntakeKind | undefined = intakeRaw && isIntakeKind(intakeRaw) ? intakeRaw : undefined;
   const origin: OriginFilter | undefined = originRaw && isOriginFilter(originRaw) ? originRaw : undefined;
+  const entry = entryRaw && isEntryPath(entryRaw) ? entryRaw : undefined;
 
   const viewer = sessionViewer(req);
   const { comments, latestId } = listCommentsWithCursor({
@@ -315,11 +328,13 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     status: st,
     intake,
     origin,
+    entry,
     mine: viewer.isAdmin && mine,
     staffId: req.session.staffId,
     viewer,
   });
   const staffLines = activeStaffLinesByStaffId();
+  const listingsByStock = listingIndex();
 
   const qs = (extra: Record<string, string>) => {
     const p = new URLSearchParams();
@@ -327,6 +342,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     if (st) p.set("status", st);
     if (intake) p.set("intake", intake);
     if (origin) p.set("origin", origin);
+    if (entry) p.set("entry", entry);
     if (mine) p.set("mine", "1");
     for (const [k, v] of Object.entries(extra)) {
       if (v === "") p.delete(k);
@@ -339,12 +355,19 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
   const rows = comments
     .map((c) => {
       const preview = c.body.length > 80 ? c.body.slice(0, 80) + "…" : c.body;
+      const stockId = stockIdFromText(c.vehicle_ref);
+      const known = stockId ? listingsByStock.get(stockId) : undefined;
+      const vehicleCell = known
+        ? `<a href="/28car/${escapeHtml(known.stock_id)}">${escapeHtml(known.title)}</a>`
+        : c.vehicle_ref
+          ? escapeHtml(c.vehicle_ref)
+          : "—";
       return `<tr>
         <td><a href="/comments/${c.id}">#${c.id}</a></td>
         <td>${renderSourceBadges(c)}</td>
         <td>${escapeHtml(c.author_name)}</td>
         <td class="preview">${escapeHtml(preview)}${replyPreview(c)}</td>
-        <td>${c.vehicle_ref ? escapeHtml(c.vehicle_ref) : "—"}</td>
+        <td>${vehicleCell}</td>
         <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span></td>
         <td>${c.assignee_name ? escapeHtml(c.assignee_name) : "未派"}</td>
         <td class="actions-cell"><a class="btn primary" href="/comments/${c.id}#reply">回覆</a>${whatsAppLinks(c, staffLines)}</td>
@@ -386,6 +409,13 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
             const label = item === "direct" ? "直接 WhatsApp" : ORIGIN_LABEL[item];
             return `<option value="${item}" ${origin === item ? "selected" : ""}>${label}</option>`;
           }).join("")}
+        </select>
+      </label>
+      <label>28car 路徑
+        <select name="entry">
+          <option value="">全部</option>
+          <option value="28car_board" ${entry === "28car_board" ? "selected" : ""}>留言板（網頁留言區）</option>
+          <option value="28car_wa_link" ${entry === "28car_wa_link" ? "selected" : ""}>留言區 WhatsApp 連結</option>
         </select>
       </label>
       <label>狀態
@@ -513,6 +543,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         <dt>相關網站</dt><dd>${escapeHtml(originText)}</dd>
         <dt>留言者</dt><dd>${escapeHtml(c.author_name)}</dd>
         <dt>外部 ID</dt><dd><code>${escapeHtml(c.external_id)}</code></dd>
+        <dt>路徑</dt><dd>${c.entry_path ? escapeHtml(ENTRY_LABEL[c.entry_path]) : "—"}</dd>
         <dt>車輛</dt><dd>${c.vehicle_ref ? escapeHtml(c.vehicle_ref) : "—"}</dd>
         <dt>負責人</dt><dd>${c.assignee_name ? escapeHtml(c.assignee_name) : "未派"}</dd>
         <dt>建立</dt><dd>${escapeHtml(c.created_at)}</dd>
@@ -534,10 +565,19 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         ${
           sent
             ? `<p class="notice">${escapeHtml(
-                deliveryQuery === "sent"
+                deliveryQuery === "sent" && c.source === "whatsapp"
                   ? "已透過 WhatsApp 發送畀客戶。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。"
-                  : "已儲存回覆，並標為示範待發送。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。"
+                  : deliveryQuery === "sent" && c.source === "28car"
+                    ? "已送到 28car 留言板。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。"
+                    : deliveryQuery === "stored" && c.source === "28car"
+                      ? "回覆已排入 28car 留言板隊列，未發送。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。"
+                      : "已儲存回覆，並標為示範待發送。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。"
               )}</p>`
+            : ""
+        }
+        ${
+          c.source === "28car"
+            ? `<p class="muted small">28car 留言板回覆會排入隊列。要代發到公開留言區，伺服器須開啟回覆旗標、可輪換代理，而且車盤要有 vid。每次發送用一個新 IP：登入、讀取 sell_dsp 的 h_t／h_k、再 POST form1（h_mode=add、h_type=o）。</p>`
             : ""
         }
         <form method="POST" action="/comments/${c.id}/replies" class="reply-form">
@@ -796,5 +836,7 @@ pagesRouter.post("/whatsapp-lines/:id/deactivate", requireAuth, (req: Request, r
   }
   res.redirect(`/whatsapp-lines?ok=${encodeURIComponent("已停用線路")}`);
 });
+
+registerTwentyeightcarPages(pagesRouter, { layout, escapeHtml, sessionUser });
 
 export { SOURCE_LABEL, STATUS_LABEL };

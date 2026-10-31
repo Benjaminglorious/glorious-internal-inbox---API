@@ -14,6 +14,7 @@ export const COMMENTS_CREATE_COLUMNS = `
   origin_site TEXT CHECK (origin_site IS NULL OR origin_site IN ('28car', 'glorious_web', 'facebook', 'instagram')),
   wa_from_phone TEXT,
   wa_to_phone TEXT,
+  entry_path TEXT CHECK (entry_path IS NULL OR entry_path IN ('28car_board', '28car_wa_link')),
   UNIQUE (source, external_id),
   CHECK (
     (
@@ -107,4 +108,76 @@ CREATE TABLE IF NOT EXISTS comment_replies (
 );
 
 CREATE INDEX IF NOT EXISTS idx_comment_replies_comment ON comment_replies(comment_id, id);
+
+CREATE TABLE IF NOT EXISTS car_listings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL DEFAULT '28car' CHECK (source = '28car'),
+  stock_id TEXT NOT NULL,
+  vid TEXT,
+  account_username TEXT NOT NULL,
+  title TEXT NOT NULL,
+  price_hkd INTEGER,
+  price_text TEXT,
+  comment_count INTEGER,
+  listing_updated_at TEXT,
+  public_url TEXT,
+  dealer_url TEXT,
+  blurb TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  sync_origin TEXT,
+  last_synced_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (source, stock_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_car_listings_account ON car_listings(account_username, active);
+
+CREATE TABLE IF NOT EXISTS car_listing_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  stock_id TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  author_name TEXT NOT NULL,
+  body TEXT NOT NULL,
+  is_seller INTEGER NOT NULL DEFAULT 0,
+  posted_at TEXT,
+  inbox_comment_id INTEGER REFERENCES comments(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (stock_id, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_car_listing_messages_stock ON car_listing_messages(stock_id, id);
+
+CREATE TABLE IF NOT EXISTS car_reply_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+  stock_id TEXT,
+  vid TEXT,
+  account_username TEXT,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('held', 'posting', 'sent', 'failed')),
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_car_reply_queue_status ON car_reply_queue(status, id);
+
+CREATE TABLE IF NOT EXISTS car_sync_state (
+  source TEXT PRIMARY KEY,
+  last_run_at TEXT,
+  last_mode TEXT,
+  last_error TEXT,
+  listings_upserted INTEGER NOT NULL DEFAULT 0,
+  comments_upserted INTEGER NOT NULL DEFAULT 0,
+  network_used INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS car_egress_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  last_lease_id TEXT,
+  last_operation TEXT,
+  updated_at TEXT
+);
 `;

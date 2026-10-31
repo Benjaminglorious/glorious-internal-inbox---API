@@ -11,6 +11,7 @@ export interface NewCommentNotice {
   body: string;
   intake_kind?: string | null;
   origin_site?: string | null;
+  entry_path?: string | null;
 }
 
 interface StoredSubscription {

@@ -14,6 +14,7 @@ db.pragma("foreign_keys = ON");
 db.exec(SCHEMA_SQL);
 migrateCommentsTable();
 ensureWhatsAppPhoneColumns();
+ensureEntryPathColumn();
 backfillWhatsAppThreadPhones();
 migrateCommentReplies();
 
@@ -70,6 +71,13 @@ function migrateCommentsTable(): void {
   } finally {
     db.pragma("foreign_keys = ON");
   }
+}
+
+/** 28car 留言板對比留言區 WhatsApp 連結。舊庫只加欄。 */
+function ensureEntryPathColumn(): void {
+  const cols = columnNames("comments");
+  if (!cols.has("entry_path")) db.exec(`ALTER TABLE comments ADD COLUMN entry_path TEXT`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_comments_entry_path ON comments(entry_path)`);
 }
 
 /** 舊庫加客戶 wa_id 同收件線路。只加欄，唔改派單、唔改號碼。 */

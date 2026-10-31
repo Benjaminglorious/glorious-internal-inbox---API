@@ -14,10 +14,13 @@ import {
 } from "../services/comments";
 import { createStaffReply, listReplies } from "../services/replies";
 import { addStaffWhatsAppLine, deactivateWhatsAppLine, listWhatsAppLines } from "../services/whatsapp";
+import { twentyeightcarStatus } from "../adapters/twentyeightcar-config";
+import { flushHeldReplies, getListing, listListingMessages, listListings, syncStateForUi, syncTwentyeightcar } from "../services/twentyeightcar";
 import {
   isCommentSource,
   isCommentStatus,
   isCommentStatusFilter,
+  isEntryPath,
   isIntakeKind,
   isOriginFilter,
 } from "../types";
@@ -31,6 +34,18 @@ apiRouter.get("/health", (_req, res) => {
     ts: new Date().toISOString(),
     company_whatsapp_url: companyWhatsAppUrl(),
     push_enabled: isPushConfigured(),
+    twentyeightcar: (() => {
+      const status = twentyeightcarStatus(false);
+      return {
+        account_count: status.account_count,
+        sync_enabled: status.sync_enabled,
+        reply_post_enabled: status.reply_post_enabled,
+        login_form_configured: status.login_form_configured,
+        egress_ready: status.egress_ready,
+        egress_mode: status.egress_mode,
+        proxy_count: status.proxy_count,
+      };
+    })(),
   });
 });
 
@@ -83,6 +98,8 @@ apiRouter.get("/comments", requireAuth, (req: Request, res: Response) => {
   const intake = intakeRaw && isIntakeKind(intakeRaw) ? intakeRaw : undefined;
   const originRaw = typeof req.query.origin === "string" ? req.query.origin : undefined;
   const origin = originRaw && isOriginFilter(originRaw) ? originRaw : undefined;
+  const entryRaw = typeof req.query.entry === "string" ? req.query.entry : undefined;
+  const entry = entryRaw && isEntryPath(entryRaw) ? entryRaw : undefined;
   const mine = req.query.mine === "1" || req.query.mine === "true";
   if (sourceRaw && !source) {
     res.status(400).json({ error: "無效來源" });
@@ -100,11 +117,16 @@ apiRouter.get("/comments", requireAuth, (req: Request, res: Response) => {
     res.status(400).json({ error: "無效相關網站" });
     return;
   }
+  if (entryRaw && !entry) {
+    res.status(400).json({ error: "entry 必須係 28car_board 或 28car_wa_link" });
+    return;
+  }
   const rows = listComments({
     source,
     status,
     intake,
     origin,
+    entry,
     mine,
     staffId: req.session.staffId,
     viewer: sessionViewer(req),
@@ -194,6 +216,51 @@ apiRouter.post("/comments/:id/assign", requireAdmin, (req: Request, res: Respons
     return;
   }
   res.json({ comment: updated });
+});
+
+apiRouter.get("/28car/status", requireAuth, (_req: Request, res: Response) => {
+  res.json(syncStateForUi());
+});
+
+apiRouter.get("/28car/listings", requireAuth, (req: Request, res: Response) => {
+  const account = typeof req.query.account === "string" ? req.query.account : undefined;
+  res.json({ listings: listListings(account) });
+});
+
+apiRouter.get("/28car/listings/:stockId", requireAuth, (req: Request, res: Response) => {
+  const listing = getListing(String(req.params.stockId));
+  if (!listing) {
+    res.status(404).json({ error: "找不到車盤" });
+    return;
+  }
+  res.json({ listing, messages: listListingMessages(listing.stock_id) });
+});
+
+apiRouter.post("/28car/sync", requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const report = await syncTwentyeightcar();
+    res.json({
+      mode: report.mode,
+      network: report.network,
+      listings_upserted: report.listings_upserted,
+      buyer_comments_upserted: report.buyer_comments_upserted,
+      accounts_attempted: report.accounts_attempted,
+      stopped: report.stopped,
+    });
+  } catch (err) {
+    console.error("[28car] sync", err instanceof Error ? err.message : "failed");
+    res.status(500).json({ error: "同步失敗" });
+  }
+});
+
+apiRouter.post("/28car/replies/flush", requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const result = await flushHeldReplies(3);
+    res.json(result);
+  } catch (err) {
+    console.error("[28car] flush", err instanceof Error ? err.message : "failed");
+    res.status(500).json({ error: "隊列發送失敗" });
+  }
 });
 
 apiRouter.get("/staff", requireAuth, (_req: Request, res: Response) => {

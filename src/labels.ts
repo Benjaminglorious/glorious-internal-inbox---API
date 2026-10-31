@@ -1,4 +1,4 @@
-import type { CommentSource, DeliveryStatus, IntakeKind, OriginSite } from "./types";
+import type { CommentSource, DeliveryStatus, EntryPath, IntakeKind, OriginSite } from "./types";
 
 export const SOURCE_LABEL: Record<CommentSource, string> = {
   "28car": "28car",
@@ -13,6 +13,11 @@ export const ORIGIN_LABEL: Record<OriginSite, string> = {
   glorious_web: "東榮官網",
   facebook: "Facebook",
   instagram: "東榮 IG",
+};
+
+export const ENTRY_LABEL: Record<EntryPath, string> = {
+  "28car_board": "28car 留言板",
+  "28car_wa_link": "28car 留言區 WhatsApp",
 };
 
 export const STATUS_LABEL: Record<string, string> = {
@@ -40,7 +45,10 @@ export function intakeSummary(input: {
   source: string;
   intake_kind?: string | null;
   origin_site?: string | null;
+  entry_path?: string | null;
 }): string {
+  if (input.entry_path === "28car_board") return ENTRY_LABEL["28car_board"];
+  if (input.entry_path === "28car_wa_link") return ENTRY_LABEL["28car_wa_link"];
   const sourceLabel = SOURCE_LABEL[input.source as CommentSource] || input.source || "留言";
   if (input.intake_kind === "whatsapp_click") {
     const origin = input.origin_site ? ORIGIN_LABEL[input.origin_site as OriginSite] : "";
@@ -55,13 +63,15 @@ export function intakeSummary(input: {
 
 export function deliveryDetail(status: DeliveryStatus, source: CommentSource): string {
   if (status === "failed") return "發送失敗";
+  if (source === "28car" && status === "sent") return "已發送到 28car 留言板";
+  if (source === "28car" && status === "stored") return "已排入 28car 留言板隊列（未發送）";
   if (status === "sent") return source === "whatsapp" ? "已經 WhatsApp 發送" : "已發送";
   if (status === "stored") return "已儲存（未發送）";
   switch (source) {
     case "whatsapp":
       return "示範待發送 · 同事個人線路未經公司 Cloud API";
     case "28car":
-      return "示範待發送 · 尚未連接 28car";
+      return "示範待發送 · 未綁定車盤編號";
     case "glorious_web":
       return "示範待發送 · 尚未連接東榮官網";
     case "facebook":
