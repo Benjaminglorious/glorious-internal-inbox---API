@@ -251,7 +251,14 @@ async function main(): Promise<number> {
   delete process.env.TWENTYEIGHT_CAR_PROXY_URLS;
   delete process.env.TWENTYEIGHT_CAR_PROXY_URL;
   const noProxy = await service.syncTwentyeightcar();
-  check("冇可輪換代理時拒絕直連", noProxy.mode === "proxy_required" && noProxy.network === false && calls.length === 0);
+  check("零個代理時拒絕直連", noProxy.mode === "proxy_required" && noProxy.network === false && calls.length === 0);
+
+  process.env.TWENTYEIGHT_CAR_PROXY_URLS = "http://127.0.0.1:4101";
+  const oneProxy = await service.syncTwentyeightcar();
+  check(
+    "剛好一個代理時仍然拒絕出網",
+    oneProxy.mode === "proxy_required" && oneProxy.network === false && calls.length === 0 && readEgress().canRotate === false
+  );
 
   process.env.TWENTYEIGHT_CAR_PROXY_URLS = "http://127.0.0.1:4101,http://127.0.0.1:4102";
   const synced = await service.syncTwentyeightcar();
