@@ -127,9 +127,29 @@ function placeholderField(value: string): boolean {
   return !token || token.includes("confirm_me") || token.includes("replace");
 }
 
+/**
+ * org.28car.com/mbr_login.php form1。
+ * h_username、h_password、h_mode=login、h_url_login_src、h_url_src。登入頁冇 h_t／h_k。
+ * 未設定 TWENTYEIGHT_CAR_LOGIN_FORM_JSON 時用呢組。即時 POST 仍然要旗標同可輪換代理。
+ */
+export const DEFAULT_LOGIN_FORM: LoginFormConfig = {
+  url: "https://org.28car.com/mbr_login.php",
+  usernameField: "h_username",
+  passwordField: "h_password",
+  extraFields: {
+    h_mode: "login",
+    h_url_login_src: "",
+    h_url_src: "",
+  },
+};
+
+function copyLoginForm(form: LoginFormConfig): LoginFormConfig {
+  return { ...form, extraFields: { ...form.extraFields } };
+}
+
 export function readLoginForm(): LoginFormConfig | null {
   const raw = (process.env.TWENTYEIGHT_CAR_LOGIN_FORM_JSON ?? "").trim();
-  if (!raw) return null;
+  if (!raw) return copyLoginForm(DEFAULT_LOGIN_FORM);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -138,10 +158,16 @@ export function readLoginForm(): LoginFormConfig | null {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const record = parsed as Record<string, unknown>;
-  const urlRaw = typeof record.url === "string" ? record.url.trim() : "";
-  const usernameField = typeof record.username_field === "string" ? record.username_field.trim() : "";
-  const passwordField = typeof record.password_field === "string" ? record.password_field.trim() : "";
-  if (!urlRaw || placeholderField(usernameField) || placeholderField(passwordField)) return null;
+  const urlRaw = typeof record.url === "string" ? record.url.trim() : DEFAULT_LOGIN_FORM.url;
+  const usernameField =
+    typeof record.username_field === "string" && record.username_field.trim()
+      ? record.username_field.trim()
+      : DEFAULT_LOGIN_FORM.usernameField;
+  const passwordField =
+    typeof record.password_field === "string" && record.password_field.trim()
+      ? record.password_field.trim()
+      : DEFAULT_LOGIN_FORM.passwordField;
+  if (placeholderField(usernameField) || placeholderField(passwordField)) return null;
   if (!/^[A-Za-z0-9_]+$/.test(usernameField) || !/^[A-Za-z0-9_]+$/.test(passwordField)) return null;
   let url: URL;
   try {
@@ -150,7 +176,7 @@ export function readLoginForm(): LoginFormConfig | null {
     return null;
   }
   if (url.protocol !== "https:" || !is28carHost(url.hostname)) return null;
-  const extra: Record<string, string> = {};
+  const extra: Record<string, string> = { ...DEFAULT_LOGIN_FORM.extraFields };
   const extraRaw = record.extra_fields;
   if (extraRaw && typeof extraRaw === "object" && !Array.isArray(extraRaw)) {
     for (const [key, value] of Object.entries(extraRaw)) {

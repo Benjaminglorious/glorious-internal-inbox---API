@@ -565,7 +565,7 @@ npm run demo:whatsapp-outbound
 
 一個固定代理、或者完全冇代理，系統會拒絕，**唔會**改為用 Render 機房 IP 直連。SOCKS 唔支援。代理網址唔會寫入 SQLite 或 log。
 
-Render 免費服務係共用 IP，唔好在未接代理之前打開旗標。登入表單欄位名仍要人手確認之後先填 `TWENTYEIGHT_CAR_LOGIN_FORM_JSON`（`CONFIRM_ME` 會當未設定）。會員電話頁 `mbr_chg.php` 唔會讀、亦唔會改。
+Render 免費服務係共用 IP，唔好在未接代理之前打開旗標。登入 POST 用 `mbr_login.php` 的 `h_username`、`h_password`、`h_mode=login`、`h_url_login_src`、`h_url_src`（登入頁冇 `h_t`／`h_k`）。未設定 `TWENTYEIGHT_CAR_LOGIN_FORM_JSON` 時用呢組。會員電話頁 `mbr_chg.php` 唔會讀、亦唔會改。
 
 煙霧測試：`npm run demo:28car`
 

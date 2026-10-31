@@ -184,11 +184,7 @@ async function main(): Promise<number> {
   process.env.DATABASE_PATH = path.join(tmp, "inbox.db");
   process.env.TWENTYEIGHT_CAR_SYNC_ENABLED = "0";
   process.env.TWENTYEIGHT_CAR_REPLY_POST_ENABLED = "0";
-  process.env.TWENTYEIGHT_CAR_LOGIN_FORM_JSON = JSON.stringify({
-    url: "https://org.28car.com/mbr_login.php",
-    username_field: "h_user",
-    password_field: "h_pwd",
-  });
+  delete process.env.TWENTYEIGHT_CAR_LOGIN_FORM_JSON;
   process.env.TWENTYEIGHT_CAR_ACCOUNTS_JSON = JSON.stringify([
     { username: "gmld28013@hotmail.com", password: secret, display_name: "東榮汽車" },
     { username: "gmld28022@hotmail.com", password: secret, display_name: "東榮汽車" },
@@ -267,6 +263,17 @@ async function main(): Promise<number> {
   const detailCall = calls.find((call) => call.method === "GET" && call.url.includes("sell_dsp.php"));
   check("列表同留言板用唔同代理", !!listCall && !!detailCall && listCall.proxyUrl !== detailCall.proxyUrl);
   check("動作之間有最少 1 秒間隔", sleeps.some((ms) => ms >= 1000));
+  const loginBody = formMap(calls.find((call) => call.method === "POST" && call.url.includes("mbr_login.php"))?.body);
+  check(
+    "登入 POST 用 h_username、h_password、h_mode=login",
+    loginBody.get("h_username") === "gmld28013@hotmail.com" &&
+      loginBody.get("h_password") === secret &&
+      loginBody.get("h_mode") === "login" &&
+      loginBody.get("h_url_login_src") === "" &&
+      loginBody.get("h_url_src") === "" &&
+      !loginBody.has("h_t") &&
+      !loginBody.has("h_k")
+  );
   check("登入正文有密碼，留言頁 GET 冇密碼", calls.some((call) => (call.body || "").includes(secret)) && !(detailCall?.url || "").includes(secret));
   const detailGets = calls.filter((call) => call.method === "GET" && call.url.includes("sell_dsp.php"));
   check("詳情抓取受上限限制", detailGets.length === 1);
