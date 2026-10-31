@@ -9,9 +9,15 @@ import os from "os";
 import path from "path";
 import { execFileSync } from "child_process";
 import { allocateLease, resetEgressSequenceForTests } from "../adapters/twentyeightcar-egress";
-import { defaultProxyRequest } from "../adapters/twentyeightcar-http";
+import {
+  buildOwnerReplyBody,
+  defaultProxyRequest,
+  fetchSellList,
+  isBlockedResponse,
+  loginOnLease,
+  setTwentyeightcarProxyRequestForTests,
+} from "../adapters/twentyeightcar-http";
 import { readAccounts, readEgress, twentyeightcarStatus } from "../adapters/twentyeightcar-config";
-import { buildOwnerReplyBody } from "../adapters/twentyeightcar-http";
 import { parseBoardHtml, parseReplyForm, parseSellListHtml } from "../adapters/twentyeightcar-parse";
 
 const failures: string[] = [];
@@ -106,9 +112,164 @@ async function testLocalProxy(): Promise<void> {
   });
 }
 
+const SOFT_JSD = `<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>`;
+const SOFT_JSD_HASHED = `<script src="/cdn-cgi/challenge-platform/h/g/scripts/jsd/main.js"></script>`;
+
+function loginPage(extra = ""): string {
+  return `<!DOCTYPE html><html><head><title>會員登入</title>${extra}</head><body>
+<form name="form1" method="post" action="/mbr_login.php">
+<input type="text" name="h_username" value="">
+<input type="password" name="h_password" value="">
+<input type="hidden" name="h_mode" value="login">
+</form></body></html>`;
+}
+
+function challengeWall(extra = ""): string {
+  return `<!DOCTYPE html><html lang="en-US"><head><title>Just a moment...</title></head><body>
+<p>Just a moment...</p>
+${extra}
+<script>a.src='/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1?ray=abc';</script>
+</body></html>`;
+}
+
+async function testBlockDetection(sellHtml: string, detailHtml: string): Promise<void> {
+  const loginUrl = "https://org.28car.com/mbr_login.php";
+  const sellUrl = "https://org.28car.com/mbr_sell.php";
+  const boardUrl = "https://org.28car.com/sell_dsp.php?h_vid=673498740";
+  const usableLogin = loginPage(SOFT_JSD);
+  check("軟 JSD 加登入表單唔算擋住", isBlockedResponse(200, loginUrl, usableLogin) === false);
+  check(
+    "帶 h/g 前綴嘅軟 JSD 加登入表單唔算擋住",
+    isBlockedResponse(200, loginUrl, loginPage(SOFT_JSD_HASHED)) === false
+  );
+  check(
+    "有登入表單時 Just a moment 字樣唔當攔截牆",
+    isBlockedResponse(200, loginUrl, loginPage(`${SOFT_JSD}<p>Just a moment...</p>`)) === false
+  );
+  check("賣車列表加軟 JSD 唔算擋住", isBlockedResponse(200, sellUrl, `${sellHtml}\n${SOFT_JSD}`) === false);
+  check("留言板加軟 JSD 唔算擋住", isBlockedResponse(200, boardUrl, `${detailHtml}\n${SOFT_JSD}`) === false);
+  check("淨係軟 JSD 標籤唔算擋住", isBlockedResponse(200, loginUrl, `<html><body>${SOFT_JSD}</body></html>`) === false);
+
+  const wall = challengeWall(SOFT_JSD);
+  check("真 Cloudflare 攔截頁仍然擋住", isBlockedResponse(200, loginUrl, wall) === true);
+  check(
+    "冇表單嘅 orchestrate 網址仍然擋住",
+    isBlockedResponse(200, loginUrl, `<html><script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1?ray=abc"></script></html>`) === true
+  );
+  check("msg_busy 網址仍然擋住", isBlockedResponse(200, "https://org.28car.com/msg_busy.php", "請稍後") === true);
+  check("msg_busy 正文仍然擋住", isBlockedResponse(200, loginUrl, `${usableLogin} msg_busy.php`) === true);
+  check("403 即使有登入表單都擋住", isBlockedResponse(403, loginUrl, usableLogin) === true);
+  check("429 仍然擋住", isBlockedResponse(429, sellUrl, sellHtml) === true);
+  check("503 仍然擋住", isBlockedResponse(503, boardUrl, detailHtml) === true);
+
+  const lease = {
+    leaseId: "block-test",
+    proxyUrl: "http://127.0.0.1:9",
+    label: "127.0.0.1:9",
+    operation: "block-test",
+  };
+  const account = { username: "dealer@example.com", password: "test-only-password", displayName: "測試" };
+  const login = {
+    url: loginUrl,
+    usernameField: "h_username",
+    passwordField: "h_password",
+    extraFields: { h_mode: "login", h_url_login_src: "", h_url_src: "" },
+  };
+
+  try {
+    setTwentyeightcarProxyRequestForTests(async (input) => {
+      if (input.method === "POST" && input.url.includes("mbr_login.php")) {
+        return {
+          status: 302,
+          url: input.url,
+          body: "",
+          contentType: "text/html",
+          setCookies: ["sid=abc"],
+          location: "https://org.28car.com/index.htm",
+        };
+      }
+      if (input.url.includes("index.htm")) {
+        return {
+          status: 200,
+          url: input.url,
+          body: `登出\n${usableLogin}`,
+          contentType: "text/html; charset=utf-8",
+          setCookies: [],
+          location: null,
+        };
+      }
+      if (input.url.includes("mbr_sell.php")) {
+        return {
+          status: 200,
+          url: input.url,
+          body: `${sellHtml}\n${SOFT_JSD}`,
+          contentType: "text/html; charset=utf-8",
+          setCookies: [],
+          location: null,
+        };
+      }
+      return { status: 500, url: input.url, body: "unexpected", contentType: "text/html", setCookies: [], location: null };
+    });
+    const listed = await fetchSellList({ lease, account, login });
+    check(
+      "登入同賣車列表帶軟 JSD 唔會報擋住",
+      listed.ok && listed.body.includes("s2806213"),
+      listed.ok ? undefined : listed.error
+    );
+
+    setTwentyeightcarProxyRequestForTests(async (input) => ({
+      status: 200,
+      url: input.url,
+      body: usableLogin,
+      contentType: "text/html; charset=utf-8",
+      setCookies: [],
+      location: null,
+    }));
+    const stillLogin = await loginOnLease(lease, account, login);
+    check(
+      "200 登入表單加軟 JSD 唔當擋住",
+      !stillLogin.ok && stillLogin.blocked === false && !stillLogin.error.includes("擋住"),
+      stillLogin.ok ? "unexpected ok" : stillLogin.error
+    );
+
+    setTwentyeightcarProxyRequestForTests(async (input) => ({
+      status: 200,
+      url: input.url,
+      body: wall,
+      contentType: "text/html; charset=utf-8",
+      setCookies: [],
+      location: null,
+    }));
+    const blocked = await loginOnLease(lease, account, login);
+    check(
+      "攔截牆會回報 28car 擋住呢次請求（200）",
+      !blocked.ok && blocked.blocked && blocked.error.includes("擋住呢次請求（200）"),
+      blocked.ok ? "unexpected ok" : blocked.error
+    );
+
+    setTwentyeightcarProxyRequestForTests(async (input) => ({
+      status: 200,
+      url: input.url,
+      body: "<html>msg_busy.php</html>",
+      contentType: "text/html",
+      setCookies: [],
+      location: null,
+    }));
+    const busy = await loginOnLease(lease, account, login);
+    check(
+      "msg_busy 會當擋住同忙碌",
+      !busy.ok && busy.blocked && busy.busy && busy.error.includes("擋住"),
+      busy.ok ? "unexpected ok" : busy.error
+    );
+  } finally {
+    setTwentyeightcarProxyRequestForTests(null);
+  }
+}
+
 async function main(): Promise<number> {
   const sellHtml = fs.readFileSync(path.join(__dirname, "../fixtures/28car/mbr-sell.html"), "utf8");
   const detailHtml = fs.readFileSync(path.join(__dirname, "../fixtures/28car/sell-dsp.html"), "utf8");
+  await testBlockDetection(sellHtml, detailHtml);
   const listings = parseSellListHtml(sellHtml);
   check("賣車列表四個車盤", listings.length === 4);
   check(

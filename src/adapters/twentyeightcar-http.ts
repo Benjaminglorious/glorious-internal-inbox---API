@@ -166,10 +166,46 @@ export function isBusy(url: string, body: string): boolean {
   return /msg_busy\.php/i.test(url) || /msg_busy/i.test(body);
 }
 
+/**
+ * Cloudflare 會喺正常 HTML 注入 JavaScript Detection 腳本
+ * （cdn-cgi/challenge-platform/.../scripts/jsd/main.js）。呢個唔係攔截牆。
+ * 真正攔截先至係其餘 challenge-platform 網址，或者「Just a moment」而頁面冇可用表單。
+ */
+const SOFT_JSD_URL = /cdn-cgi\/challenge-platform\/(?:[A-Za-z0-9_.~-]+\/)*scripts\/jsd\/[^"'<>\s]*/gi;
+
+function stripSoftJsd(body: string): string {
+  return body.replace(SOFT_JSD_URL, "");
+}
+
+function hasNamedField(body: string, name: string): boolean {
+  return new RegExp(`<(?:input|textarea|select)\\b[^>]*\\bname\\s*=\\s*(?:["']${name}["']|${name}\\b)`, "i").test(body);
+}
+
+function hasUsableDealerDocument(body: string): boolean {
+  const login =
+    hasNamedField(body, "h_username") &&
+    (hasNamedField(body, "h_password") || /<input\b[^>]*\btype\s*=\s*["']password["']/i.test(body));
+  if (login) return true;
+  if (/<a\b[^>]*\bhref\s*=\s*["'][^"']*sell_dsp\.php\?[^"']*\bh_vid=/i.test(body)) return true;
+  if (/id\s*=\s*["']msgbox["']/i.test(body)) return true;
+  if (
+    /<form\b[^>]*\b(?:name|id)\s*=\s*["']form1["']/i.test(body) &&
+    (hasNamedField(body, "h_t") || hasNamedField(body, "h_k") || hasNamedField(body, "h_msg"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isChallengeWall(body: string): boolean {
+  return /cdn-cgi\/challenge|just a moment/i.test(stripSoftJsd(body));
+}
+
 export function isBlockedResponse(status: number, url: string, body: string): boolean {
   if (status === 403 || status === 429 || status === 503) return true;
   if (isBusy(url, body)) return true;
-  return /cdn-cgi\/challenge|just a moment/i.test(body);
+  if (hasUsableDealerDocument(body)) return false;
+  return isChallengeWall(body);
 }
 
 function fail(error: string, flags: Partial<NetFail>, secrets: string[]): NetFail {
