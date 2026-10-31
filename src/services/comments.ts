@@ -6,12 +6,13 @@ import type {
   CommentWithAssignee,
   DeliveryStatus,
   IntakeKind,
+  EntryPath,
   OriginFilter,
   OriginSite,
   ReplyDirection,
   StaffPublic,
 } from "../types";
-import { isDeliveryStatus, isIntakeKind, isOriginSite } from "../types";
+import { isDeliveryStatus, isEntryPath, isIntakeKind, isOriginSite } from "../types";
 
 /** 已登入嘅人。管理員見全部（包括未派）；在職同事只見 assignee 係自己嘅留言。 */
 export interface CommentViewer {
@@ -32,6 +33,7 @@ export interface CommentFilters {
   status?: CommentStatusFilter;
   intake?: IntakeKind;
   origin?: OriginFilter;
+  entry?: EntryPath;
   mine?: boolean;
   staffId?: number;
   /** 有傳而且唔係管理員時，強制只返回派咗畀該同事嘅留言。 */
@@ -45,6 +47,7 @@ export interface CommentUpdateItem {
   source: CommentSource;
   intake_kind: IntakeKind;
   origin_site: OriginSite | null;
+  entry_path: EntryPath | null;
   author_name: string;
   preview: string;
   vehicle_ref: string | null;
@@ -98,6 +101,7 @@ function mapComment(row: CommentRow): CommentWithAssignee {
     ...row,
     intake_kind: isIntakeKind(row.intake_kind) ? row.intake_kind : "site_comment",
     origin_site: isOriginSite(row.origin_site) ? row.origin_site : null,
+    entry_path: isEntryPath(row.entry_path) ? row.entry_path : null,
     reply_count: Number(row.reply_count) || 0,
     last_reply_body: row.last_reply_body ?? null,
     last_reply_at: row.last_reply_at ?? null,
@@ -146,7 +150,7 @@ export function listCommentUpdates(
     const rows = db
       .prepare(
         `
-        SELECT c.id, c.source, c.intake_kind, c.origin_site, c.author_name, c.body,
+        SELECT c.id, c.source, c.intake_kind, c.origin_site, c.entry_path, c.author_name, c.body,
                c.vehicle_ref, c.created_at, c.assignee_staff_id, s.display_name AS assignee_name
         FROM comments c
         LEFT JOIN staff s ON s.id = c.assignee_staff_id
@@ -160,6 +164,7 @@ export function listCommentUpdates(
       source: CommentSource;
       intake_kind: string;
       origin_site: string | null;
+      entry_path: string | null;
       author_name: string;
       body: string;
       vehicle_ref: string | null;
@@ -177,6 +182,7 @@ export function listCommentUpdates(
         source: row.source,
         intake_kind: isIntakeKind(row.intake_kind) ? row.intake_kind : "site_comment",
         origin_site: isOriginSite(row.origin_site) ? row.origin_site : null,
+        entry_path: isEntryPath(row.entry_path) ? row.entry_path : null,
         author_name: row.author_name,
         preview: previewText(row.body),
         vehicle_ref: row.vehicle_ref,
@@ -235,6 +241,10 @@ export function listComments(filters: CommentFilters = {}): CommentWithAssignee[
   if (filters.intake) {
     where.push("c.intake_kind = ?");
     params.push(filters.intake);
+  }
+  if (filters.entry) {
+    where.push("c.entry_path = ?");
+    params.push(filters.entry);
   }
   if (filters.origin === "direct") {
     where.push("c.source = 'whatsapp' AND c.origin_site IS NULL AND c.intake_kind = 'whatsapp_click'");

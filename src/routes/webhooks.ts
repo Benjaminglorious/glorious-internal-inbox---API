@@ -84,6 +84,7 @@ whatsappWebhookRouter.post("/", (req: Request, res: Response) => {
       line_id: routed.line?.id ?? null,
       intake_kind: routed.comment.intake_kind,
       origin_site: routed.comment.origin_site,
+      entry_path: routed.comment.entry_path,
     };
   });
   const anyOk = results.some((result) => result.ok);
@@ -93,7 +94,7 @@ whatsappWebhookRouter.post("/", (req: Request, res: Response) => {
 function readSiteCommentBody(
   req: Request,
   forcedSource?: SiteCommentSource
-): { ok: true; source: string; external_id: string; author_name: string; body: string; vehicle_ref: string | null } | { ok: false; error: string } {
+): { ok: true; source: string; external_id: string; author_name: string; body: string; vehicle_ref: string | null; entry_path: string | null } | { ok: false; error: string } {
   const raw = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
   const sourceRaw = forcedSource ?? raw.source ?? raw.channel;
   const sourceNorm = normalizeSiteCommentSource(sourceRaw);
@@ -112,6 +113,8 @@ function readSiteCommentBody(
         : raw.vehicle != null
           ? String(raw.vehicle)
           : null;
+  const entryPath =
+    raw.entry_path != null ? String(raw.entry_path) : raw.entryPath != null ? String(raw.entryPath) : null;
 
   return {
     ok: true,
@@ -120,6 +123,7 @@ function readSiteCommentBody(
     author_name,
     body,
     vehicle_ref: vehicle,
+    entry_path: entryPath,
   };
 }
 
@@ -138,6 +142,7 @@ function handleSiteCommentPost(req: Request, res: Response, forcedSource?: SiteC
     author_name: parsed.author_name,
     body: parsed.body,
     vehicle_ref: parsed.vehicle_ref,
+    entry_path: parsed.entry_path,
   });
   if (!result.ok) {
     res.status(400).json({ ok: false, error: result.error });
@@ -151,6 +156,7 @@ function handleSiteCommentPost(req: Request, res: Response, forcedSource?: SiteC
     source: result.comment.source,
     intake_kind: result.comment.intake_kind,
     origin_site: result.comment.origin_site,
+    entry_path: result.comment.entry_path,
   });
 }
 

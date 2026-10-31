@@ -17,6 +17,10 @@ export type CommentStatus = (typeof COMMENT_STATUSES)[number];
 export const COMMENT_STATUS_FILTERS = ["open", "in_progress", "done", "pending"] as const;
 export type CommentStatusFilter = (typeof COMMENT_STATUS_FILTERS)[number];
 
+/** 28car 留言板（網頁留言區）對比留言區入面嗰條 WhatsApp 連結。 */
+export const ENTRY_PATHS = ["28car_board", "28car_wa_link"] as const;
+export type EntryPath = (typeof ENTRY_PATHS)[number];
+
 export const DELIVERY_STATUSES = ["stored", "stub", "failed", "sent"] as const;
 export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
 
@@ -47,6 +51,10 @@ export function isCommentStatus(value: unknown): value is CommentStatus {
 
 export function isCommentStatusFilter(value: unknown): value is CommentStatusFilter {
   return typeof value === "string" && (COMMENT_STATUS_FILTERS as readonly string[]).includes(value);
+}
+
+export function isEntryPath(value: unknown): value is EntryPath {
+  return typeof value === "string" && (ENTRY_PATHS as readonly string[]).includes(value);
 }
 
 export function isDeliveryStatus(value: unknown): value is DeliveryStatus {
@@ -88,6 +96,11 @@ export interface Comment {
   wa_from_phone: string | null;
   /** 收件線路號碼（只留數字）。公司總機係 85221740001。 */
   wa_to_phone: string | null;
+  /**
+   * 28car_board：客戶寫喺網頁留言區。
+   * 28car_wa_link：客戶撳咗留言區入面嘅 WhatsApp 連結，入公司 WhatsApp。
+   */
+  entry_path: EntryPath | null;
 }
 
 export interface CommentWithAssignee extends Comment {

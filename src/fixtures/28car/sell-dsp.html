@@ -1,0 +1,35 @@
+<!-- Synthetic listing page. Classes and form fields follow the read-only board discovery. -->
+<div id="brief"><h3>簡評</h3><p>車況良好，歡迎約睇。這段唔係留言板。</p></div>
+<p>車盤編號 s2806213</p>
+<div id="msgbox">
+  <div class="msg_row msg_own" id="msg881">
+    <div class="msg_author">東榮汽車</div>
+    <div class="msg_time">2026-10-23 18:02:11</div>
+    <div class="msg_body">睇靚車？即上： https://api.whatsapp.com/send?phone=85221740001</div>
+    <a href="javascript:reply_msg('881')">回應此留言</a>
+  </div>
+  <div class="msg_row" id="msg882">
+    <div class="msg_author">陳先生</div>
+    <div class="msg_time">2026-10-30 09:41:00</div>
+    <div class="msg_body">720S 星期六可唔可以睇車？</div>
+    <a href="javascript:reply_msg('882')">回應此留言</a>
+  </div>
+  <form name="form1" id="form1" method="post" action="/sell_dsp.php">
+    <input type="hidden" name="h_mode" value="add">
+    <input type="hidden" name="h_vid" value="673498740">
+    <input type="hidden" name="h_type" value="c">
+    <input type="hidden" name="h_url_dsp_src" value="/mbr_sell.php">
+    <input type="hidden" name="h_t" value="fresh-token-t">
+    <input type="hidden" name="h_k" value="fresh-token-k">
+    <textarea name="h_msg"></textarea>
+    <input type="submit" name="b_submit" value="  留言  ">
+  </form>
+  <form name="form2" id="form2" method="post" action="/sell_dsp.php">
+    <input type="hidden" name="h_mode" value="del">
+    <input type="hidden" name="h_vid" value="673498740">
+    <input type="hidden" name="h_t" value="del-token-should-not-send">
+    <input type="hidden" name="h_k" value="del-key-should-not-send">
+    <input type="hidden" name="h_msgid" value="881">
+    <input type="submit" value="刪除">
+  </form>
+</div>

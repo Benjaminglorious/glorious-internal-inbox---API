@@ -1,4 +1,4 @@
-import { isOriginSite, type OriginSite } from "./types";
+import { isEntryPath, isOriginSite, type EntryPath, type OriginSite } from "./types";
 
 const ORIGIN_ALIASES: Record<string, OriginSite> = {
   "28car": "28car",
@@ -117,6 +117,55 @@ export function originSiteFromUrl(url: string | null | undefined): OriginSite | 
     if (host) return host;
   }
   return null;
+}
+
+/**
+ * 客戶係由 28car 車輛頁／留言區撳 WhatsApp，定係只係行經 28car 首頁。
+ * 留言區喺 sell_dsp.php（h_vid、h_vw、#msgbox）。公司 click-to-chat
+ * `api.whatsapp.com/send?phone=85221740001` 官網同 Facebook 都用，單靠呢條 URL 唔當留言區。
+ */
+export function is28carListingBoardUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const raw = url.trim().toLowerCase();
+  if (!raw) return false;
+  const on28car = raw.includes("28car.com") || raw.includes("sell_dsp.php");
+  if (!on28car) return false;
+  return (
+    raw.includes("sell_dsp.php") ||
+    raw.includes("h_vid=") ||
+    raw.includes("msgbox") ||
+    raw.includes("h_vw=") ||
+    raw.includes("h_f_bk=")
+  );
+}
+
+/** 已確定 origin 係 28car，而且連結指向車輛留言頁，先至係留言區 WhatsApp。 */
+export function infer28carWaLink(
+  origin: OriginSite | null,
+  referralUrl: string | null | undefined
+): EntryPath | null {
+  if (origin !== "28car") return null;
+  return is28carListingBoardUrl(referralUrl) ? "28car_wa_link" : null;
+}
+
+export function resolveEntryPath(input: {
+  explicit: unknown;
+  inferred: EntryPath | null;
+  channel: "whatsapp" | "site";
+}): { ok: true; entryPath: EntryPath | null } | { ok: false; error: string } {
+  const blank = input.explicit == null || input.explicit === "";
+  if (blank) return { ok: true, entryPath: input.inferred };
+  if (typeof input.explicit !== "string" || !isEntryPath(input.explicit.trim())) {
+    return { ok: false, error: "entry_path 必須係 28car_board 或 28car_wa_link" };
+  }
+  const entry = input.explicit.trim() as EntryPath;
+  if (input.channel === "whatsapp" && entry !== "28car_wa_link") {
+    return { ok: false, error: "WhatsApp 入站只可以標 28car_wa_link" };
+  }
+  if (input.channel === "site" && entry !== "28car_board") {
+    return { ok: false, error: "網站留言只可以標 28car_board" };
+  }
+  return { ok: true, entryPath: entry };
 }
 
 export function resolveOriginSite(

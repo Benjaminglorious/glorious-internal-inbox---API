@@ -1,7 +1,14 @@
 import { COMPANY_WHATSAPP_LABEL, COMPANY_WHATSAPP_PHONE } from "../config";
 import { db } from "../db";
-import { normalizeOriginSite, resolveOriginSite } from "../intake";
-import type { CommentStatus, CommentWithAssignee, OriginSite, WhatsAppLine, WhatsAppLineKind } from "../types";
+import { infer28carWaLink, normalizeOriginSite, resolveEntryPath, resolveOriginSite } from "../intake";
+import type {
+  CommentStatus,
+  CommentWithAssignee,
+  EntryPath,
+  OriginSite,
+  WhatsAppLine,
+  WhatsAppLineKind,
+} from "../types";
 import { pickLeastLoadedStaffId } from "./assign";
 import { findStaffById, getComment } from "./comments";
 import { notifyNewComment } from "./push";
@@ -24,6 +31,8 @@ export interface RouteWhatsAppInboundInput {
    * 可傳 `instagram` 或別名 `ig`。空則當直接 WhatsApp。
    */
   originSite?: string | null;
+  /** 留言區入面嗰條 WhatsApp 連結。網頁留言板唔經呢度。 */
+  entryPath?: EntryPath | null;
 }
 
 export type WhatsAppRouteOutcome =
@@ -358,7 +367,20 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
   if (origin === "invalid") {
     return { ok: false, error: "origin_site 必須係 28car、glorious_web、facebook 或 instagram" };
   }
-  const originSite: OriginSite | null = origin;
+  let originSite: OriginSite | null = origin;
+  const entryResolved = resolveEntryPath({
+    explicit: input.entryPath,
+    inferred: infer28carWaLink(originSite, null),
+    channel: "whatsapp",
+  });
+  if (!entryResolved.ok) return { ok: false, error: entryResolved.error };
+  let entryPath = entryResolved.entryPath;
+  if (entryPath === "28car_wa_link") {
+    if (originSite && originSite !== "28car") {
+      return { ok: false, error: "28car_wa_link 只可以配 origin_site=28car" };
+    }
+    originSite = "28car";
+  }
 
   const run = db.transaction((): RouteWhatsAppInboundResult => {
     const existing = db
@@ -379,10 +401,10 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
         .prepare(
           `INSERT INTO comments (
              source, external_id, author_name, body, vehicle_ref, status, assignee_staff_id,
-             intake_kind, origin_site, wa_from_phone, wa_to_phone
-           ) VALUES ('whatsapp', ?, ?, ?, NULL, 'open', ?, 'whatsapp_click', ?, ?, ?)`
+             intake_kind, origin_site, wa_from_phone, wa_to_phone, entry_path
+           ) VALUES ('whatsapp', ?, ?, ?, NULL, 'open', ?, 'whatsapp_click', ?, ?, ?, ?)`
         )
-        .run(externalId, authorName, nextBody, assigneeStaffId, originSite, from, to);
+        .run(externalId, authorName, nextBody, assigneeStaffId, originSite, from, to, entryPath);
       const comment = getComment(Number(info.lastInsertRowid));
       if (!comment) return { ok: false, error: "入庫後讀唔返留言" };
       return { ok: true, outcome, line, assigneeStaffId, comment, created: true };
@@ -395,9 +417,10 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
            origin_site = COALESCE(origin_site, ?),
            wa_from_phone = ?,
            wa_to_phone = ?,
+           entry_path = COALESCE(?, entry_path),
            updated_at = datetime('now')
        WHERE id = ?`
-    ).run(authorName, nextBody, status, assigneeStaffId, originSite, from, to, existing.id);
+    ).run(authorName, nextBody, status, assigneeStaffId, originSite, from, to, entryPath, existing.id);
     const comment = getComment(existing.id);
     if (!comment) return { ok: false, error: "更新後讀唔返留言" };
     return { ok: true, outcome, line, assigneeStaffId, comment, created: false };
@@ -413,6 +436,7 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
         body: result.comment.body,
         intake_kind: result.comment.intake_kind,
         origin_site: result.comment.origin_site,
+        entry_path: result.comment.entry_path,
       });
     } catch (err) {
       console.error("[push] 未能排程推送", err);
@@ -444,6 +468,26 @@ function messageBody(message: Record<string, unknown>): string {
     : null;
   if (reply && asString(reply.title).trim()) return asString(reply.title);
   return "";
+}
+
+function classifyWhatsAppEntry(
+  explicit: unknown,
+  originSite: OriginSite | null,
+  referralUrl: string | null
+): { ok: true; originSite: OriginSite | null; entryPath: EntryPath | null } | { ok: false; error: string } {
+  const resolved = resolveEntryPath({
+    explicit,
+    inferred: infer28carWaLink(originSite, referralUrl),
+    channel: "whatsapp",
+  });
+  if (!resolved.ok) return resolved;
+  if (resolved.entryPath === "28car_wa_link") {
+    if (originSite && originSite !== "28car") {
+      return { ok: false, error: "28car_wa_link 只可以配 origin_site=28car" };
+    }
+    return { ok: true, originSite: "28car", entryPath: "28car_wa_link" };
+  }
+  return { ok: true, originSite, entryPath: null };
 }
 
 function referralUrlFrom(record: Record<string, unknown>): string | null {
@@ -488,18 +532,23 @@ function parseMetaEntries(entries: unknown[]): { messages: RouteWhatsAppInboundI
         if (!body) continue;
         const fromPhone = asString(messageRecord.from);
         const explicit = messageRecord.origin_site ?? messageRecord.originSite;
-        const origin = resolveOriginSite(
-          explicit === undefined ? null : explicit,
-          referralUrlFrom(messageRecord)
-        );
+        const referral = referralUrlFrom(messageRecord);
+        const origin = resolveOriginSite(explicit === undefined ? null : explicit, referral);
         if (!origin.ok) return { messages: [], error: origin.error };
+        const entry = classifyWhatsAppEntry(
+          messageRecord.entry_path ?? messageRecord.entryPath,
+          origin.originSite,
+          referral
+        );
+        if (!entry.ok) return { messages: [], error: entry.error };
         out.push({
           toPhone,
           fromPhone,
           body,
           externalId: asString(messageRecord.id) || null,
           authorName: names.get(normalizePhone(fromPhone)) ?? null,
-          originSite: origin.originSite,
+          originSite: entry.originSite,
+          entryPath: entry.entryPath,
         });
       }
     }
@@ -531,8 +580,11 @@ export function parseWhatsAppWebhookPayload(payload: unknown): ParsedWhatsAppWeb
   const externalId = asString(root.external_id ?? root.externalId ?? root.id) || null;
   const authorName = asString(root.author_name ?? root.authorName ?? root.name) || null;
   const explicitOrigin = root.origin_site ?? root.originSite;
-  const origin = resolveOriginSite(explicitOrigin === undefined ? null : explicitOrigin, referralUrlFrom(root));
+  const referral = referralUrlFrom(root);
+  const origin = resolveOriginSite(explicitOrigin === undefined ? null : explicitOrigin, referral);
   if (!origin.ok) return { messages: [], ignored: false, error: origin.error };
+  const entry = classifyWhatsAppEntry(root.entry_path ?? root.entryPath, origin.originSite, referral);
+  if (!entry.ok) return { messages: [], ignored: false, error: entry.error };
 
   if (!toPhone && !fromPhone && !body) {
     return {
@@ -543,7 +595,17 @@ export function parseWhatsAppWebhookPayload(payload: unknown): ParsedWhatsAppWeb
   }
 
   return {
-    messages: [{ toPhone, fromPhone, body, externalId, authorName, originSite: origin.originSite }],
+    messages: [
+      {
+        toPhone,
+        fromPhone,
+        body,
+        externalId,
+        authorName,
+        originSite: entry.originSite,
+        entryPath: entry.entryPath,
+      },
+    ],
     ignored: false,
   };
 }

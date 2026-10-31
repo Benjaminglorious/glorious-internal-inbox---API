@@ -17,7 +17,8 @@
     "icons": "node scripts/generate-pwa-icons.mjs",
     "build": "tsc",
     "start:prod": "node dist/index.js",
-    "demo:site-comment": "tsx src/demo/site-comment-ingest.ts"
+    "demo:site-comment": "tsx src/demo/site-comment-ingest.ts",
+    "demo:28car": "tsx src/demo/twentyeightcar-sync.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -26,6 +27,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
+    "https-proxy-agent": "^7.0.6",
     "tsx": "^4.19.2",
     "web-push": "^3.6.7"
   },

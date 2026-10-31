@@ -48,7 +48,9 @@
     function summary(comment) {
       var source = SOURCE_LABEL[comment.source] || comment.source || "留言";
       var label = source;
-      if (comment.intake_kind === "whatsapp_click") {
+      if (comment.entry_path === "28car_board") label = "28car 留言板";
+      else if (comment.entry_path === "28car_wa_link") label = "28car 留言區 WhatsApp";
+      else if (comment.intake_kind === "whatsapp_click") {
         var origin = comment.origin_site ? ORIGIN_LABEL[comment.origin_site] : "";
         label = origin ? "來自" + origin + "的 WhatsApp" : "WhatsApp 聯絡";
       } else if (comment.intake_kind === "site_comment") {
