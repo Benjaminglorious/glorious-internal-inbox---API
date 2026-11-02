@@ -128,8 +128,8 @@ async function main(): Promise<number> {
     const picked = assignApi.pickLeastLoadedStaffId();
     const pickedRow = staff.find((row) => row.id === picked);
     check(
-      "自動派單只計 active=1（收藏即使未完成數係 0 都唔會被揀）",
-      !!pickedRow && pickedRow.active === 1,
+      "自動派單只計 active=1，而且唔會揀 Tony",
+      !!pickedRow && pickedRow.active === 1 && pickedRow.username !== "tony",
       pickedRow ? pickedRow.username : "沒有人選"
     );
 
@@ -228,6 +228,13 @@ async function main(): Promise<number> {
     check("Tony 可以登入", tonyLogin.status === 302 && tonyLogin.cookie.includes("connect.sid="));
     check("Eddie 可以登入", eddieLogin.status === 302 && eddieLogin.cookie.includes("connect.sid="));
     check("收藏帳號 kaixin 登入唔到", kaixinLogin.status === 302 && kaixinLogin.location.includes("error") && !kaixinLogin.cookie);
+
+    const linesPage = await fetch(`${base}/whatsapp-lines`, { headers: { cookie: tonyLogin.cookie } });
+    const linesHtml = await linesPage.text();
+    check(
+      "WhatsApp 線路頁寫明 Tony 唔參與自動派單",
+      linesPage.status === 200 && linesHtml.includes("Tony 唔參與自動派單") && linesHtml.includes("Eddie → Wing → Jason")
+    );
 
     const wingHeaders = { cookie: wingLogin.cookie, accept: "application/json" };
     const tonyHeaders = { cookie: tonyLogin.cookie, accept: "application/json" };

@@ -325,6 +325,17 @@ Instagram 簡介（link in bio）嘅長連結 `l.instagram.com` 展開之後係�
 
 即使網域係 `glorious.hk`，只要 `utm_source=ig`（或 `utm_content=link_in_bio`），WhatsApp 入站會標 `origin_site=instagram`。冇呢啲參數、淨係 `glorious.hk` 先至算東榮官網。
 
+Meta Cloud 嘅 `messages[].referral` 唔止睇 `source_url`。有 Instagram 訊號先標 `origin_site=instagram`：
+
+- `source_url`（包括 `utm_source=ig`、`utm_content=link_in_bio`、`l.instagram.com`、`instagram.com`、`ig.me`、`cdninstagram.com`）
+- `source_type` 含 `instagram`，或者獨立字 `ig`（例如 `ig_profile`）。文件入面嘅 `ad`／`post` 唔當平台
+- `headline`、`body`、`welcome_message`、`source_id`、`image_url`／`video_url`／`thumbnail_url` 入面嘅 IG permalink 或網址
+- 訊息 `context.referral`（回覆／歡迎訊息帶埋嘅 referral）
+
+`media_type` 只係 `image` 或 `video`、再加上 `ctwa_clid`，但冇上面嘅平台訊號，就唔會估成 Instagram（Facebook 廣告都有呢啲欄）。完全冇 referral、或者 referral 係空物件，維持直接 WhatsApp。客戶訊息正文提到 Instagram 都唔會改來源。
+
+限制：Instagram 主頁（個人檔）嘅 WhatsApp 掣，Meta 有時唔附 referral。冇訊號就標唔到東榮 IG，畫面會繼續係「直接 WhatsApp」。已經入庫、又冇留低原始 webhook 嘅舊訊息唔能夠事後補標。
+
 列表可以同時篩：
 
 - `intake=site_comment` 或 `intake=whatsapp_click`
@@ -463,6 +474,30 @@ Header（可選）：`X-Webhook-Token: <WEBHOOK_VERIFY_TOKEN>`（或 `Authorizat
 ```
 
 上面呢則會入庫為 `source=whatsapp`、`intake_kind=whatsapp_click`、`origin_site=instagram`，唔會變成東榮官網留言。`l.instagram.com/?u=` 會先展開再判斷。
+
+冇 `source_url`、但 `source_type` 係 `instagram` 或 `ig_profile`，又或者 `body`／`welcome_message`／圖片網址係 Instagram permalink，同樣標 `instagram`。例如：
+
+```json
+{
+  "object": "whatsapp_business_account",
+  "entry": [{
+    "changes": [{
+      "value": {
+        "metadata": { "display_phone_number": "85221740001" },
+        "messages": [{
+          "from": "85291234567",
+          "id": "wamid.IG-PROFILE",
+          "type": "text",
+          "text": { "body": "Test" },
+          "referral": { "source_type": "instagram", "source_id": "17841405822304914" }
+        }]
+      }
+    }]
+  }]
+}
+```
+
+空 `referral`、或者只有 `source_type: "ad"`、`ctwa_clid`、`media_type` 而冇平台網址，入庫 `origin_site` 留空（直接 WhatsApp）。
 
 `to`／`from` 可以帶 `+`、空格或橫線，程式會收成數字。新寫入嘅留言（唔係重複 `external_id`）會同時嘗試 Web Push，見下面「安裝到手機」。同事喺收件箱回覆唔會推送。
 
