@@ -55,6 +55,7 @@ async function main(): Promise<number> {
   let server: Server | undefined;
 
   try {
+    process.env.INBOX_DB = "sqlite";
     process.env.DATABASE_PATH = dbFile;
     delete process.env.VAPID_PUBLIC_KEY;
     delete process.env.VAPID_PRIVATE_KEY;

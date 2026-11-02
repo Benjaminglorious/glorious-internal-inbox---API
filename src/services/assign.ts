@@ -2,17 +2,20 @@ import { db } from "../db";
 
 /**
  * 公司自動派單次序（未完成數相同時）：Eddie → Wing → Jason → 其餘在職同事。
- * 其餘包括 Tony 同日後新加入嘅 username（唔喺呢個名單）— 全部排 Jason 後面，以 staff.id 升序。
- * 只計 active = 1。
+ * 其餘唔包括 Tony。Tony 即使 active=1 都唔會被自動派單；管理員可以人手改派畀佢。
+ * 新同事（唔喺優先名單）排喺 Jason 後面，以 staff.id 升序。只計 active = 1。
  */
 export const AUTO_ASSIGN_PRIORITY_USERNAMES = ["eddie", "wing", "jason"] as const;
+export const AUTO_ASSIGN_EXCLUDED_USERNAMES = ["tony"] as const;
 
 /**
- * Least open comments, then auto-assign priority (Eddie → Wing → Jason → others by id).
- * 只計 active = 1（在職管理員同在職同事都計；active = 0 收藏唔計）。
+ * Least open comments, then Eddie → Wing → Jason → other active staff by id.
+ * Tony is excluded. Inactive (active = 0) staff are excluded.
  * 公司 WhatsApp 總機入站（routeWhatsAppInbound）、網站留言 ingest、同 seed 都用呢條規則。
  */
 export function pickLeastLoadedStaffId(): number | null {
+  const excluded = AUTO_ASSIGN_EXCLUDED_USERNAMES.map((name) => name.toLowerCase());
+  const excludedSql = excluded.map(() => "?").join(", ");
   const row = db
     .prepare(
       `
@@ -21,9 +24,10 @@ export function pickLeastLoadedStaffId(): number | null {
       FROM staff s
       LEFT JOIN comments c ON c.assignee_staff_id = s.id
       WHERE s.active = 1
+        AND lower(s.username) NOT IN (${excludedSql})
       GROUP BY s.id
       ORDER BY open_count ASC,
-               CASE s.username
+               CASE lower(s.username)
                  WHEN 'eddie' THEN 0
                  WHEN 'wing' THEN 1
                  WHEN 'jason' THEN 2
@@ -32,7 +36,7 @@ export function pickLeastLoadedStaffId(): number | null {
       LIMIT 1
     `
     )
-    .get() as { id: number; open_count: number } | undefined;
+    .get(...excluded) as { id: number; open_count: number } | undefined;
   return row?.id ?? null;
 }
 

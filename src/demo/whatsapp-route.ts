@@ -1,6 +1,6 @@
 /**
  * 示範 routeWhatsAppInbound：
- * 公司總機用最少未完成、同數則 Eddie → Wing → Jason → 其餘（按 staff id）；
+ * 公司總機用最少未完成、同數則 Eddie → Wing → Jason → 其餘（按 staff id，Tony 除外）；
  * 同事個人線路派畀綁定同事；未知線路入庫但未派。
  *
  * 先整一個舊 schema（source 冇 whatsapp）再載入 app，順便確認遷移。
@@ -373,7 +373,7 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
 }
 
 /**
- * 同數時必須係 Eddie → Wing → Jason → 其餘（按 id），即使 Eddie 嘅 id 最大。
+ * 同數時必須係 Eddie → Wing → Jason → 其餘（按 id），Tony 唔會被派，即使 Eddie 嘅 id 最大。
  * 用 transaction 回滾，唔影響後面嘅線路示範。
  */
 function checkEqualLoadPriority(appDb: Database.Database): void {
@@ -411,10 +411,13 @@ function checkEqualLoadPriority(appDb: Database.Database): void {
       picked.push(id);
       insertOpen.run(`prio-eq-${i}`, id);
     }
-    const expected = [eddieId, wingId, jasonId, tonyId, futureId];
+    const expected = [eddieId, wingId, jasonId, futureId, eddieId];
+    if (picked.includes(tonyId)) {
+      throw new Error(`Tony 唔應被自動派單，實際 ${picked.join(",")}`);
+    }
     if (picked.join(",") !== expected.join(",")) {
       throw new Error(
-        `次序 ${picked.join(",")}，期望 Eddie → Wing → Jason → Tony → 新同事（${expected.join(",")}）`
+        `次序 ${picked.join(",")}，期望 Eddie → Wing → Jason → 新同事 → Eddie（${expected.join(",")}）`
       );
     }
     throw new Error("__rollback_priority__");
@@ -422,11 +425,11 @@ function checkEqualLoadPriority(appDb: Database.Database): void {
 
   try {
     probe();
-    check("同數次序 Eddie → Wing → Jason → Tony／新同事", false, "transaction 冇回滾");
+    check("同數次序 Eddie → Wing → Jason → 新同事，跳過 Tony", false, "transaction 冇回滾");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     check(
-      "同數次序 Eddie → Wing → Jason → Tony／新同事（即使 Eddie id 最大）",
+      "同數次序 Eddie → Wing → Jason → 新同事，跳過 Tony（即使 Eddie id 最大）",
       message === "__rollback_priority__",
       message === "__rollback_priority__" ? undefined : message
     );
@@ -470,6 +473,7 @@ async function main(): Promise<number> {
     `);
     legacy.close();
 
+    process.env.INBOX_DB = "sqlite";
     process.env.DATABASE_PATH = dbFile;
     delete process.env.WHATSAPP_ACCESS_TOKEN;
     // eslint-disable-next-line @typescript-eslint/no-require-imports

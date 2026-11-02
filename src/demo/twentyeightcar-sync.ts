@@ -342,6 +342,7 @@ async function main(): Promise<number> {
   check("最多 10 個帳號", capped.accounts.length === 10 && capped.truncated);
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "glorious-28car-"));
+  process.env.INBOX_DB = "sqlite";
   process.env.DATABASE_PATH = path.join(tmp, "inbox.db");
   process.env.TWENTYEIGHT_CAR_SYNC_ENABLED = "0";
   process.env.TWENTYEIGHT_CAR_REPLY_POST_ENABLED = "0";
