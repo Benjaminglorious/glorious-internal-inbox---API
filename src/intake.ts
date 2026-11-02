@@ -80,10 +80,23 @@ function fromUtm(url: string): OriginSite | null {
   return null;
 }
 
+function hostIsInstagram(host: string): boolean {
+  if (
+    hostIs(host, "instagram.com") ||
+    hostIs(host, "instagr.am") ||
+    hostIs(host, "cdninstagram.com") ||
+    hostIs(host, "ig.me")
+  ) {
+    return true;
+  }
+  // Instagram CDN on Facebook's host, e.g. instagram.fabc-1.fna.fbcdn.net.
+  return host.startsWith("instagram.") && host.endsWith(".fbcdn.net");
+}
+
 function fromHost(url: string): OriginSite | null {
   const host = hostOf(url);
   if (!host) return null;
-  if (hostIs(host, "instagram.com") || hostIs(host, "instagr.am")) return "instagram";
+  if (hostIsInstagram(host)) return "instagram";
   if (hostIs(host, "28car.com")) return "28car";
   if (hostIs(host, "facebook.com") || hostIs(host, "fb.com") || hostIs(host, "fb.me")) return "facebook";
   if (hostIs(host, "glorious.hk")) return "glorious_web";
@@ -178,4 +191,153 @@ export function resolveOriginSite(
   }
   if (normalized) return { ok: true, originSite: normalized };
   return { ok: true, originSite: originSiteFromUrl(referralUrl) };
+}
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function textOf(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(Math.trunc(value));
+  return "";
+}
+
+const SOURCE_URL_KEYS = new Set(["sourceurl", "url", "permalink", "permalinkurl", "link"]);
+const MEDIA_URL_KEYS = new Set(["imageurl", "videourl", "thumbnailurl", "mediaurl"]);
+const PROSE_KEYS = new Set([
+  "headline",
+  "body",
+  "text",
+  "title",
+  "description",
+  "sourceid",
+  "ctwaclid",
+  "welcomemessage",
+]);
+const TYPE_KEYS = new Set(["sourcetype", "mediatype"]);
+
+function normKey(key: string): string {
+  return key.replace(/[_-]/g, "").toLowerCase();
+}
+
+/** `ad`／`post`／`image`／`video` 係 Cloud API 文件嘅通用值，唔代表平台。 */
+function platformFromSourceType(value: string): OriginSite | null {
+  const s = value.trim().toLowerCase();
+  if (!s || s === "ad" || s === "post" || s === "image" || s === "video") return null;
+  if (/(?:^|[^a-z0-9])instagram(?:[^a-z0-9]|$)/.test(s) || /(?:^|[^a-z0-9])ig(?:[^a-z0-9]|$)/.test(s)) {
+    return "instagram";
+  }
+  if (/(?:^|[^a-z0-9])facebook(?:[^a-z0-9]|$)/.test(s) || /(?:^|[^a-z0-9])fb(?:[^a-z0-9]|$)/.test(s)) {
+    return "facebook";
+  }
+  return null;
+}
+
+function mentionsHost(text: string, host: string): boolean {
+  const escaped = host.replace(/\./g, "\\.");
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:/|$|\\?|#|\\s)`, "i").test(text);
+}
+
+function originFromFreeText(text: string): OriginSite | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const direct = originSiteFromUrl(trimmed);
+  if (direct) return direct;
+  const embedded = trimmed.match(/https?:\/\/[^\s<>"')\]]+/gi) ?? [];
+  for (const raw of embedded) {
+    const origin = originSiteFromUrl(raw.replace(/[),.;]+$/g, ""));
+    if (origin) return origin;
+  }
+  const lower = trimmed.toLowerCase();
+  if (
+    mentionsHost(lower, "instagram.com") ||
+    mentionsHost(lower, "instagr.am") ||
+    mentionsHost(lower, "cdninstagram.com") ||
+    mentionsHost(lower, "ig.me") ||
+    /instagram\.[a-z0-9.-]+\.fbcdn\.net(?:\/|$|\?|#|\s)/.test(lower) ||
+    /(?:^|[?&#\s])utm_source=(?:ig|instagram)(?:&|#|\s|$)/.test(lower) ||
+    /(?:^|[?&#\s])utm_content=link_in_bio(?:&|#|\s|$)/.test(lower)
+  ) {
+    return "instagram";
+  }
+  if (
+    mentionsHost(lower, "facebook.com") ||
+    mentionsHost(lower, "fb.com") ||
+    mentionsHost(lower, "fb.me") ||
+    /(?:^|[?&#\s])utm_source=(?:fb|facebook)(?:&|#|\s|$)/.test(lower)
+  ) {
+    return "facebook";
+  }
+  return null;
+}
+
+interface ReferralSignalBag {
+  sourceUrls: string[];
+  mediaUrls: string[];
+  types: string[];
+  prose: string[];
+}
+
+function collectReferralSignals(value: unknown, bag: ReferralSignalBag, depth: number): void {
+  if (depth > 5 || value == null) return;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (text) bag.prose.push(text);
+    return;
+  }
+  const record = recordOf(value);
+  if (!record) return;
+  for (const [key, raw] of Object.entries(record)) {
+    const norm = normKey(key);
+    if (raw && typeof raw === "object") {
+      collectReferralSignals(raw, bag, depth + 1);
+      continue;
+    }
+    const text = textOf(raw);
+    if (!text) continue;
+    if (SOURCE_URL_KEYS.has(norm)) bag.sourceUrls.push(text);
+    else if (MEDIA_URL_KEYS.has(norm)) bag.mediaUrls.push(text);
+    else if (TYPE_KEYS.has(norm)) bag.types.push(text);
+    else if (PROSE_KEYS.has(norm)) bag.prose.push(text);
+  }
+}
+
+/**
+ * 由 WhatsApp Cloud `messages[].referral`（同可選 `context`）推斷來源站。
+ * `source_url` 優先（utm／網域，同 `originSiteFromUrl`）。跟住先至係
+ * `source_type`／`media_type` 入面嘅 instagram／ig 或 facebook／fb。
+ * 再睇 image／video URL、headline、body、welcome_message、source_id、ctwa_clid。
+ * `source_type=ad|post`、`media_type=image|video`、單獨 `ctwa_clid` 都唔當平台。
+ * 空 referral、或者完全冇 Instagram／Facebook 訊號，回 null（直接 WhatsApp）。
+ * 唔好傳入客戶訊息正文：有機對話提到 IG 都唔可以標來源。
+ * Instagram 主頁掣有時 Meta 根本唔附 referral，嗰陣亦會回 null。
+ */
+export function originSiteFromReferralSignals(
+  referral: unknown,
+  context?: unknown
+): OriginSite | null {
+  const bag: ReferralSignalBag = { sourceUrls: [], mediaUrls: [], types: [], prose: [] };
+  if (typeof referral === "string") {
+    const origin = originFromFreeText(referral);
+    if (origin) return origin;
+  } else {
+    collectReferralSignals(referral, bag, 0);
+  }
+  collectReferralSignals(context, bag, 0);
+
+  for (const url of bag.sourceUrls) {
+    const origin = originFromFreeText(url);
+    if (origin) return origin;
+  }
+  for (const type of bag.types) {
+    const origin = platformFromSourceType(type);
+    if (origin) return origin;
+  }
+  for (const url of [...bag.mediaUrls, ...bag.prose]) {
+    const origin = originFromFreeText(url);
+    if (origin) return origin;
+  }
+  return null;
 }

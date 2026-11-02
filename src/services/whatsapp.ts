@@ -1,6 +1,12 @@
 import { COMPANY_WHATSAPP_LABEL, COMPANY_WHATSAPP_PHONE } from "../config";
 import { db } from "../db";
-import { infer28carWaLink, normalizeOriginSite, resolveEntryPath, resolveOriginSite } from "../intake";
+import {
+  infer28carWaLink,
+  normalizeOriginSite,
+  originSiteFromReferralSignals,
+  resolveEntryPath,
+  resolveOriginSite,
+} from "../intake";
 import type {
   CommentStatus,
   CommentWithAssignee,
@@ -504,6 +510,20 @@ function referralUrlFrom(record: Record<string, unknown>): string | null {
   return direct || null;
 }
 
+/**
+ * 明確 origin 優先，跟住 referral.source_url（現有 utm／網域規則）。
+ * 仍然係空先至睇 referral／context 其餘欄（source_type、permalink、welcome_message 等）。
+ * 客戶訊息正文唔參與，避免有機對話被誤標。
+ */
+function inboundOrigin(
+  record: Record<string, unknown>
+): { ok: true; originSite: OriginSite | null } | { ok: false; error: string } {
+  const explicit = record.origin_site ?? record.originSite;
+  const resolved = resolveOriginSite(explicit === undefined ? null : explicit, referralUrlFrom(record));
+  if (!resolved.ok || resolved.originSite) return resolved;
+  return { ok: true, originSite: originSiteFromReferralSignals(record.referral, record.context) };
+}
+
 function parseMetaEntries(entries: unknown[]): { messages: RouteWhatsAppInboundInput[]; error?: string } {
   const out: RouteWhatsAppInboundInput[] = [];
   for (const entry of entries) {
@@ -533,9 +553,8 @@ function parseMetaEntries(entries: unknown[]): { messages: RouteWhatsAppInboundI
         const body = messageBody(messageRecord).trim();
         if (!body) continue;
         const fromPhone = asString(messageRecord.from);
-        const explicit = messageRecord.origin_site ?? messageRecord.originSite;
         const referral = referralUrlFrom(messageRecord);
-        const origin = resolveOriginSite(explicit === undefined ? null : explicit, referral);
+        const origin = inboundOrigin(messageRecord);
         if (!origin.ok) return { messages: [], error: origin.error };
         const entry = classifyWhatsAppEntry(
           messageRecord.entry_path ?? messageRecord.entryPath,
@@ -581,9 +600,8 @@ export function parseWhatsAppWebhookPayload(payload: unknown): ParsedWhatsAppWeb
     (textRecord ? asString(textRecord.body) : asString(root.text));
   const externalId = asString(root.external_id ?? root.externalId ?? root.id) || null;
   const authorName = asString(root.author_name ?? root.authorName ?? root.name) || null;
-  const explicitOrigin = root.origin_site ?? root.originSite;
   const referral = referralUrlFrom(root);
-  const origin = resolveOriginSite(explicitOrigin === undefined ? null : explicitOrigin, referral);
+  const origin = inboundOrigin(root);
   if (!origin.ok) return { messages: [], ignored: false, error: origin.error };
   const entry = classifyWhatsAppEntry(root.entry_path ?? root.entryPath, origin.originSite, referral);
   if (!entry.ok) return { messages: [], ignored: false, error: entry.error };

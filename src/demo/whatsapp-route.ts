@@ -374,6 +374,7 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
 
 /**
  * 同數時必須係 Eddie → Wing → Jason → 其餘（按 id），Tony 唔會被派，即使 Eddie 嘅 id 最大。
+ * Tony 即使 id 最小、未完成數係 0，都唔可以被揀。只剩 Tony 時回 null。
  * 用 transaction 回滾，唔影響後面嘅線路示範。
  */
 function checkEqualLoadPriority(appDb: Database.Database): void {
@@ -383,13 +384,14 @@ function checkEqualLoadPriority(appDb: Database.Database): void {
     appDb.prepare(`UPDATE staff SET active = 0`).run();
     const insertStaff = appDb.prepare(
       `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
-       VALUES (?, ?, 'x', 0, 1)`
+       VALUES (?, ?, 'x', ?, 1)`
     );
-    const tonyId = Number(insertStaff.run("tony", "Tony Chan").lastInsertRowid);
-    const futureId = Number(insertStaff.run("newbie", "新同事").lastInsertRowid);
-    const jasonId = Number(insertStaff.run("jason", "Jason Cheng").lastInsertRowid);
-    const wingId = Number(insertStaff.run("wing", "Wing Cheng").lastInsertRowid);
-    const eddieId = Number(insertStaff.run("eddie", "Eddie Lau").lastInsertRowid);
+    // Tony 先插入，staff.id 最小。Eddie 最後插入而且係管理員，同數時仍然排第一。
+    const tonyId = Number(insertStaff.run("tony", "Tony Chan", 1).lastInsertRowid);
+    const futureId = Number(insertStaff.run("newbie", "新同事", 0).lastInsertRowid);
+    const jasonId = Number(insertStaff.run("jason", "Jason Cheng", 0).lastInsertRowid);
+    const wingId = Number(insertStaff.run("wing", "Wing Cheng", 0).lastInsertRowid);
+    const eddieId = Number(insertStaff.run("eddie", "Eddie Lau", 1).lastInsertRowid);
 
     const insertOpen = appDb.prepare(
       `INSERT INTO comments (
@@ -405,21 +407,44 @@ function checkEqualLoadPriority(appDb: Database.Database): void {
     appDb.prepare(`UPDATE comments SET status = 'done' WHERE external_id = 'prio-preload-eddie'`).run();
 
     const picked: number[] = [];
-    for (let i = 0; i < 5; i += 1) {
+    for (let i = 0; i < 4; i += 1) {
       const id = pickLeastLoadedStaffId();
       if (id == null) throw new Error("沒有在職同事");
+      if (id === tonyId) throw new Error("自動派單唔可以派畀 Tony");
       picked.push(id);
       insertOpen.run(`prio-eq-${i}`, id);
     }
-    const expected = [eddieId, wingId, jasonId, futureId, eddieId];
+    const expected = [eddieId, wingId, jasonId, futureId];
     if (picked.includes(tonyId)) {
       throw new Error(`Tony 唔應被自動派單，實際 ${picked.join(",")}`);
     }
     if (picked.join(",") !== expected.join(",")) {
       throw new Error(
-        `次序 ${picked.join(",")}，期望 Eddie → Wing → Jason → 新同事 → Eddie（${expected.join(",")}）`
+        `次序 ${picked.join(",")}，期望 Eddie → Wing → Jason → 新同事（唔包括 Tony ${tonyId}）（${expected.join(",")}）`
       );
     }
+
+    const fifth = pickLeastLoadedStaffId();
+    if (fifth !== eddieId) {
+      throw new Error(`四位各有一張之後應再派 Eddie，實際 ${fifth}（Tony ${tonyId}）`);
+    }
+
+    appDb.prepare(`UPDATE comments SET status = 'done'`).run();
+    insertOpen.run("prio-tony-idle-e", eddieId);
+    insertOpen.run("prio-tony-idle-w", wingId);
+    insertOpen.run("prio-tony-idle-j", jasonId);
+    insertOpen.run("prio-tony-idle-n", futureId);
+    const despiteTonyIdle = pickLeastLoadedStaffId();
+    if (despiteTonyIdle !== eddieId) {
+      throw new Error(`Tony 零負荷時仍應派 Eddie，實際 ${despiteTonyIdle}`);
+    }
+
+    appDb.prepare(`UPDATE staff SET active = 0 WHERE username != 'tony'`).run();
+    const onlyTony = pickLeastLoadedStaffId();
+    if (onlyTony != null) {
+      throw new Error(`只剩 Tony 時唔應派單，實際 ${onlyTony}`);
+    }
+
     throw new Error("__rollback_priority__");
   });
 
@@ -705,6 +730,7 @@ async function main(): Promise<number> {
         official.messages[0]?.fromPhone === "16505551234" &&
         official.messages[0]?.authorName === "Sheena Nelson" &&
         official.messages[0]?.body === "Does it come in another color?" &&
+        official.messages[0]?.originSite == null &&
         !official.error
     );
     const officialRouted = official.messages[0] ? wa.routeWhatsAppInbound(official.messages[0]) : null;
@@ -806,6 +832,234 @@ async function main(): Promise<number> {
       referral: { source_url: "http://glorious.hk/?utm_medium=social&utm_content=link_in_bio" },
     });
     check("utm_content=link_in_bio 亦當 Instagram", bioContentOnly.messages[0]?.originSite === "instagram");
+
+    const igMe = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85294481249",
+      body: "Test",
+      external_id: "m-ig-me",
+      referral: { source_url: "https://ig.me/m/gloriousmotors" },
+    });
+    check("ig.me 係 Instagram", igMe.messages[0]?.originSite === "instagram");
+
+    const igProfileType = wa.parseWhatsAppWebhookPayload(
+      metaIncomingSample("wamid.IG-PROFILE", [
+        {
+          from: "85294481249",
+          id: "wamid.IG-PROFILE",
+          timestamp: "1749416383",
+          type: "text",
+          text: { body: "Test" },
+          referral: {
+            source_type: "instagram",
+            source_id: "17841405822304914",
+            headline: "Glorious Motors",
+            body: "WhatsApp",
+            media_type: "image",
+          },
+        },
+      ])
+    );
+    check(
+      "referral.source_type=instagram 標成 IG（冇 source_url 都算）",
+      !igProfileType.error && igProfileType.messages[0]?.originSite === "instagram"
+    );
+
+    const igToken = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85294481250",
+      body: "Test",
+      external_id: "m-ig-source-type",
+      referral: { source_type: "ig_profile", source_id: "999" },
+    });
+    check("source_type 含 ig 標成 IG", igToken.messages[0]?.originSite === "instagram");
+
+    const igOverWaLink = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85294481260",
+      body: "Test",
+      external_id: "m-ig-wa-link",
+      referral: {
+        source_type: "ig",
+        source_url: "https://api.whatsapp.com/send?phone=85221740001",
+      },
+    });
+    check(
+      "source_type=ig 而且 source_url 只係 WhatsApp 連結，仍然係 IG",
+      igOverWaLink.messages[0]?.originSite === "instagram"
+    );
+
+    const igPermalink = wa.parseWhatsAppWebhookPayload(
+      metaIncomingSample("wamid.IG-REEL", [
+        {
+          from: "85294481251",
+          id: "wamid.IG-REEL",
+          timestamp: "1749416383",
+          type: "text",
+          text: { body: "Test" },
+          referral: {
+            source_type: "ad",
+            source_id: "120210000000000",
+            headline: "Reel",
+            body: "https://www.instagram.com/reel/CxAb12/",
+            media_type: "video",
+            video_url: "https://scontent.cdninstagram.com/v/example.mp4",
+            ctwa_clid: "ARAkLkA8rmlFeiCktEJQ",
+            welcome_message: { text: "你好，想問邊架？" },
+          },
+        },
+      ])
+    );
+    check(
+      "IG permalink 或 cdninstagram 標成 IG",
+      !igPermalink.error && igPermalink.messages[0]?.originSite === "instagram"
+    );
+
+    const igCdn = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85294481252",
+      body: "Test",
+      external_id: "m-ig-cdn",
+      referral: {
+        source_type: "post",
+        media_type: "image",
+        image_url: "https://instagram.fabc-1.fna.fbcdn.net/v/example.jpg",
+      },
+    });
+    check("instagram.*.fbcdn.net 標成 IG", igCdn.messages[0]?.originSite === "instagram");
+
+    const igContext = wa.parseWhatsAppWebhookPayload(
+      metaIncomingSample("wamid.IG-CTX", [
+        {
+          from: "85294481253",
+          id: "wamid.IG-CTX",
+          timestamp: "1749416383",
+          type: "text",
+          text: { body: "Test" },
+          context: {
+            from: COMPANY_WHATSAPP_PHONE,
+            id: "wamid.EARLIER",
+            referral: {
+              source_type: "post",
+              source_url: "https://www.instagram.com/glorious.motors/",
+            },
+          },
+        },
+      ])
+    );
+    check(
+      "context.referral 嘅 IG 網址標成 IG",
+      !igContext.error && igContext.messages[0]?.originSite === "instagram"
+    );
+
+    const igWelcome = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85294481254",
+      body: "Test",
+      external_id: "m-ig-welcome",
+      referral: {
+        source_type: "post",
+        welcome_message: { text: "https://www.instagram.com/p/AbCdEf1/" },
+      },
+    });
+    check("welcome_message 入面嘅 IG permalink 標成 IG", igWelcome.messages[0]?.originSite === "instagram");
+
+    const emptyReferral = wa.parseWhatsAppWebhookPayload(
+      metaIncomingSample("wamid.DIRECT-EMPTY", [
+        {
+          from: "85294481249",
+          id: "wamid.DIRECT-EMPTY",
+          timestamp: "1749416383",
+          type: "text",
+          text: { body: "Test" },
+          referral: {},
+        },
+      ])
+    );
+    check(
+      "空 referral 仍然係直接 WhatsApp",
+      !emptyReferral.error && emptyReferral.messages[0]?.originSite == null
+    );
+
+    const organic = wa.parseWhatsAppWebhookPayload(
+      metaIncomingSample("wamid.ORGANIC", [
+        {
+          from: "85294481249",
+          id: "wamid.ORGANIC",
+          timestamp: "1749416383",
+          type: "text",
+          text: { body: "Test" },
+        },
+      ])
+    );
+    check(
+      "冇 referral 嘅有機對話係直接 WhatsApp",
+      !organic.error && organic.messages[0]?.originSite == null
+    );
+
+    const saysIg = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85294481255",
+      body: "I came from instagram.com/glorious",
+      external_id: "m-say-ig",
+    });
+    check("客人內文提到 IG 唔當來源", saysIg.messages[0]?.originSite == null && !saysIg.error);
+
+    const adWithoutPlatform = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85294481256",
+      body: "Test",
+      external_id: "m-ad-bare",
+      referral: {
+        source_type: "ad",
+        source_id: "52540693396957",
+        media_type: "image",
+        ctwa_clid: "AfhN-JKvx8HeFTmfB",
+        welcome_message: { text: "歡迎查詢" },
+        image_url: "https://scontent.xx.fbcdn.net/v/t45.1600-4/example.jpg",
+      },
+    });
+    check(
+      "只有 ad、ctwa_clid、media_type、fbcdn 唔當 IG",
+      adWithoutPlatform.messages[0]?.originSite == null
+    );
+
+    const fbStill = wa.parseWhatsAppWebhookPayload(
+      metaIncomingSample("wamid.FB-AD", [
+        {
+          from: "85294481257",
+          id: "wamid.FB-AD",
+          timestamp: "1749416383",
+          type: "text",
+          text: { body: "Test" },
+          referral: {
+            source_type: "ad",
+            source_id: "111",
+            source_url: "https://fb.me/AAAAA",
+            headline: "FB ad",
+            body: "This is a great product",
+            media_type: "image",
+            image_url: "https://scontent.xx.fbcdn.net/v/t45.1600-4/example.jpg",
+            ctwa_clid: "ARAkLkA8rmlFeiCktEJQ-QTw",
+            welcome_message: { text: "Can I learn more?" },
+          },
+        },
+      ])
+    );
+    check(
+      "Facebook CTWA source_url 仍然係 facebook",
+      !fbStill.error && fbStill.messages[0]?.originSite === "facebook"
+    );
+
+    const explicitWins = wa.parseWhatsAppWebhookPayload({
+      to: COMPANY_WHATSAPP_PHONE,
+      from: "85294481258",
+      body: "Test",
+      external_id: "m-explicit-fb",
+      origin_site: "facebook",
+      referral: { source_type: "instagram", source_url: "https://www.instagram.com/p/ZZZ/" },
+    });
+    check("明確 origin_site 優先於 referral", explicitWins.messages[0]?.originSite === "facebook");
 
     const badOrigin = wa.routeWhatsAppInbound({
       toPhone: COMPANY_WHATSAPP_PHONE,
