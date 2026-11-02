@@ -24,6 +24,10 @@ export type EntryPath = (typeof ENTRY_PATHS)[number];
 export const DELIVERY_STATUSES = ["stored", "stub", "failed", "sent"] as const;
 export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
 
+/** Meta 入站：公開留言定 Messenger／IG 私訊。舊列可以係 null。 */
+export const META_SURFACES = ["comment", "message"] as const;
+export type MetaSurface = (typeof META_SURFACES)[number];
+
 export const REPLY_DIRECTIONS = ["outbound", "inbound"] as const;
 export type ReplyDirection = (typeof REPLY_DIRECTIONS)[number];
 
@@ -61,6 +65,10 @@ export function isDeliveryStatus(value: unknown): value is DeliveryStatus {
   return typeof value === "string" && (DELIVERY_STATUSES as readonly string[]).includes(value);
 }
 
+export function isMetaSurface(value: unknown): value is MetaSurface {
+  return value === "comment" || value === "message";
+}
+
 export interface Staff {
   id: number;
   username: string;
@@ -96,6 +104,13 @@ export interface Comment {
   wa_from_phone: string | null;
   /** 收件線路號碼（只留數字）。公司總機係 85221740001。 */
   wa_to_phone: string | null;
+  /**
+   * Messenger PSID 或 Instagram IGSID。
+   * 公開留言可以係留言者 id，回覆時用 external_id（comment id），唔使靠呢欄。
+   */
+  meta_sender_id: string | null;
+  /** 公開留言 comment；私訊 message。舊資料係 null，出站會再睇 external_id。 */
+  meta_surface: MetaSurface | null;
   /**
    * 28car_board：客戶寫喺網頁留言區。
    * 28car_wa_link：客戶撳咗留言區入面嘅 WhatsApp 連結，入公司 WhatsApp。

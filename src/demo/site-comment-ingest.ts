@@ -30,6 +30,8 @@ function main(): number {
     process.env.DATABASE_PATH = dbFile;
     process.env.WEBHOOK_VERIFY_TOKEN = "demo-webhook-token";
     delete process.env.META_APP_SECRET;
+    delete process.env.META_PAGE_ID;
+    delete process.env.META_IG_BUSINESS_ACCOUNT_ID;
 
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const dbMod = require("../db") as typeof import("../db");
@@ -121,6 +123,33 @@ function main(): number {
       "Meta 來源係 facebook",
       parsed.items.every((i) => i.source === "facebook")
     );
+    check(
+      "Meta feed 記住 comment id 同留言者 id",
+      parsed.items[0]?.external_id === "fb-meta-9" &&
+        parsed.items[0]?.meta_surface === "comment" &&
+        parsed.items[0]?.meta_sender_id === "u1"
+    );
+    check(
+      "Meta 私訊記住 mid 同 PSID",
+      parsed.items[1]?.external_id === "mid.1" &&
+        parsed.items[1]?.meta_surface === "message" &&
+        parsed.items[1]?.meta_sender_id === "m1"
+    );
+    const storedMeta = site.upsertSiteComment(parsed.items[0]!);
+    check(
+      "入庫寫低 meta_sender_id",
+      storedMeta.ok && storedMeta.comment.meta_sender_id === "u1" && storedMeta.comment.meta_surface === "comment"
+    );
+    const againMeta = site.upsertSiteComment({
+      source: "facebook",
+      external_id: "fb-meta-9",
+      author_name: "Cindy",
+      body: "想問價錢 更新",
+    });
+    check(
+      "重複入庫唔洗走 meta 欄",
+      againMeta.ok && againMeta.comment.meta_sender_id === "u1" && againMeta.comment.meta_surface === "comment"
+    );
 
     const ig = meta.parseMetaWebhookPayload({
       object: "instagram",
@@ -140,6 +169,64 @@ function main(): number {
       ],
     });
     check("IG comments 拆出 1 則", ig.items.length === 1 && ig.items[0]?.source === "instagram");
+    check(
+      "IG 留言記住 comment id 同用戶 id",
+      ig.items[0]?.external_id === "ig-c-1" &&
+        ig.items[0]?.meta_surface === "comment" &&
+        ig.items[0]?.meta_sender_id === "ig1"
+    );
+
+    const savedPage = process.env.META_PAGE_ID;
+    const savedIgId = process.env.META_IG_BUSINESS_ACCOUNT_ID;
+    process.env.META_PAGE_ID = "111";
+    process.env.META_IG_BUSINESS_ACCOUNT_ID = "222";
+    const own = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          changes: [
+            {
+              field: "feed",
+              value: { item: "comment", verb: "add", comment_id: "own-1", message: "專頁回覆", from: { id: "111", name: "東榮" } },
+            },
+          ],
+          messaging: [{ sender: { id: "111" }, message: { mid: "mid.own", text: "回聲" } }],
+        },
+      ],
+    });
+    const ownIg = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          changes: [
+            {
+              field: "comments",
+              value: { id: "ig-own", text: "IG 自己回覆", from: { id: "222", username: "glorious" } },
+            },
+          ],
+        },
+      ],
+    });
+    const stillCustomer = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          changes: [
+            {
+              field: "feed",
+              value: { item: "comment", verb: "add", comment_id: "cust-1", message: "客戶", from: { id: "333", name: "客" } },
+            },
+          ],
+        },
+      ],
+    });
+    check("專頁自己嘅留言同私訊唔入庫", own.items.length === 0 && own.ignored);
+    check("IG 專業帳號自己嘅留言唔入庫", ownIg.items.length === 0 && ownIg.ignored);
+    check("客戶留言仍然入庫", stillCustomer.items.length === 1 && stillCustomer.items[0]?.meta_sender_id === "333");
+    if (savedPage === undefined) delete process.env.META_PAGE_ID;
+    else process.env.META_PAGE_ID = savedPage;
+    if (savedIgId === undefined) delete process.env.META_IG_BUSINESS_ACCOUNT_ID;
+    else process.env.META_IG_BUSINESS_ACCOUNT_ID = savedIgId;
 
     const ignored = meta.parseMetaWebhookPayload({
       object: "page",

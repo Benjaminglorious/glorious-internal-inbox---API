@@ -476,6 +476,7 @@ async function main(): Promise<number> {
     process.env.INBOX_DB = "sqlite";
     process.env.DATABASE_PATH = dbFile;
     delete process.env.WHATSAPP_ACCESS_TOKEN;
+    delete process.env.META_PAGE_ACCESS_TOKEN;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const dbMod = require("../db") as typeof import("../db");
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -883,14 +884,15 @@ async function main(): Promise<number> {
       body: "IG 留言回覆",
     });
     check(
-      "東榮 IG 留言可喺系統內回覆",
+      "東榮 IG 示範留言可喺系統內回覆，唔係 Graph comment id 就標失敗",
       igReply.ok &&
         igReply.comment.source === "instagram" &&
         igReply.comment.intake_kind === "site_comment" &&
         igReply.comment.origin_site == null &&
-        igReply.reply.delivery_status === "stub" &&
+        igReply.reply.delivery_status === "failed" &&
+        (igReply.reply.delivery_error || "").includes("Graph comment id") &&
         igReply.comment.status === "in_progress",
-      igReply.ok ? `source=${igReply.comment.source}` : igReply.error
+      igReply.ok ? `${igReply.reply.delivery_status} ${igReply.reply.delivery_error || ""}` : igReply.error
     );
     const igList = commentsApi.listComments({ source: "instagram", intake: "site_comment" });
     check(

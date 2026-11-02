@@ -13,6 +13,9 @@ BEGIN;
 ${converted}
 ${indexes}
 CREATE INDEX IF NOT EXISTS idx_comments_entry_path ON comments(entry_path);
+-- Existing Render databases were created before Graph reply ids. CREATE TABLE IF NOT EXISTS will not add columns.
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS meta_sender_id TEXT;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS meta_surface TEXT;
 -- connect-pg-simple's bundled table.sql uses WITH (OIDS=FALSE), which PostgreSQL 12+ rejects.
 -- Create the session table here so the library finds it and skips that script.
 CREATE TABLE IF NOT EXISTS "session" (

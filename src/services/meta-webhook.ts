@@ -1,10 +1,12 @@
 import type { UpsertSiteCommentInput } from "./site-comments";
 import type { SiteCommentSource } from "./site-comments";
+import type { MetaSurface } from "../types";
 
 /**
  * 將 Meta Page／Instagram webhook JSON 拆成 upsertSiteComment 輸入。
  * 只處理認得嘅留言／私訊形狀；狀態回呼等會 ignored。
- * 出站 Graph API 仍然未接。
+ * 公開留言記住 comment id；私訊記住 mid 同客戶 PSID／IGSID，出站先回得到。
+ * META_PAGE_ID／META_IG_BUSINESS_ACCOUNT_ID 自己發出嘅事件唔入庫。
  */
 
 export interface ParsedMetaWebhook {
@@ -37,21 +39,39 @@ function fromName(from: Record<string, unknown> | null): string {
   );
 }
 
+function actorId(record: Record<string, unknown> | null): string {
+  if (!record) return "";
+  return asString(record.id).trim();
+}
+
+/** 專頁或 IG 專業帳號自己嘅 webhook（通常係出站回覆嘅回聲）。 */
+function isOwnMetaActor(id: string): boolean {
+  const actor = id.trim();
+  if (!actor) return false;
+  const page = process.env.META_PAGE_ID?.trim() ?? "";
+  const ig = process.env.META_IG_BUSINESS_ACCOUNT_ID?.trim() ?? "";
+  return (page !== "" && actor === page) || (ig !== "" && actor === ig);
+}
+
 function pushItem(
   items: UpsertSiteCommentInput[],
   source: SiteCommentSource,
   externalId: string,
   authorName: string,
-  body: string
+  body: string,
+  meta?: { senderId?: string; surface?: MetaSurface }
 ): void {
   const id = externalId.trim();
   const text = body.trim();
   if (!id || !text) return;
+  const senderId = (meta?.senderId ?? "").trim();
   items.push({
     source,
     external_id: id.slice(0, 200),
     author_name: (authorName.trim() || "未知用戶").slice(0, 120),
     body: text.slice(0, 8000),
+    meta_sender_id: senderId || null,
+    meta_surface: meta?.surface ?? null,
   });
 }
 
@@ -65,7 +85,11 @@ function parseFeedChange(value: Record<string, unknown>, items: UpsertSiteCommen
   const commentId = asString(value.comment_id) || asString(value.commentId);
   const message = asString(value.message) || asString(value.text);
   const from = asRecord(value.from);
-  pushItem(items, "facebook", commentId, fromName(from), message);
+  if (isOwnMetaActor(actorId(from))) return;
+  pushItem(items, "facebook", commentId, fromName(from), message, {
+    senderId: actorId(from),
+    surface: "comment",
+  });
 }
 
 /** Instagram comments field。 */
@@ -73,7 +97,11 @@ function parseIgCommentChange(value: Record<string, unknown>, items: UpsertSiteC
   const commentId = asString(value.id) || asString(value.comment_id);
   const text = asString(value.text) || asString(value.message);
   const from = asRecord(value.from);
-  pushItem(items, "instagram", commentId, fromName(from), text);
+  if (isOwnMetaActor(actorId(from))) return;
+  pushItem(items, "instagram", commentId, fromName(from), text, {
+    senderId: actorId(from),
+    surface: "comment",
+  });
 }
 
 /** Messenger / IG messaging（entry.messaging[]）。 */
@@ -94,8 +122,11 @@ function parseMessaging(
     const text = asString(message.text);
     if (!text) continue;
     const sender = asRecord(event.sender);
-    const author = fromName(sender) || asString(sender?.id);
-    pushItem(items, source, mid || `msg:${asString(sender?.id)}:${text.slice(0, 40)}`, author, text);
+    const senderId = actorId(sender);
+    if (isOwnMetaActor(senderId)) continue;
+    const author = fromName(sender) || senderId;
+    const externalId = mid || (senderId ? `msg:${senderId}:${text.slice(0, 40)}` : "");
+    pushItem(items, source, externalId, author, text, { senderId, surface: "message" });
   }
 }
 
@@ -122,7 +153,11 @@ function parseEntry(entry: Record<string, unknown>, objectType: string, items: U
           const commentId = asString(value.id) || asString(value.comment_id);
           const text = asString(value.text) || asString(value.message);
           const from = asRecord(value.from);
-          pushItem(items, "facebook", commentId, fromName(from), text);
+          if (isOwnMetaActor(actorId(from))) continue;
+          pushItem(items, "facebook", commentId, fromName(from), text, {
+            senderId: actorId(from),
+            surface: "comment",
+          });
         }
       }
       continue;

@@ -72,8 +72,9 @@ function getReply(id: number): CommentReply | null {
 
 /**
  * 同事喺收件箱回覆。內容寫入 comment_replies。
- * 公司 WhatsApp 總機有客戶號碼時會打 Cloud API：成功 sent，失敗 failed 並寫低原因。
- * 其他渠道同同事個人線路仍然係 stub。
+ * 公司 WhatsApp 總機有客戶號碼時會打 Cloud API。
+ * Facebook／Instagram 有 Page token 就打 Graph。
+ * 成功 sent，失敗 failed 並寫低原因。同事個人線路同官網仍然係 stub。
  * 原本係未處理（open）會改做處理中，唔會標已完成，所以仍然出現喺擱置／未處理。
  */
 export async function createStaffReply(input: {
@@ -109,6 +110,8 @@ export async function createStaffReply(input: {
     waFromPhone: comment.wa_from_phone,
     waToPhone: comment.wa_to_phone,
     vehicleRef: comment.vehicle_ref,
+    metaSenderId: comment.meta_sender_id,
+    metaSurface: comment.meta_surface,
   });
   const delivery: DeliveryStatus = isDeliveryStatus(queued.delivery_status) ? queued.delivery_status : "stub";
   const deliveryError =

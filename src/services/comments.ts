@@ -12,7 +12,7 @@ import type {
   ReplyDirection,
   StaffPublic,
 } from "../types";
-import { isDeliveryStatus, isEntryPath, isIntakeKind, isOriginSite } from "../types";
+import { isDeliveryStatus, isEntryPath, isIntakeKind, isMetaSurface, isOriginSite } from "../types";
 
 /** 已登入嘅人。管理員見全部（包括未派）；在職同事只見 assignee 係自己嘅留言。 */
 export interface CommentViewer {
@@ -108,12 +108,14 @@ function mapComment(row: CommentRow): CommentWithAssignee {
     last_reply_staff_name: row.last_reply_staff_name ?? null,
     last_reply_delivery_status: asDelivery(row.last_reply_delivery_status),
     last_reply_direction: asDirection(row.last_reply_direction),
-    wa_from_phone: asStoredPhone(row.wa_from_phone),
-    wa_to_phone: asStoredPhone(row.wa_to_phone),
+    wa_from_phone: asOptionalText(row.wa_from_phone),
+    wa_to_phone: asOptionalText(row.wa_to_phone),
+    meta_sender_id: asOptionalText(row.meta_sender_id),
+    meta_surface: isMetaSurface(row.meta_surface) ? row.meta_surface : null,
   };
 }
 
-function asStoredPhone(value: unknown): string | null {
+function asOptionalText(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed || null;

@@ -50,6 +50,39 @@ export function whatsAppCloudSettings(): WhatsAppCloudSettings {
   };
 }
 
+/**
+ * Facebook Page／Instagram 出站用嘅 Graph 版本。
+ * 同 WhatsApp 分開：唔好讀 WHATSAPP_GRAPH_VERSION，亦唔好用 Page token 發 WhatsApp。
+ */
+export const DEFAULT_META_GRAPH_VERSION = "v21.0";
+
+export type MetaGraphVersionResult = { ok: true; version: string } | { ok: false; error: string };
+
+/** Page／IG 出站版本。未設定 META_GRAPH_VERSION 時用 v21.0。格式錯就唔打網絡。 */
+export function metaGraphVersion(): MetaGraphVersionResult {
+  const versionRaw = process.env.META_GRAPH_VERSION?.trim() ?? "";
+  const version = versionRaw || DEFAULT_META_GRAPH_VERSION;
+  if (!/^v\d+\.\d+$/.test(version)) {
+    return { ok: false, error: "META_GRAPH_VERSION 格式不正確，Facebook／Instagram 回覆未發送" };
+  }
+  return { ok: true, version };
+}
+
+/** Page access token。空白即未設定。唔會有預設密鑰。 */
+export function metaPageAccessToken(): string {
+  return process.env.META_PAGE_ACCESS_TOKEN?.trim() ?? "";
+}
+
+/** 專頁 id。私訊發送先需要。空白即未設定。 */
+export function metaPageId(): string {
+  return process.env.META_PAGE_ID?.trim() ?? "";
+}
+
+/** 連住專頁嘅 IG 專業帳號 id。用來認自己嘅 webhook，唔係私訊 URL。 */
+export function metaIgBusinessAccountId(): string {
+  return process.env.META_IG_BUSINESS_ACCOUNT_ID?.trim() ?? "";
+}
+
 const SNIPPET_MAX = 80;
 
 export function commentSnippet(body: string | null | undefined, max = SNIPPET_MAX): string {
