@@ -1,25 +1,56 @@
 import Database, { type Database as DatabaseType } from "better-sqlite3";
 import fs from "fs";
 import path from "path";
+import { postgresSslMode, readPostgresUrl } from "./pg-config";
+import { createPgSyncDatabase } from "./pg-sync";
+import { postgresBootstrapSql } from "./schema.pg";
 import { COMMENT_INDEX_SQL, COMMENTS_CREATE_COLUMNS, SCHEMA_SQL } from "./schema";
+import type { SqlDatabase } from "./sql-database";
 
 const defaultPath = path.join(process.cwd(), "data", "inbox.db");
-const dbPath = process.env.DATABASE_PATH || defaultPath;
+const sqlitePath = process.env.DATABASE_PATH || defaultPath;
+const pgUrl = readPostgresUrl();
 
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+let shutdownPg: (() => void) | null = null;
+const database = openDatabase();
 
-export const db: DatabaseType = new Database(dbPath);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
-db.exec(SCHEMA_SQL);
-migrateCommentsTable();
-ensureWhatsAppPhoneColumns();
-ensureEntryPathColumn();
-backfillWhatsAppThreadPhones();
-migrateCommentReplies();
+// Typed as better-sqlite3 so existing call sites stay unchanged.
+// When DATABASE_URL is set, the object is the Postgres sync driver (prepare / exec / transaction / close).
+export const db = database as DatabaseType;
+export const usingPostgres = pgUrl != null;
 
-function columnNames(table: string): Set<string> {
-  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+function openDatabase(): SqlDatabase {
+  if (pgUrl) {
+    const opened = createPgSyncDatabase(pgUrl);
+    shutdownPg = opened.shutdown;
+    try {
+      opened.db.exec(postgresBootstrapSql());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      opened.shutdown();
+      throw new Error(
+        `[db] PostgreSQL schema 失敗：${message.replace(/postgres(?:ql)?:\/\/\S+/gi, "postgres://***")}`
+      );
+    }
+    console.log("[db] PostgreSQL schema ready");
+    return opened.db;
+  }
+
+  fs.mkdirSync(path.dirname(sqlitePath), { recursive: true });
+  const sqlite = new Database(sqlitePath);
+  sqlite.pragma("journal_mode = WAL");
+  sqlite.pragma("foreign_keys = ON");
+  sqlite.exec(SCHEMA_SQL);
+  migrateCommentsTable(sqlite);
+  ensureWhatsAppPhoneColumns(sqlite);
+  ensureEntryPathColumn(sqlite);
+  backfillWhatsAppThreadPhones(sqlite);
+  migrateCommentReplies(sqlite);
+  return sqlite;
+}
+
+function columnNames(sqlite: DatabaseType, table: string): Set<string> {
+  const rows = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return new Set(rows.map((row) => row.name));
 }
 
@@ -28,15 +59,15 @@ function columnNames(table: string): Set<string> {
  * SQLite 改唔到 CHECK，所以重建 comments。留言 id 同內容會保留。
  * 已係新結構就跳過。
  */
-function migrateCommentsTable(): void {
-  const cols = columnNames("comments");
-  const row = db
+function migrateCommentsTable(sqlite: DatabaseType): void {
+  const cols = columnNames(sqlite, "comments");
+  const row = sqlite
     .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'comments'`)
     .get() as { sql: string | null } | undefined;
   const ddl = row?.sql ?? "";
   const current = cols.has("intake_kind") && cols.has("origin_site") && ddl.includes("'instagram'");
   if (current) {
-    db.exec(COMMENT_INDEX_SQL);
+    sqlite.exec(COMMENT_INDEX_SQL);
     return;
   }
 
@@ -45,12 +76,12 @@ function migrateCommentsTable(): void {
     : `NULL`;
   const intakeExpr = `CASE WHEN source = 'whatsapp' THEN 'whatsapp_click' ELSE 'site_comment' END`;
 
-  db.pragma("foreign_keys = OFF");
+  sqlite.pragma("foreign_keys = OFF");
   try {
-    const tx = db.transaction(() => {
-      db.exec(`DROP TABLE IF EXISTS comments_new;`);
-      db.exec(`CREATE TABLE comments_new (${COMMENTS_CREATE_COLUMNS});`);
-      db.exec(`
+    const tx = sqlite.transaction(() => {
+      sqlite.exec(`DROP TABLE IF EXISTS comments_new;`);
+      sqlite.exec(`CREATE TABLE comments_new (${COMMENTS_CREATE_COLUMNS});`);
+      sqlite.exec(`
         INSERT INTO comments_new (
           id, source, external_id, author_name, body, vehicle_ref, status,
           assignee_staff_id, created_at, updated_at, intake_kind, origin_site
@@ -62,35 +93,35 @@ function migrateCommentsTable(): void {
           ${originExpr}
         FROM comments;
       `);
-      db.exec(`DROP TABLE comments;`);
-      db.exec(`ALTER TABLE comments_new RENAME TO comments;`);
-      db.exec(COMMENT_INDEX_SQL);
+      sqlite.exec(`DROP TABLE comments;`);
+      sqlite.exec(`ALTER TABLE comments_new RENAME TO comments;`);
+      sqlite.exec(COMMENT_INDEX_SQL);
     });
     tx();
     console.log("[db] 已遷移 comments（來源加入 instagram；intake_kind／origin_site）");
   } finally {
-    db.pragma("foreign_keys = ON");
+    sqlite.pragma("foreign_keys = ON");
   }
 }
 
 /** 28car 留言板對比留言區 WhatsApp 連結。舊庫只加欄。 */
-function ensureEntryPathColumn(): void {
-  const cols = columnNames("comments");
-  if (!cols.has("entry_path")) db.exec(`ALTER TABLE comments ADD COLUMN entry_path TEXT`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_comments_entry_path ON comments(entry_path)`);
+function ensureEntryPathColumn(sqlite: DatabaseType): void {
+  const cols = columnNames(sqlite, "comments");
+  if (!cols.has("entry_path")) sqlite.exec(`ALTER TABLE comments ADD COLUMN entry_path TEXT`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_comments_entry_path ON comments(entry_path)`);
 }
 
 /** 舊庫加客戶 wa_id 同收件線路。只加欄，唔改派單、唔改號碼。 */
-function ensureWhatsAppPhoneColumns(): void {
-  const cols = columnNames("comments");
-  if (!cols.has("wa_from_phone")) db.exec(`ALTER TABLE comments ADD COLUMN wa_from_phone TEXT`);
-  if (!cols.has("wa_to_phone")) db.exec(`ALTER TABLE comments ADD COLUMN wa_to_phone TEXT`);
+function ensureWhatsAppPhoneColumns(sqlite: DatabaseType): void {
+  const cols = columnNames(sqlite, "comments");
+  if (!cols.has("wa_from_phone")) sqlite.exec(`ALTER TABLE comments ADD COLUMN wa_from_phone TEXT`);
+  if (!cols.has("wa_to_phone")) sqlite.exec(`ALTER TABLE comments ADD COLUMN wa_to_phone TEXT`);
 }
 
 /** 舊對話如果 external_id 係 wa:{收件}:{寄件}，把已經入庫嘅號碼抄去新欄。 */
-function backfillWhatsAppThreadPhones(): void {
+function backfillWhatsAppThreadPhones(sqlite: DatabaseType): void {
   const threadId = /^wa:(\d{8,15}):(\d{8,15})$/;
-  const rows = db
+  const rows = sqlite
     .prepare(
       `SELECT id, external_id FROM comments
        WHERE source = 'whatsapp'
@@ -99,13 +130,13 @@ function backfillWhatsAppThreadPhones(): void {
     )
     .all() as Array<{ id: number; external_id: string }>;
   if (rows.length === 0) return;
-  const update = db.prepare(
+  const update = sqlite.prepare(
     `UPDATE comments
      SET wa_from_phone = COALESCE(wa_from_phone, ?),
          wa_to_phone = COALESCE(wa_to_phone, ?)
      WHERE id = ?`
   );
-  const tx = db.transaction(() => {
+  const tx = sqlite.transaction(() => {
     for (const row of rows) {
       const match = threadId.exec(row.external_id);
       if (!match) continue;
@@ -119,21 +150,21 @@ function backfillWhatsAppThreadPhones(): void {
  * 舊 comment_replies 嘅 CHECK 未有 sent，亦未有 delivery_error。
  * SQLite 改唔到 CHECK，所以重建表。原有回覆 id 同內容會保留。
  */
-function migrateCommentReplies(): void {
-  const cols = columnNames("comment_replies");
+function migrateCommentReplies(sqlite: DatabaseType): void {
+  const cols = columnNames(sqlite, "comment_replies");
   if (cols.size === 0) return;
-  const row = db
+  const row = sqlite
     .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'comment_replies'`)
     .get() as { sql: string | null } | undefined;
   const ddl = row?.sql ?? "";
   if (cols.has("delivery_error") && ddl.includes("'sent'")) return;
 
   const errorExpr = cols.has("delivery_error") ? "delivery_error" : "NULL";
-  db.pragma("foreign_keys = OFF");
+  sqlite.pragma("foreign_keys = OFF");
   try {
-    const tx = db.transaction(() => {
-      db.exec(`DROP TABLE IF EXISTS comment_replies_new;`);
-      db.exec(`
+    const tx = sqlite.transaction(() => {
+      sqlite.exec(`DROP TABLE IF EXISTS comment_replies_new;`);
+      sqlite.exec(`
         CREATE TABLE comment_replies_new (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
@@ -149,24 +180,40 @@ function migrateCommentReplies(): void {
           )
         );
       `);
-      db.exec(`
+      sqlite.exec(`
         INSERT INTO comment_replies_new (
           id, comment_id, staff_id, direction, body, delivery_status, delivery_error, created_at
         )
         SELECT id, comment_id, staff_id, direction, body, delivery_status, ${errorExpr}, created_at
         FROM comment_replies;
       `);
-      db.exec(`DROP TABLE comment_replies;`);
-      db.exec(`ALTER TABLE comment_replies_new RENAME TO comment_replies;`);
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_comment_replies_comment ON comment_replies(comment_id, id);`);
+      sqlite.exec(`DROP TABLE comment_replies;`);
+      sqlite.exec(`ALTER TABLE comment_replies_new RENAME TO comment_replies;`);
+      sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_comment_replies_comment ON comment_replies(comment_id, id);`);
     });
     tx();
     console.log("[db] 已遷移 comment_replies（delivery_status 加入 sent；delivery_error）");
   } finally {
-    db.pragma("foreign_keys = ON");
+    sqlite.pragma("foreign_keys = ON");
   }
 }
 
 export function getDbPath(): string {
-  return dbPath;
+  if (usingPostgres) return "postgresql://(DATABASE_URL)";
+  return sqlitePath;
+}
+
+export function getPostgresUrl(): string | null {
+  return pgUrl;
+}
+
+export function getPostgresSslMode(): ReturnType<typeof postgresSslMode> | null {
+  return pgUrl ? postgresSslMode(pgUrl) : null;
+}
+
+export function shutdownDatabase(): void {
+  if (!shutdownPg) return;
+  const close = shutdownPg;
+  shutdownPg = null;
+  close();
 }

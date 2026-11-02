@@ -1,5 +1,7 @@
 import { Router, Request, Response } from "express";
 import { requireAdmin, requireAuth, sessionViewer } from "../auth/middleware";
+import { clearDemoFixtures } from "../db/clear-demo";
+import { usingPostgres } from "../db";
 import { companyWhatsAppUrl } from "../config";
 import { isPushConfigured, removePushSubscription, savePushSubscription, vapidPublicKey } from "../services/push";
 import {
@@ -34,6 +36,7 @@ apiRouter.get("/health", (_req, res) => {
     ts: new Date().toISOString(),
     company_whatsapp_url: companyWhatsAppUrl(),
     push_enabled: isPushConfigured(),
+    database: usingPostgres ? "postgres" : "sqlite",
     twentyeightcar: (() => {
       const status = twentyeightcarStatus(false);
       return {
@@ -311,6 +314,20 @@ apiRouter.post("/push/subscribe", requireAuth, (req: Request, res: Response) => 
     return;
   }
   res.json({ ok: true });
+});
+
+apiRouter.post("/admin/clear-demo", requireAdmin, (_req: Request, res: Response) => {
+  try {
+    const result = clearDemoFixtures();
+    res.json({
+      ok: true,
+      ...result,
+      kept: "同事帳號、wamid WhatsApp 對話，以及 seed 清單以外嘅 28car 留言",
+    });
+  } catch (err) {
+    console.error("[clear:demo]", err instanceof Error ? err.message : "failed");
+    res.status(500).json({ error: "清除示範資料失敗" });
+  }
 });
 
 apiRouter.post("/push/unsubscribe", requireAuth, (req: Request, res: Response) => {

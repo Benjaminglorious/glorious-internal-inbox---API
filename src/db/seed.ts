@@ -1,6 +1,7 @@
 import "dotenv/config";
 import path from "path";
-import { db, getDbPath } from "./index";
+import { looksLikeRenderPostgres, readPostgresUrl } from "./pg-config";
+import { db, getDbPath, shutdownDatabase, usingPostgres } from "./index";
 import { hashPassword } from "../auth/passwords";
 import { autoAssignUnassigned } from "../services/assign";
 import { notifyNewComment } from "../services/push";
@@ -14,8 +15,8 @@ export const DEMO_PASSWORD = "Glorious2026!";
 
 /**
  * 可登入：兩位管理員 + 兩位在職同事。其餘種子同事收藏（active=0），保留列但登入唔到。
- * 在職帳號次序係 eddie → wing → jason → tony，同自動派單優先名單一致。
- * 只影響全新資料庫嘅 staff.id；已有生產 id 靠 assign.ts 嘅 username 次序。
+ * 全新資料庫插入次序係 eddie → wing → jason → tony，只影響 staff.id。
+ * 自動派單唔包括 tony（見 assign.ts）：Eddie → Wing → Jason → 其餘在職同事。
  */
 export const SEED_STAFF: Array<{
   username: string;
@@ -51,7 +52,15 @@ interface DemoComment {
   entry_path?: EntryPath | null;
 }
 
-const COMMENTS: DemoComment[] = [
+/**
+ * 示範留言嘅完整名單。`npm run clear:demo` 只刪呢啲 (source, external_id)，
+ * 唔會用前綴掃走真實 28car 留言板，亦唔會刪 Meta `wamid.*`。
+ * 種子前綴（只供人讀，程式用下面完整 id）：
+ * `28c-`、`gw-`、`fb-3001`–`fb-3006`、`ig-5001`/`ig-5002`、
+ * `wa-direct-`、`wa-28car-`、`wa-gw-`、`wa-fb-`、`wa-ig-`、
+ * 同埋 `28car:s2806213:demo-buyer`。
+ */
+export const DEMO_COMMENTS: DemoComment[] = [
   {
     source: "28car",
     external_id: "28c-1001",
@@ -333,7 +342,7 @@ const DEMO_REPLIES: Array<{ source: CommentSource; external_id: string; username
 export function applySeedStaff(): void {
   const insertStaff = db.prepare(`
     INSERT INTO staff (username, display_name, password_hash, is_admin, active)
-    VALUES (@username, @display_name, @password_hash, @is_admin, @active)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(username) DO UPDATE SET
       display_name = excluded.display_name,
       is_admin = excluded.is_admin,
@@ -343,35 +352,59 @@ export function applySeedStaff(): void {
   const passwordHash = hashPassword(DEMO_PASSWORD);
   const staffTx = db.transaction(() => {
     for (const s of SEED_STAFF) {
-      insertStaff.run({
-        username: s.username,
-        display_name: s.display_name,
-        password_hash: passwordHash,
-        is_admin: s.is_admin,
-        active: s.active,
-      });
+      insertStaff.run(s.username, s.display_name, passwordHash, s.is_admin, s.active);
     }
   });
   staffTx();
 }
 
-export async function seed(): Promise<void> {
-  console.log(`資料庫：${getDbPath()}`);
-  applySeedStaff();
+function logStaffRoster(companyLine: { phone_e164: string; display_label: string; kind: string; is_active: number | boolean }): void {
   const activeCount = SEED_STAFF.filter((s) => s.active === 1).length;
   console.log(
     `已寫入 ${SEED_STAFF.length} 位同事（${activeCount} 位可登入，其餘收藏）。新帳號預設密碼：${DEMO_PASSWORD}；已存在嘅密碼唔會改。`
   );
+  const active = companyLine.is_active === true || companyLine.is_active === 1;
+  console.log(
+    `公司 WhatsApp 線路：${companyLine.phone_e164} ${companyLine.display_label}（${companyLine.kind}${active ? "" : "，已停用"}）`
+  );
+}
+
+/** 正式環境同 Render Postgres 唔寫示範留言。本地要強制先至設 ALLOW_DEMO_SEED=1。 */
+export function demoSeedRefusal(): string | null {
+  if (process.env.ALLOW_DEMO_SEED === "1") return null;
+  if (process.env.NODE_ENV === "production") {
+    return "NODE_ENV=production 拒絕寫入示範留言。啟動請只用 npm start（空庫會自動寫同事）。清除舊示範資料用 npm run clear:demo。";
+  }
+  const url = usingPostgres ? readPostgresUrl() : null;
+  if (url && looksLikeRenderPostgres(url)) {
+    return "已連接 Render Postgres，拒絕寫入示範留言。請用 npm run seed:staff 或 npm run clear:demo，啟動命令只用 npm start。";
+  }
+  return null;
+}
+
+/** 同事名單 + 公司 WhatsApp 總機。唔寫示範留言、回覆、觀察車盤。已有密碼唔覆寫。 */
+export function seedStaff(): void {
+  console.log(`資料庫：${getDbPath()}`);
+  applySeedStaff();
+  const companyLine = ensureCompanyWhatsAppLine();
+  logStaffRoster(companyLine);
+  console.log("Staff seed 完成（冇示範留言、冇示範回覆、冇觀察車盤）。");
+}
+
+export async function seed(): Promise<void> {
+  const refusal = demoSeedRefusal();
+  if (refusal) throw new Error(refusal);
+  console.log(`資料庫：${getDbPath()}`);
+  applySeedStaff();
+  const companyLine = ensureCompanyWhatsAppLine();
+  logStaffRoster(companyLine);
 
   const insertComment = db.prepare(`
     INSERT INTO comments (
       source, external_id, author_name, body, vehicle_ref, status, assignee_staff_id,
       intake_kind, origin_site, entry_path
     )
-    VALUES (
-      @source, @external_id, @author_name, @body, @vehicle_ref, @status, NULL,
-      @intake_kind, @origin_site, @entry_path
-    )
+    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
     ON CONFLICT(source, external_id) DO UPDATE SET
       author_name = excluded.author_name,
       body = excluded.body,
@@ -388,26 +421,26 @@ export async function seed(): Promise<void> {
   );
   const insertedKeys: Array<{ source: CommentSource; external_id: string }> = [];
   const commentTx = db.transaction(() => {
-    for (const c of COMMENTS) {
+    for (const c of DEMO_COMMENTS) {
       const existing = findExisting.get(c.source, c.external_id);
       const intakeKind: IntakeKind = c.source === "whatsapp" ? "whatsapp_click" : "site_comment";
       const originSite: OriginSite | null = c.source === "whatsapp" ? c.origin_site ?? null : null;
-      insertComment.run({
-        source: c.source,
-        external_id: c.external_id,
-        author_name: c.author_name,
-        body: c.body,
-        vehicle_ref: c.vehicle_ref,
-        status: c.status ?? "open",
-        intake_kind: intakeKind,
-        origin_site: originSite,
-        entry_path: c.entry_path ?? null,
-      });
+      insertComment.run(
+        c.source,
+        c.external_id,
+        c.author_name,
+        c.body,
+        c.vehicle_ref,
+        c.status ?? "open",
+        intakeKind,
+        originSite,
+        c.entry_path ?? null
+      );
       if (!existing) insertedKeys.push({ source: c.source, external_id: c.external_id });
     }
   });
   commentTx();
-  console.log(`已寫入 ${COMMENTS.length} 條示範留言`);
+  console.log(`已寫入 ${DEMO_COMMENTS.length} 條示範留言`);
   const listingCount = upsertObservedDealerListings();
   console.log(`已寫入 ${listingCount} 個 28car 觀察車盤（未含未確認 vid）`);
 
@@ -416,7 +449,6 @@ export async function seed(): Promise<void> {
   const n = autoAssignUnassigned();
   console.log(`已自動派單 ${n} 條`);
 
-  const companyLine = ensureCompanyWhatsAppLine();
   const loadInserted = db.prepare(
     `SELECT id, source, author_name, body, intake_kind, origin_site, entry_path
      FROM comments WHERE source = ? AND external_id = ?`
@@ -465,9 +497,6 @@ export async function seed(): Promise<void> {
     replyCount += 1;
   }
   console.log(`已寫入 ${replyCount} 則示範回覆（出站 stub，未發送）`);
-  console.log(
-    `公司 WhatsApp 線路：${companyLine.phone_e164} ${companyLine.display_label}（${companyLine.kind}${companyLine.is_active ? "" : "，已停用"}）`
-  );
 
   const counts = db
     .prepare(`SELECT source, intake_kind, origin_site, COUNT(*) AS n FROM comments GROUP BY source, intake_kind, origin_site ORDER BY source`)
@@ -483,8 +512,11 @@ function isDirectRun(): boolean {
 }
 
 if (isDirectRun()) {
-  seed().catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
+  seed()
+    .then(() => shutdownDatabase())
+    .catch((err) => {
+      console.error(err instanceof Error ? err.message : err);
+      shutdownDatabase();
+      process.exit(1);
+    });
 }

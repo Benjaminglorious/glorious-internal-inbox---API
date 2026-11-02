@@ -132,6 +132,7 @@ async function main(): Promise<number> {
     `);
     legacy.close();
 
+    process.env.INBOX_DB = "sqlite";
     process.env.DATABASE_PATH = dbFile;
     delete process.env.WHATSAPP_ACCESS_TOKEN;
     delete process.env.WHATSAPP_PHONE_NUMBER_ID;

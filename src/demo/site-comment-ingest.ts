@@ -26,6 +26,7 @@ function main(): number {
   let appDb: Database.Database | undefined;
 
   try {
+    process.env.INBOX_DB = "sqlite";
     process.env.DATABASE_PATH = dbFile;
     process.env.WEBHOOK_VERIFY_TOKEN = "demo-webhook-token";
     delete process.env.META_APP_SECRET;

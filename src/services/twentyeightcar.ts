@@ -40,6 +40,9 @@ import type { EntryPath } from "../types";
 import { upsertSiteComment } from "./site-comments";
 
 const OBSERVED_ACCOUNT = "gmld28013@hotmail.com";
+export const OBSERVED_SYNC_ORIGIN = "observed";
+/** Seed 寫入車盤訊息嘅 external_id。clear:demo 只刪呢啲，唔掃真實留言板 id。 */
+export const DEMO_LISTING_MESSAGE_IDS = ["observed-seller-whatsapp", "demo-buyer"] as const;
 const OBSERVED_SELLER_BODY = [
   "睇靚車？即上：",
   "https://api.whatsapp.com/send?phone=85221740001",
@@ -362,17 +365,17 @@ export function upsertObservedDealerListings(): number {
       upsertListing({
         listing,
         accountUsername: OBSERVED_ACCOUNT,
-        syncOrigin: "observed",
+        syncOrigin: OBSERVED_SYNC_ORIGIN,
         preserveVid: true,
       });
       const existing = db
         .prepare(`SELECT COUNT(*) AS n FROM car_listing_messages WHERE stock_id = ?`)
         .get(listing.stockId) as { n: number };
-      if (existing.n === 0) {
+      if (Number(existing.n) === 0) {
         db.prepare(
           `INSERT INTO car_listing_messages (stock_id, external_id, author_name, body, is_seller, posted_at)
-           VALUES (?, 'observed-seller-whatsapp', '東榮汽車', ?, 1, NULL)`
-        ).run(listing.stockId, OBSERVED_SELLER_BODY);
+           VALUES (?, ?, '東榮汽車', ?, 1, NULL)`
+        ).run(listing.stockId, DEMO_LISTING_MESSAGE_IDS[0], OBSERVED_SELLER_BODY);
       }
       if (listing.stockId === "s2806213") {
         const buyer = db
@@ -381,11 +384,15 @@ export function upsertObservedDealerListings(): number {
         db.prepare(
           `INSERT INTO car_listing_messages (
              stock_id, external_id, author_name, body, is_seller, posted_at, inbox_comment_id
-           ) VALUES ('s2806213', 'demo-buyer', '李先生', ?, 0, NULL, ?)
+           ) VALUES ('s2806213', ?, '李先生', ?, 0, NULL, ?)
            ON CONFLICT(stock_id, external_id) DO UPDATE SET
              inbox_comment_id = COALESCE(excluded.inbox_comment_id, car_listing_messages.inbox_comment_id),
              updated_at = datetime('now')`
-        ).run("我想喺 28car 留言板問麥拿倫 720S，星期六下午可唔可以睇車？", buyer?.id ?? null);
+        ).run(
+          DEMO_LISTING_MESSAGE_IDS[1],
+          "我想喺 28car 留言板問麥拿倫 720S，星期六下午可唔可以睇車？",
+          buyer?.id ?? null
+        );
       }
     }
   });

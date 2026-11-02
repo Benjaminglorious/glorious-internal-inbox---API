@@ -24,8 +24,20 @@
 ```bash
 cp .env.example .env   # 改 SESSION_SECRET，以及 WEBHOOK_VERIFY_TOKEN（要用 webhook 先至需要）
 npm install
-npm run seed           # 寫入 13 位同事（4 位可登入，其餘收藏）+ 示範留言（含 IG、WhatsApp 來源同回覆）+ 公司 WhatsApp 總機
+npm run seed           # 本地：13 位同事 + 示範留言 + 公司 WhatsApp 總機
 npm start              # http://localhost:3001
+```
+
+只寫同事、唔寫示範留言（同正式環境第一次啟動一樣）：
+
+```bash
+npm run seed:staff
+```
+
+清走已經寫入嘅示範留言（保留同事、`wamid.*` 同 seed 清單以外嘅 28car 留言）：
+
+```bash
+npm run clear:demo
 ```
 
 開發模式（自動重載）：
@@ -34,18 +46,40 @@ npm start              # http://localhost:3001
 npm run dev
 ```
 
-## Render
+## Render（正式：Postgres，唔再靠 SQLite disk）
 
-免費 Web Service：
+服務：`glorious-internal-inbox`。資料庫同 web service 都放 **Singapore**。Region 建立之後改唔到；唔好開咗喺另一個 region 先至發現連唔到內網。
 
-- **Build command：** `npm install`
-- **Start command：** `npm run seed && npm start`
+1. Dashboard → New → **PostgreSQL**。Region 揀 **Singapore**。正式收件箱要用付費 Postgres。免費 Postgres 大約 30 日後會過期，過期就會冇咗真實 WhatsApp 對話。
+2. 建好之後開 **Connect → Internal Database URL**（同一個 workspace、同一個 region 先至通私網）。唔好用 External URL 做 web service 嘅連線。唔好把呢條字串提交 git。
+3. Web service Environment 加 `DATABASE_URL` = 上面條 Internal Database URL。`POSTGRES_URL` 都認，但有 `DATABASE_URL` 就用佢。
+4. **Build command：** `npm install`
+5. **Start command：** `npm start`  
+   唔好再用 `npm run seed && npm start`。`NODE_ENV=production`（Render 預設）或者連住 Render Postgres 時，`npm run seed` 會直接退出，**唔會**寫示範留言。舊 start command 會令 deploy 失敗，直到改成 `npm start`。
 
-`npm start` 同 `npm run seed` 用 `tsx` 跑 TypeScript。`tsx` 喺 `dependencies`，所以 `NODE_ENV=production` 時 `npm install` 唔會漏咗佢（唔使 `--include=dev`）。`app.listen(PORT)` 冇指定 host，會聽所有網絡介面，Render 代理夠用。
+`npm start` 會做三件事：
 
-`NODE_ENV=production` 時 session cookie 會加 `Secure`。程式已設 `trust proxy`，HTTPS 喺 Render 邊緣終止之後仍然有效。請設定夠長嘅 `SESSION_SECRET`。
+- 建立／對齊 schema（comments、replies、staff、whatsapp_lines、push、28car）
+- **staff 表係空**先至寫入同事名單同公司總機 `85221740001`（新帳號先用示範密碼；已有 `password_hash` 唔覆寫）
+- **唔會**寫示範 Facebook／IG／WhatsApp／28car 留言或觀察車盤
 
-免費方案大約 15 分鐘冇流量會休眠，下次請求要等喚醒。SQLite（`data/inbox.db`）喺臨時檔案系統；免費方案冇 persistent disk，deploy、重啟或休眠之後資料會消失，要再跑 seed。要留住檔案就要用付費方案掛 disk（掛載路徑要包住 `data/`）。
+本地想要示範資料先至 `npm run seed`（或 `npm run seed:demo`）。正式環境要補同事用 Render Shell：`npm run seed:staff`（有同事都只係 upsert 姓名／角色／在職，唔改密碼，唔加留言）。
+
+如果舊 deploy 已經把示範留言寫入而家呢個 Postgres：Shell 跑 `npm run clear:demo`，或者管理員登入之後喺網站網域執行：
+
+```js
+fetch("/api/admin/clear-demo", { method: "POST" }).then((r) => r.json()).then(console.log)
+```
+
+清除之後淨係剩真實收件箱：Meta `wamid.*`、其他唔喺 seed 清單嘅留言（包括 Tony 要留嘅 28car 留言板）、同事帳號。程式**唔會**因為 `external_id` 唔似 `wamid.` 就整表刪走。觀察車盤（`sync_origin=observed`）同種子車盤訊息 `observed-seller-whatsapp`／`demo-buyer` 會一併刪；已經同步過、`sync_origin` 唔再係 `observed` 嘅車盤會留低。
+
+`npm start` 用 `tsx` 跑 TypeScript。`tsx` 喺 `dependencies`，所以 `NODE_ENV=production` 時 `npm install` 唔會漏咗佢。`app.listen(PORT, "0.0.0.0")` 聽所有網絡介面，Render 代理夠用。
+
+`NODE_ENV=production` 時 session cookie 會加 `Secure`，session 寫入同一個 Postgres（唔再靠會消失嘅 `data/sessions.db`）。程式已設 `trust proxy`。請設定夠長嘅 `SESSION_SECRET`。
+
+免費 Web Service 大約 15 分鐘冇流量會休眠，下次請求要等喚醒。休眠唔會清 Postgres。未設定 `DATABASE_URL` 時先至用 SQLite `./data/inbox.db`；Render 檔案系統係臨時嘅，正式環境唔好靠佢。免費方案亦掛唔到 persistent disk。
+
+本地強制用 SQLite（即使 shell 有 `DATABASE_URL`）：`INBOX_DB=sqlite`。
 
 ## 預設登入（示範）
 
@@ -122,7 +156,10 @@ Glorious2026!
 
 - `PORT`（預設 `3001`）
 - `SESSION_SECRET`（必須改成夠長嘅隨機字串）
-- `DATABASE_PATH`（可選，預設 `./data/inbox.db`）
+- `DATABASE_URL` 或 `POSTGRES_URL`（正式環境。Render Internal Database URL。有呢個就用 PostgreSQL，唔再打開 SQLite。唔好提交真實字串）
+- `DATABASE_PATH`（只係本地 SQLite。未設定 `DATABASE_URL` 時預設 `./data/inbox.db`）
+- `INBOX_DB=sqlite`（可選。強制本地檔案，忽略 `DATABASE_URL`。示範腳本會自己設）
+- `ALLOW_DEMO_SEED=1`（可選，危險。先至可以喺 `NODE_ENV=production` 或 Render Postgres 寫示範留言。正式環境唔好設）
 - `COMPANY_WHATSAPP_URL`（公司 WhatsApp **出站** click-to-chat。未設定時預設 `https://api.whatsapp.com/send?phone=85221740001`，即 28car／官網／Facebook 用緊嘅號碼 `85221740001`）
 - `WEBHOOK_VERIFY_TOKEN`（入站 webhook 共用密鑰：WhatsApp、site-comment、Meta hub.verify。未設定回 503。必須改，唔好提交真實密鑰）
 - `META_APP_ID`、`META_APP_SECRET`、`META_PAGE_ID`、`META_PAGE_ACCESS_TOKEN`、`META_IG_BUSINESS_ACCOUNT_ID`（可選。骨架已讀 `META_APP_SECRET` 做簽名。Page token **唔**用嚟發 WhatsApp。Callback：`/api/webhooks/meta`）
@@ -368,7 +405,7 @@ Seed 會寫入公司總機：
 `routeWhatsAppInbound({ toPhone, fromPhone, body, externalId })`（`src/services/whatsapp.ts`）：
 
 1. **同事個人號**（`kind = staff` 而且啟用）→ 該對話／留言自動派畀綁定嘅同事。
-2. **公司總機 `85221740001`** → 用現有自動派單：**未完成（open + in_progress）最少嘅在職同事優先，同數則 Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）**。
+2. **公司總機 `85221740001`** → 用現有自動派單：**未完成（open + in_progress）最少嘅在職同事優先，同數則 Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）。Tony 唔參與自動派單**（管理員仍然可以人手改派畀佢）。
 3. **未知或已停用號碼** → 仍然入庫（來源 `whatsapp`、狀態未處理），但**未派單**，並喺伺服器 log 記一筆。綁定同事已停用時同樣未派。
 
 有 `external_id` 時用佢做冪等鍵（webhook 重試唔會開新留言，亦唔會改走公司總機已派嘅同事）。冇 `external_id` 時，同一對「收件線路 + 寄件人」合成一條對話，新內容會附加。
@@ -484,9 +521,9 @@ Verify token = `WEBHOOK_VERIFY_TOKEN`。
 
 ## 資料庫
 
-SQLite（`better-sqlite3`），檔案喺 `data/inbox.db`（已加入 `.gitignore`）。
+本地預設 SQLite（`better-sqlite3`），檔案喺 `data/inbox.db`（已加入 `.gitignore`）。設定 `DATABASE_URL` 或 `POSTGRES_URL` 就改用 PostgreSQL（`pg`，參數化查詢）。正式環境用 Render Postgres，見上面「Render」。兩種庫都係開機時對齊 schema。
 
-派單規則（seed／未指派留言／公司 WhatsApp 總機）：**未完成（open + in_progress）最少、而且 `active=1` 嘅同事優先，同數則 Eddie → Wing → Jason → 其餘（按 staff id，排喺 Jason 後面）**。在職管理員同在職同事都會計入。收藏（`active=0`）唔會被派單，亦登入唔到。優先名單係 `eddie`、`wing`、`jason`；Tony 同日後新同事都排喺 Jason 後面。
+派單規則（seed／未指派留言／公司 WhatsApp 總機）：**未完成（open + in_progress）最少、而且 `active=1` 嘅同事優先，同數則 Eddie → Wing → Jason → 其餘（按 staff id，排喺 Jason 後面）**。**Tony（`username=tony`）唔參與自動派單**，即使在職。收藏（`active=0`）唔會被派單，亦登入唔到。優先名單係 `eddie`、`wing`、`jason`；其他在職同事排喺 Jason 後面。管理員可以人手改派，包括派畀 Tony。
 
 如果資料庫係舊版本（未有 `whatsapp`、未有 `instagram`，或者未有 `intake_kind`／`origin_site`），啟動時會自動重建 `comments` 表。原有留言 id、內容同負責人都保留。舊嘅網站留言會標成 `site_comment`；舊嘅 WhatsApp 會標成 `whatsapp_click`，`origin_site` 留空（直接 WhatsApp）。
 
@@ -539,7 +576,7 @@ npm run demo:whatsapp-outbound
 | 簡評 | 賣家廣告文字，唔係留言板 |
 | 留言板 | `sell_dsp.php` 嘅 `#msgbox`。`msg_own` 係賣家帖 |
 
-`gmld28013` 觀察到四個車盤（麥拿倫 720S、寶馬 I8、勞斯萊斯 PHANTOM EWB、豐田 ALPHARD）。`npm run seed` 會寫低呢四個，**vid 留空**，因為讀頁先至知道。現場每個車盤只有一則賣家帖（WhatsApp `21740001` 附註），賣家帖放喺車盤頁，唔會變成客戶工單。Seed 另有一則示範買家留言（李先生問 720S），用來顯示「28car 留言板」標籤。
+`gmld28013` 觀察到四個車盤（麥拿倫 720S、寶馬 I8、勞斯萊斯 PHANTOM EWB、豐田 ALPHARD）。`npm run seed`（本地示範）會寫低呢四個，**vid 留空**，因為讀頁先至知道。`npm start` 同 `npm run seed:staff` **唔會**寫呢啲觀察車盤。現場每個車盤只有一則賣家帖（WhatsApp `21740001` 附註），賣家帖放喺車盤頁，唔會變成客戶工單。Seed 另有一則示範買家留言（李先生問 720S），用來顯示「28car 留言板」標籤。`npm run clear:demo` 會刪呢則示範買家同 `sync_origin=observed` 嘅車盤。
 
 買家一旦寫喺留言板，同步會寫入 `comments`，`source=28car`、`entry_path=28car_board`，畫面係「28car 留言板」，並且用最少未完成同事派單。
 
