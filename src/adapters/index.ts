@@ -31,7 +31,8 @@ export async function pollAllSources(): Promise<void> {
 
 /**
  * WhatsApp 聯絡（包括由網站或 IG 撳過嚟）走 WhatsApp adapter。
- * 公司總機而且有客戶號碼先至打 Cloud API；其餘來源仍然係 stub。
+ * 公司總機而且有客戶號碼先至打 Cloud API，只用 WHATSAPP_ACCESS_TOKEN。
+ * Facebook／Instagram 有 Page token 就打 Graph；官網仍然係 stub。
  */
 export async function queueOutboundReply(input: OutboundReplyRequest): Promise<OutboundReplyResult> {
   if (input.source === "whatsapp" || input.intakeKind === "whatsapp_click") {

@@ -15,6 +15,8 @@ export const COMMENTS_CREATE_COLUMNS = `
   wa_from_phone TEXT,
   wa_to_phone TEXT,
   entry_path TEXT CHECK (entry_path IS NULL OR entry_path IN ('28car_board', '28car_wa_link')),
+  meta_sender_id TEXT,
+  meta_surface TEXT CHECK (meta_surface IS NULL OR meta_surface IN ('comment', 'message')),
   UNIQUE (source, external_id),
   CHECK (
     (

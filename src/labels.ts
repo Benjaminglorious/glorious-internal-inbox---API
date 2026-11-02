@@ -65,7 +65,10 @@ export function deliveryDetail(status: DeliveryStatus, source: CommentSource): s
   if (status === "failed") return "發送失敗";
   if (source === "28car" && status === "sent") return "已發送到 28car 留言板";
   if (source === "28car" && status === "stored") return "已排入 28car 留言板隊列（未發送）";
-  if (status === "sent") return source === "whatsapp" ? "已經 WhatsApp 發送" : "已發送";
+  if (status === "sent" && source === "whatsapp") return "已經 WhatsApp 發送";
+  if (status === "sent" && source === "facebook") return "已經 Facebook 發送";
+  if (status === "sent" && source === "instagram") return "已經 Instagram 發送";
+  if (status === "sent") return "已發送";
   if (status === "stored") return "已儲存（未發送）";
   switch (source) {
     case "whatsapp":

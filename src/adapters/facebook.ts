@@ -1,9 +1,13 @@
 /**
- * Facebook 專頁留言適配器（stub）
- * TODO: 實作從 https://www.facebook.com/GloriousMotors 經 Graph API 拉取留言／私訊
+ * Facebook 專頁留言／Messenger 適配器。
+ *
+ * 入站唔係靠呢度 poll：POST /api/webhooks/meta 寫入 site_comment。
+ * 同事回覆有 META_PAGE_ACCESS_TOKEN 就打 Graph（留言 POST /{comment-id}/comments，
+ * 私訊 POST /{page-id}/messages）。缺設定標 failed，唔會當已發送。
  */
 import type { CommentSource } from "../types";
-import { stubOutbound, type OutboundReplyRequest, type OutboundReplyResult } from "./outbound";
+import { queueMetaSurfaceReply } from "./meta-graph";
+import type { OutboundReplyRequest, OutboundReplyResult } from "./outbound";
 
 export const SOURCE: CommentSource = "facebook";
 export const SOURCE_URL = "https://www.facebook.com/GloriousMotors";
@@ -17,12 +21,12 @@ export interface RawComment {
 }
 
 export async function fetchNewComments(): Promise<RawComment[]> {
-  // TODO: 使用 Facebook Graph API（Page access token）拉取 comments / conversations
-  console.warn("[adapter:facebook] fetchNewComments 尚未實作");
+  // 入站用 webhook。呢度唔會打 Graph。
+  console.warn("[adapter:facebook] fetchNewComments 尚未實作。入站請用 POST /api/webhooks/meta。");
   return [];
 }
 
-/** 預留：將同事回覆送返 Facebook。而家只標 stub，唔會打網絡。 */
-export function queueOutboundReply(input: OutboundReplyRequest): OutboundReplyResult {
-  return stubOutbound("facebook_unconfigured", "Facebook", input.commentId);
+/** 將同事回覆送返 Facebook 公開留言或 Messenger。 */
+export function queueOutboundReply(input: OutboundReplyRequest): Promise<OutboundReplyResult> {
+  return queueMetaSurfaceReply("facebook", input);
 }

@@ -496,7 +496,9 @@ export async function seed(): Promise<void> {
     if (!saved.ok) throw new Error(saved.error);
     replyCount += 1;
   }
-  console.log(`已寫入 ${replyCount} 則示範回覆（出站 stub，未發送）`);
+  console.log(
+    `已寫入 ${replyCount} 則示範回覆（未設定 Page token 時 Facebook／Instagram 標 failed；官網同未代發 28car 仍然係 stub）`
+  );
 
   const counts = db
     .prepare(`SELECT source, intake_kind, origin_site, COUNT(*) AS n FROM comments GROUP BY source, intake_kind, origin_site ORDER BY source`)

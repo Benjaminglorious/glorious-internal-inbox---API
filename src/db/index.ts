@@ -44,6 +44,7 @@ function openDatabase(): SqlDatabase {
   migrateCommentsTable(sqlite);
   ensureWhatsAppPhoneColumns(sqlite);
   ensureEntryPathColumn(sqlite);
+  ensureMetaReplyColumns(sqlite);
   backfillWhatsAppThreadPhones(sqlite);
   migrateCommentReplies(sqlite);
   return sqlite;
@@ -109,6 +110,16 @@ function ensureEntryPathColumn(sqlite: DatabaseType): void {
   const cols = columnNames(sqlite, "comments");
   if (!cols.has("entry_path")) sqlite.exec(`ALTER TABLE comments ADD COLUMN entry_path TEXT`);
   sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_comments_entry_path ON comments(entry_path)`);
+}
+
+/**
+ * Facebook／Instagram 出站要嘅客戶 id 同表面（留言定私訊）。
+ * 只加欄。舊列留空，出站再睇 external_id。
+ */
+function ensureMetaReplyColumns(sqlite: DatabaseType): void {
+  const cols = columnNames(sqlite, "comments");
+  if (!cols.has("meta_sender_id")) sqlite.exec(`ALTER TABLE comments ADD COLUMN meta_sender_id TEXT`);
+  if (!cols.has("meta_surface")) sqlite.exec(`ALTER TABLE comments ADD COLUMN meta_surface TEXT`);
 }
 
 /** 舊庫加客戶 wa_id 同收件線路。只加欄，唔改派單、唔改號碼。 */

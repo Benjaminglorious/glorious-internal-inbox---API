@@ -10,7 +10,7 @@
 | 東榮 Instagram | 簡介連結會去 `glorious.hk/?utm_source=ig` | `instagram` | 東榮 IG |
 | WhatsApp | 公司總機 `85221740001` 同已綁定嘅同事個人號 | `whatsapp` | WhatsApp |
 
-而家用**示範資料**。官網／Facebook／IG 抓取同出站仍然係 stub。28car 車盤同留言板可以入庫；即時連去 28car 要可輪換代理而且旗標先至會開，預設唔出網絡。公司 WhatsApp 總機回覆會打 Cloud API（要設定 token）。
+而家用**示範資料**。官網抓取同出站仍然係 stub。Facebook／Instagram 入站用 Meta webhook；出站有 Page token 就打 Graph。28car 車盤同留言板可以入庫；即時連去 28car 要可輪換代理而且旗標先至會開，預設唔出網絡。公司 WhatsApp 總機回覆會打 Cloud API（要設定 token）。
 
 > ⚠️ 呢個系統只供東榮內部同事使用，唔應公開喺互聯網冇保護咁部署。
 
@@ -162,7 +162,7 @@ Glorious2026!
 - `ALLOW_DEMO_SEED=1`（可選，危險。先至可以喺 `NODE_ENV=production` 或 Render Postgres 寫示範留言。正式環境唔好設）
 - `COMPANY_WHATSAPP_URL`（公司 WhatsApp **出站** click-to-chat。未設定時預設 `https://api.whatsapp.com/send?phone=85221740001`，即 28car／官網／Facebook 用緊嘅號碼 `85221740001`）
 - `WEBHOOK_VERIFY_TOKEN`（入站 webhook 共用密鑰：WhatsApp、site-comment、Meta hub.verify。未設定回 503。必須改，唔好提交真實密鑰）
-- `META_APP_ID`、`META_APP_SECRET`、`META_PAGE_ID`、`META_PAGE_ACCESS_TOKEN`、`META_IG_BUSINESS_ACCOUNT_ID`（可選。骨架已讀 `META_APP_SECRET` 做簽名。Page token **唔**用嚟發 WhatsApp。Callback：`/api/webhooks/meta`）
+- `META_APP_ID`、`META_APP_SECRET`、`META_PAGE_ID`、`META_PAGE_ACCESS_TOKEN`、`META_IG_BUSINESS_ACCOUNT_ID`、`META_GRAPH_VERSION`（Page token 用嚟發 Facebook／Instagram 回覆，**唔**用嚟發 WhatsApp。未設定 token 時 FB／IG 回覆標 `failed`。Callback：`/api/webhooks/meta`。見下面「Facebook／Instagram 出站」）
 - `WHATSAPP_ACCESS_TOKEN`（**Render 必須設定**。WhatsApp Cloud API token，用來發公司總機回覆。未設定時公司線回覆標 `failed`，唔會當成功。唔好提交真實值）
 - `WHATSAPP_PHONE_NUMBER_ID`（**Render 建議設定**。公司總機 `85221740001` 嘅 phone number id。未設定時代碼用 `241163761376752`）
 - `WHATSAPP_GRAPH_VERSION`（可選。未設定用 `v21.0`）
@@ -377,7 +377,7 @@ Meta Cloud 嘅 `messages[].referral` 唔止睇 `source_url`。有 Instagram 訊�
 | 值 | 意思 |
 |----|------|
 | `sent` | 公司 WhatsApp 已呼叫 Cloud API，而且 Graph 回傳訊息 id |
-| `stub` | 已寫入收件箱，未呼叫外部 API。同事個人 WhatsApp、網站、Facebook、Instagram 回覆用呢個 |
+| `stub` | 已寫入收件箱，未呼叫外部 API。同事個人 WhatsApp、官網回覆用呢個。Facebook／Instagram 缺設定時用 `failed`，唔再用 `stub` |
 | `stored` | 只儲存，未嘗試發送（而家嘅同事回覆唔用呢個） |
 | `failed` | 公司 WhatsApp 應該發送但未成功（缺 token、冇客戶號碼、Graph 錯誤）。原因寫喺回覆嘅 `delivery_error`，畫面會顯示 |
 
@@ -548,9 +548,9 @@ Verify token = `WEBHOOK_VERIFY_TOKEN`。
 
 `GET /api/webhooks/meta?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...` 會回 challenge。
 
-`POST /api/webhooks/meta`：認得 Page `feed` 留言、Messenger `messaging`、Instagram `comments`／私訊時，會 `upsertSiteComment`（`facebook` 或 `instagram`）。狀態回呼等會 `{ "ok": true, "ignored": true }`。有設 `META_APP_SECRET` 就驗證 `X-Hub-Signature-256`；未設就跳過。
+`POST /api/webhooks/meta`：認得 Page `feed` 留言、Messenger `messaging`、Instagram `comments`／私訊時，會 `upsertSiteComment`（`facebook` 或 `instagram`）。公開留言寫 `meta_surface=comment` 同留言者 id；私訊寫 `meta_surface=message`、`external_id` 用 mid、`meta_sender_id` 用 PSID／IGSID。狀態回呼等會 `{ "ok": true, "ignored": true }`。有設 `META_PAGE_ID` 或 `META_IG_BUSINESS_ACCOUNT_ID` 時，專頁／IG 帳號自己發出嘅留言同私訊唔入庫。有設 `META_APP_SECRET` 就驗證 `X-Hub-Signature-256`；未設就跳過。
 
-**仍然需要 Tony／同事喺 Meta Developer Console 建立 App、訂閱欄位、填 Page token 等。** Facebook／Instagram 出站 Graph 回覆仍然係 stub。WhatsApp Cloud 收件用 `/api/webhooks/whatsapp`，POST 驗證同上面一樣（`X-Hub-Signature-256`；自訂 token 只係帶咗先至核對）。公司總機回覆出站用下面嘅 `WHATSAPP_ACCESS_TOKEN`，唔用 Page token。
+**仍然需要 Tony／同事喺 Meta Developer Console 建立 App、訂閱欄位、完成 App Review，並將 Page 指派俾可以回覆嘅人。** 出站見下面「Facebook／Instagram 出站」。WhatsApp Cloud 收件用 `/api/webhooks/whatsapp`，POST 驗證同上面一樣（`X-Hub-Signature-256`；自訂 token 只係帶咗先至核對）。公司總機回覆出站用下面嘅 `WHATSAPP_ACCESS_TOKEN`，唔用 Page token。
 
 官網：最穩係 CMS 或聯絡表 webhook 打去 `site-comment`。28car 車盤同留言板見下面「28car 車盤同留言板」。
 
@@ -574,7 +574,7 @@ WhatsApp 入站會把客戶 `wa_id` 寫入 `comments.wa_from_phone`，收件線�
 
 JSON 係文字訊息，`to` 係客戶 `wa_id`。成功標 `delivery_status=sent`。缺 token、冇客戶號碼、Graph 錯誤都標 `failed`，原因寫入 `delivery_error`，留言頁會顯示。唔會當成功。
 
-同事個人線路、網站留言、Facebook、Instagram **唔**經呢條 Cloud API，仍然係 `stub`。唔會改 `whatsapp_lines` 嘅號碼，入站派單同 webhook 驗證都維持原樣。
+同事個人線路、網站留言、Facebook、Instagram **唔**經呢條 Cloud API。Facebook／Instagram 用 Page token（見下一節）。官網仍然係 `stub`。唔會改 `whatsapp_lines` 嘅號碼，入站派單同 webhook 驗證都維持原樣。
 
 ### Tony 要喺 Render 設定
 
@@ -592,6 +592,54 @@ JSON 係文字訊息，`to` 係客戶 `wa_id`。成功標 `delivery_status=sent`
 
 ```bash
 npm run demo:whatsapp-outbound
+```
+
+## Facebook／Instagram 出站（Graph API）
+
+同事喺收件箱回覆 `source=facebook` 或 `source=instagram`、而且 `intake_kind=site_comment` 時，`queueOutboundReply` 用 **Page access token** 打 Graph。由網站或 IG 撳入嚟嘅 WhatsApp（`source=whatsapp` 或 `intake_kind=whatsapp_click`）仍然只走 `WHATSAPP_ACCESS_TOKEN`。
+
+| 入站 | Graph |
+|------|--------|
+| Facebook 公開留言（`meta_surface=comment`，或舊列嘅 comment id） | `POST https://graph.facebook.com/v21.0/{comment-id}/comments`，JSON `message` |
+| Messenger 私訊（要有 PSID） | `POST https://graph.facebook.com/v21.0/{META_PAGE_ID}/messages`，`recipient.id` + `messaging_type=RESPONSE` |
+| Instagram 公開留言 | `POST https://graph.facebook.com/v21.0/{comment-id}/replies`，JSON `message`（Page token，唔係 Instagram Login） |
+| Instagram 私訊（要有 IGSID） | 同一個 Page `messages` 端點，`recipient.id` 係 IGSID，唔帶 `messaging_type` |
+
+成功標 `delivery_status=sent`（畫面「已經 Facebook 發送」／「已經 Instagram 發送」）。缺 `META_PAGE_ACCESS_TOKEN`、私訊缺 `META_PAGE_ID` 或客戶 id、Graph 錯誤都標 `failed`，原因寫入 `delivery_error`。回覆路由唔會因為發送失敗而 500；留言仍然入庫，狀態由未處理改做處理中。
+
+公開留言嘅 `external_id` 必須係 Graph comment id（數字，或 Facebook 嘅 `postId_commentId`）。Seed 示範 id（例如 `fb-3001`）唔會打去 Meta。私訊要有數字 PSID／IGSID（webhook 寫入 `meta_sender_id`；舊列 `msg:{id}:` 都可以還原）。
+
+`META_GRAPH_VERSION` 可選，未設定用 `v21.0`。開機時 SQLite 同 Postgres 都會補上 `comments.meta_sender_id`／`meta_surface`（Postgres 用 `ADD COLUMN IF NOT EXISTS`，已經存在嘅 Render 庫唔使手動改表）。
+
+### App Review／專頁指派（未做就 Graph 會失敗）
+
+Token 填咗都唔等於客戶睇到。App 要有對應權限，而且發 token 嗰個人要喺專頁有任務。
+
+| 回覆 | 需要 |
+|------|------|
+| Facebook 公開留言 | Page access token；`pages_manage_engagement`；專頁任務 `MODERATE` |
+| Messenger | `pages_messaging`；專頁任務 `MESSAGING`；客戶 24 小時內有傳過訊（`RESPONSE`） |
+| Instagram 公開留言 | 連住專頁嘅 Page token；`instagram_manage_comments`、`pages_read_engagement` |
+| Instagram 私訊 | 同上 Page token；`instagram_manage_messages`；客戶要先傳過私訊 |
+
+`META_IG_BUSINESS_ACCOUNT_ID` 係連住專頁嘅 IG 專業帳號。私訊 URL 用 `META_PAGE_ID`。呢個 IG id 用來認得帳號自己嘅 webhook，避免同事回覆之後再開一張工單。
+
+### Render
+
+服務：`glorious-internal-inbox`。喺 Environment 加（唔好寫入 git）：
+
+| 變數 | 必須？ | 值 |
+|------|--------|----|
+| `META_PAGE_ACCESS_TOKEN` | 出站必須 | 專頁 Page access token。唔好當 WhatsApp token |
+| `META_PAGE_ID` | 私訊必須 | Glorious Motors 專頁 id。公開留言回覆可以留空 |
+| `META_IG_BUSINESS_ACCOUNT_ID` | 建議 | 連住專頁嘅 IG 專業帳號 id |
+| `META_APP_SECRET` | 入站建議 | 驗證 `X-Hub-Signature-256` |
+| `META_GRAPH_VERSION` | 可選 | 未設定用 `v21.0` |
+
+本地 mock（唔會打去 Meta）：
+
+```bash
+npm run demo:meta-outbound
 ```
 
 ## 28car 車盤同留言板
@@ -643,7 +691,7 @@ Render 免費服務係共用 IP，唔好在未接代理之前打開旗標。登�
 
 ## 計劃中嘅真來源（除公司 WhatsApp 出站同 28car 車盤外）
 
-`src/adapters/glorious-web.ts`、`facebook.ts`、`instagram.ts` 嘅 poll／出站仍然係 stub。入站可以經 `POST /api/webhooks/site-comment` 或 `POST /api/webhooks/meta`（骨架）入庫；真正 Page／IG 出站同官網 CMS 配線仍然要做。28car 即時同步同留言代發見上面，預設關閉。
+`src/adapters/glorious-web.ts` 嘅 poll／出站仍然係 stub。Facebook／Instagram 入站經 `POST /api/webhooks/meta`（或 `site-comment`）；出站有 Page token 就打 Graph，見上面。官網 CMS 配線仍然要做。28car 即時同步同留言代發見上面，預設關閉。
 
 `src/adapters/whatsapp.ts`：
 
@@ -659,8 +707,8 @@ Render 免費服務係共用 IP，唔好在未接代理之前打開旗標。登�
 | 28car 留言板 | 買家帖入庫為 `entry_path=28car_board`；代發要代理同旗標，否則排入隊列 |
 | 28car 留言區 WhatsApp | 公司 WhatsApp 入站，`entry_path=28car_wa_link`，仍然走現有 Cloud API |
 | 東榮官網留言 | 可用 `site-comment` webhook 入庫；出站 stub |
-| Facebook 留言 | Meta webhook 骨架可入庫；出站 stub |
-| 東榮 IG 留言／私訊 | Meta webhook 骨架可入庫；出站 stub |
+| Facebook 留言／Messenger | Meta webhook 入庫；有 Page token 就 Graph 發送，否則 `failed` |
+| 東榮 IG 留言／私訊 | Meta webhook 入庫；有 Page token 就 Graph 發送，否則 `failed` |
 
 click-to-chat 仍然可以人手開 WhatsApp 網頁。
 

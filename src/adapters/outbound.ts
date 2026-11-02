@@ -1,4 +1,4 @@
-import type { CommentSource, DeliveryStatus, IntakeKind, OriginSite } from "../types";
+import type { CommentSource, DeliveryStatus, IntakeKind, MetaSurface, OriginSite } from "../types";
 
 export interface OutboundReplyRequest {
   commentId: number;
@@ -14,6 +14,10 @@ export interface OutboundReplyRequest {
   waToPhone: string | null;
   /** 留言上嘅車輛編號。28car 用嚟對車盤。 */
   vehicleRef?: string | null;
+  /** Meta 私訊客戶 PSID／IGSID。公開留言可以係 null。 */
+  metaSenderId?: string | null;
+  /** comment＝公開留言；message＝Messenger／IG 私訊。舊列可以係 null。 */
+  metaSurface?: MetaSurface | null;
 }
 
 export interface OutboundReplyResult {

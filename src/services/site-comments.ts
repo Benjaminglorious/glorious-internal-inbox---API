@@ -1,6 +1,6 @@
 import { db } from "../db";
-import type { CommentSource, CommentStatus, CommentWithAssignee } from "../types";
-import { isCommentSource, type EntryPath } from "../types";
+import type { CommentSource, CommentStatus, CommentWithAssignee, MetaSurface } from "../types";
+import { isCommentSource, isMetaSurface, type EntryPath } from "../types";
 import { resolveEntryPath } from "../intake";
 import { pickLeastLoadedStaffId } from "./assign";
 import { getComment } from "./comments";
@@ -35,6 +35,10 @@ export interface UpsertSiteCommentInput {
   vehicle_ref?: string | null;
   /** 28car 網頁留言區寫入 `28car_board`。其他來源留空。 */
   entry_path?: string | null;
+  /** Messenger PSID、IGSID，或公開留言者 id。 */
+  meta_sender_id?: string | null;
+  /** 公開留言 comment；私訊 message。 */
+  meta_surface?: string | null;
 }
 
 export interface UpsertSiteCommentSuccess {
@@ -84,6 +88,18 @@ function cleanExternalId(value: string): string | null {
   const id = value.replace(/\u0000/g, "").trim();
   if (!id || id.length > MAX_EXTERNAL_ID) return null;
   return id;
+}
+
+function cleanMetaSenderId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const id = value.replace(/\u0000/g, "").trim();
+  if (!id || id.length > MAX_EXTERNAL_ID) return null;
+  if (!/^[0-9A-Za-z_.:-]{1,200}$/.test(id)) return null;
+  return id;
+}
+
+function cleanMetaSurface(value: unknown): MetaSurface | null {
+  return isMetaSurface(value) ? value : null;
 }
 
 /**
@@ -136,6 +152,9 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
     return { ok: false, error: "28car_board 只可以配 source=28car" };
   }
 
+  const metaSenderId = cleanMetaSenderId(input.meta_sender_id);
+  const metaSurface = cleanMetaSurface(input.meta_surface);
+
   const run = db.transaction((): UpsertSiteCommentResult => {
     const existing = db
       .prepare(
@@ -151,10 +170,20 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
         .prepare(
           `INSERT INTO comments (
              source, external_id, author_name, body, vehicle_ref, status, assignee_staff_id,
-             intake_kind, origin_site, entry_path
-           ) VALUES (?, ?, ?, ?, ?, 'open', ?, 'site_comment', NULL, ?)`
+             intake_kind, origin_site, entry_path, meta_sender_id, meta_surface
+           ) VALUES (?, ?, ?, ?, ?, 'open', ?, 'site_comment', NULL, ?, ?, ?)`
         )
-        .run(source, externalId, authorName, body, vehicleRef, assigneeStaffId, entryPath);
+        .run(
+          source,
+          externalId,
+          authorName,
+          body,
+          vehicleRef,
+          assigneeStaffId,
+          entryPath,
+          metaSenderId,
+          metaSurface
+        );
       const comment = getComment(Number(info.lastInsertRowid));
       if (!comment) return { ok: false, error: "入庫後讀唔返留言" };
       return { ok: true, comment, created: true, assigneeStaffId };
@@ -172,9 +201,11 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
        SET author_name = ?, body = ?, vehicle_ref = ?, status = ?,
            intake_kind = 'site_comment', origin_site = NULL,
            entry_path = COALESCE(?, entry_path),
+           meta_sender_id = COALESCE(?, meta_sender_id),
+           meta_surface = COALESCE(?, meta_surface),
            updated_at = datetime('now')
        WHERE id = ?`
-    ).run(authorName, body, vehicleRef, status, entryPath, existing.id);
+    ).run(authorName, body, vehicleRef, status, entryPath, metaSenderId, metaSurface, existing.id);
 
     const comment = getComment(existing.id);
     if (!comment) return { ok: false, error: "更新後讀唔返留言" };
