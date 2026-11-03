@@ -9,6 +9,7 @@ import {
   syncStateForUi,
   syncTwentyeightcar,
 } from "../services/twentyeightcar";
+import { formatStaffTimestamp } from "../time";
 
 interface PageUser {
   displayName: string;
@@ -19,6 +20,16 @@ interface PageHelpers {
   layout(opts: { title: string; body: string; user?: PageUser; active?: string }): string;
   escapeHtml(value: string): string;
   sessionUser(req: Request): PageUser;
+}
+
+function showWall(value: string | null | undefined): string {
+  const text = formatStaffTimestamp(value, "hkt", { relative: true });
+  return text || "—";
+}
+
+function showUtc(value: string | null | undefined): string {
+  const text = formatStaffTimestamp(value, "utc", { relative: true });
+  return text || "—";
 }
 
 function money(priceText: string | null, priceHkd: number | null): string {
@@ -45,7 +56,7 @@ export function registerTwentyeightcarPages(router: Router, view: PageHelpers): 
           <td>${listing.vid ? `<code>${escapeHtml(listing.vid)}</code>` : "—"}</td>
           <td>${escapeHtml(listing.title)}</td>
           <td>${escapeHtml(money(listing.price_text, listing.price_hkd))}</td>
-          <td>${escapeHtml(listing.listing_updated_at || "—")}</td>
+          <td>${escapeHtml(showWall(listing.listing_updated_at))}</td>
           <td>${escapeHtml(listing.account_username)}</td>
           <td>${listing.comment_count ?? "—"}</td>
           <td>${listing.buyer_count} 買家 / ${listing.seller_count} 賣家</td>
@@ -93,7 +104,9 @@ export function registerTwentyeightcarPages(router: Router, view: PageHelpers): 
         同步${state.status.sync_enabled ? "已開" : "關閉"}，回覆代發${state.status.reply_post_enabled ? "已開" : "關閉"}。
       </div>
       ${notice}${error}
-      <p class="muted">已設定帳號（最多 10 個）：${accounts}。買家寫喺留言板嘅帖會出現喺<a href="/?source=28car&entry=28car_board">收件箱 · 28car 留言板</a>。撳留言區 WhatsApp 連結入嚟嘅，係<a href="/?entry=28car_wa_link">28car 留言區 WhatsApp</a>。</p>
+      <p class="muted">已設定帳號（最多 10 個）：${accounts}。買家寫喺留言板嘅帖會出現喺<a href="/?source=28car&entry=28car_board">收件箱 · 28car 留言板</a>。撳留言區 WhatsApp 連結入嚟嘅，係<a href="/?entry=28car_wa_link">28car 留言區 WhatsApp</a>。車盤「更新」同留言板時間沿用 28car 頁面嘅香港時間，唔會再加 8 小時。${
+        state.last_run_at ? `上次同步：${escapeHtml(showUtc(state.last_run_at))}。` : ""
+      }</p>
       ${admin}
       <div class="table-wrap">
         <table>
@@ -128,7 +141,7 @@ export function registerTwentyeightcarPages(router: Router, view: PageHelpers): 
             ? "賣家帖，唔當客戶查詢"
             : "—";
         return `<article class="bubble ${message.is_seller ? "staff" : "customer"}">
-          <div class="who">${kind} · ${escapeHtml(message.author_name)}${message.posted_at ? ` · ${escapeHtml(message.posted_at)}` : ""} · ${inbox}</div>
+          <div class="who">${kind} · ${escapeHtml(message.author_name)}${message.posted_at ? ` · ${escapeHtml(showWall(message.posted_at))}` : ""} · ${inbox}</div>
           <div class="bubble-body">${escapeHtml(message.body)}</div>
         </article>`;
       })
@@ -145,7 +158,7 @@ export function registerTwentyeightcarPages(router: Router, view: PageHelpers): 
           <dt>vid</dt><dd>${listing.vid ? `<code>${escapeHtml(listing.vid)}</code>` : "—"}</dd>
           <dt>帳號</dt><dd>${escapeHtml(listing.account_username)}</dd>
           <dt>售價</dt><dd>${escapeHtml(money(listing.price_text, listing.price_hkd))}</dd>
-          <dt>更新</dt><dd>${escapeHtml(listing.listing_updated_at || "—")}</dd>
+          <dt>更新</dt><dd>${escapeHtml(showWall(listing.listing_updated_at))}</dd>
           <dt>留言欄</dt><dd>${listing.comment_count ?? "—"}（只係數量）</dd>
           <dt>公開頁</dt><dd>${publicLink}</dd>
           <dt>簡評</dt><dd>${listing.blurb ? escapeHtml(listing.blurb) : "—"}</dd>

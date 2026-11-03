@@ -136,10 +136,12 @@ input, select {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
-table { width: 100%; border-collapse: collapse; min-width: 980px; }
+table { width: 100%; border-collapse: collapse; min-width: 1120px; }
 th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 th { font-size: 13px; color: var(--muted); font-weight: 700; background: #f8fafc; }
 td.preview { max-width: 320px; }
+td.when { white-space: nowrap; font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+td.when time, .who time, .meta time, .reply-preview time { color: inherit; }
 .empty { text-align: center; color: var(--muted); padding: 28px !important; }
 
 .badge {

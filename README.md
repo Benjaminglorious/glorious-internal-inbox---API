@@ -116,7 +116,7 @@ Glorious2026!
 
 未派嘅留言只係管理員睇到。網頁（`/`、`/comments/:id`、回覆同狀態表單）同 JSON API（列表、詳情、回覆、改狀態、`/api/comments/updates`）用同一套規則。在職同事唔可以靠輪詢或者推送睇到其他人嘅留言內容。
 
-煙霧測試：`npm run demo:staff-visibility`、`npm run demo:change-password`
+煙霧測試：`npm run demo:staff-visibility`、`npm run demo:change-password`、`npm run demo:staff-time`
 
 ## 功能
 
@@ -131,11 +131,12 @@ Glorious2026!
 - 同事名單頁（顯示已綁定嘅個人 WhatsApp）
 - 管理員：WhatsApp 線路頁（綁定／停用同事個人號）
 - JSON API（`/api/...`）方便日後接流動 App 或自動化
+- 時間：網頁同同事 API 顯示香港時間（`Asia/Hong_Kong`，HKT，UTC+8）。資料庫 `created_at`／`updated_at` 仍然係 UTC 文字（`YYYY-MM-DD HH:MM:SS`）。網頁相對時間（剛剛、分鐘前、小時前、昨天）按香港日曆計。28car 車盤日期同留言板時間係網站上嘅香港鐘面，顯示時唔會再加 8 小時
 
 ### 主要網址
 
 - 網頁：`http://localhost:3001/`
-- 健康檢查：`GET /api/health`（包含 `company_whatsapp_url`、`push_enabled`）
+- 健康檢查：`GET /api/health`（包含 `company_whatsapp_url`、`push_enabled`、`time_zone`、`ts_hkt`。`ts` 仍然係 UTC ISO）
 - 公開設定：`GET /api/config` → `{ "company_whatsapp_url": "..." }`
 - 登入 API：`POST /api/auth/login` `{ "username", "password" }`
 - 改密碼：`GET /password`、`POST /password`（要登入；欄位 `current_password`、`new_password`、`confirm_password`）
@@ -195,7 +196,7 @@ Glorious2026!
       "author_name": "陳先生",
       "preview": "想問 Alphard",
       "vehicle_ref": null,
-      "created_at": "2026-10-27 09:00:00",
+      "created_at": "2026-10-27 17:00:00 HKT",
       "assignee_staff_id": 2,
       "assignee_name": "Wing Cheng"
     }
@@ -203,7 +204,7 @@ Glorious2026!
 }
 ```
 
-唔帶 `since_id` 時只回 `latest_id` 同空陣列，唔會把舊留言當新訊息。`since_id` 必須係非負整數。每次最多回 30 則；如果仲有，`has_more` 係 `true`，頁面會再取。
+唔帶 `since_id` 時只回 `latest_id` 同空陣列，唔會把舊留言當新訊息。`since_id` 必須係非負整數。每次最多回 30 則；如果仲有，`has_more` 係 `true`，頁面會再取。回應會帶 `time_zone: "Asia/Hong_Kong"`。`created_at` 係香港鐘面（上面例子對應資料庫 UTC `2026-10-27 09:00:00`），唔係再儲存多一次。
 
 ## 安裝到手機（PWA）同背景通知
 
@@ -366,13 +367,13 @@ Meta Cloud 嘅 `messages[].referral` 唔止睇 `source_url`。有 Instagram 訊�
     "direction": "outbound",
     "body": "星期六可以嚟葵涌陳列室睇。",
     "delivery_status": "stub",
-    "created_at": "2026-10-28 02:00:00"
+    "created_at": "2026-10-28 10:00:00 HKT"
   },
   "comment": { "id": 12, "status": "in_progress", "reply_count": 1 }
 }
 ```
 
-`GET /api/comments/:id/replies` 回 `{ "replies": [ ... ] }`。`GET /api/comments/:id` 同時有 `comment` 同 `replies`。
+`GET /api/comments/:id/replies` 回 `{ "replies": [ ... ] }`。`GET /api/comments/:id` 同時有 `comment` 同 `replies`。回覆嘅 `created_at` 同樣係香港時間。上面 `2026-10-28 10:00:00 HKT` 對應資料庫 UTC `2026-10-28 02:00:00`。
 
 `delivery_status`：
 
