@@ -26,14 +26,18 @@ import {
   isIntakeKind,
   isOriginFilter,
 } from "../types";
+import { formatStaffTimestamp, presentStaffTimes, STAFF_TIME_ZONE } from "../time";
 
 export const apiRouter = Router();
 
 apiRouter.get("/health", (_req, res) => {
+  const now = new Date();
   res.json({
     ok: true,
     service: "glorious-internal-inbox",
-    ts: new Date().toISOString(),
+    ts: now.toISOString(),
+    ts_hkt: formatStaffTimestamp(now.toISOString(), "utc"),
+    time_zone: STAFF_TIME_ZONE,
     company_whatsapp_url: companyWhatsAppUrl(),
     push_enabled: isPushConfigured(),
     database: usingPostgres ? "postgres" : "sqlite",
@@ -89,7 +93,11 @@ apiRouter.get("/comments/updates", requireAuth, (req: Request, res: Response) =>
   }
   const updates = listCommentUpdates(sinceId, 30, sessionViewer(req));
   res.set("Cache-Control", "no-store");
-  res.json(updates);
+  res.json({
+    ...updates,
+    time_zone: STAFF_TIME_ZONE,
+    comments: updates.comments.map((comment) => presentStaffTimes(comment)),
+  });
 });
 
 apiRouter.get("/comments", requireAuth, (req: Request, res: Response) => {
@@ -134,7 +142,7 @@ apiRouter.get("/comments", requireAuth, (req: Request, res: Response) => {
     staffId: req.session.staffId,
     viewer: sessionViewer(req),
   });
-  res.json({ comments: rows });
+  res.json({ time_zone: STAFF_TIME_ZONE, comments: rows.map((row) => presentStaffTimes(row)) });
 });
 
 function visibleComment(req: Request, id: number) {
@@ -149,7 +157,7 @@ apiRouter.get("/comments/:id/replies", requireAuth, (req: Request, res: Response
     res.status(404).json({ error: "找不到留言" });
     return;
   }
-  res.json({ replies: listReplies(id) });
+  res.json({ time_zone: STAFF_TIME_ZONE, replies: listReplies(id).map((reply) => presentStaffTimes(reply)) });
 });
 
 apiRouter.post("/comments/:id/replies", requireAuth, async (req: Request, res: Response) => {
@@ -166,7 +174,11 @@ apiRouter.post("/comments/:id/replies", requireAuth, async (req: Request, res: R
       res.status(result.status).json({ error: result.error });
       return;
     }
-    res.status(201).json({ reply: result.reply, comment: result.comment });
+    res.status(201).json({
+      time_zone: STAFF_TIME_ZONE,
+      reply: presentStaffTimes(result.reply),
+      comment: presentStaffTimes(result.comment),
+    });
   } catch (err) {
     console.error("[replies] 未能寫入回覆", err);
     res.status(500).json({ error: "未能發送回覆" });
@@ -180,7 +192,11 @@ apiRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
     res.status(404).json({ error: "找不到留言" });
     return;
   }
-  res.json({ comment: row, replies: listReplies(id) });
+  res.json({
+    time_zone: STAFF_TIME_ZONE,
+    comment: presentStaffTimes(row),
+    replies: listReplies(id).map((reply) => presentStaffTimes(reply)),
+  });
 });
 
 apiRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Response) => {
@@ -195,7 +211,7 @@ apiRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Response
     return;
   }
   const updated = updateStatus(id, status);
-  res.json({ comment: updated });
+  res.json({ time_zone: STAFF_TIME_ZONE, comment: updated ? presentStaffTimes(updated) : updated });
 });
 
 apiRouter.post("/comments/:id/assign", requireAdmin, (req: Request, res: Response) => {
@@ -218,16 +234,19 @@ apiRouter.post("/comments/:id/assign", requireAdmin, (req: Request, res: Respons
     res.status(400).json({ error: "找不到有效同事" });
     return;
   }
-  res.json({ comment: updated });
+  res.json({ time_zone: STAFF_TIME_ZONE, comment: updated ? presentStaffTimes(updated) : updated });
 });
 
 apiRouter.get("/28car/status", requireAuth, (_req: Request, res: Response) => {
-  res.json(syncStateForUi());
+  res.json({ ...presentStaffTimes(syncStateForUi()), time_zone: STAFF_TIME_ZONE });
 });
 
 apiRouter.get("/28car/listings", requireAuth, (req: Request, res: Response) => {
   const account = typeof req.query.account === "string" ? req.query.account : undefined;
-  res.json({ listings: listListings(account) });
+  res.json({
+    time_zone: STAFF_TIME_ZONE,
+    listings: listListings(account).map((listing) => presentStaffTimes(listing)),
+  });
 });
 
 apiRouter.get("/28car/listings/:stockId", requireAuth, (req: Request, res: Response) => {
@@ -236,7 +255,11 @@ apiRouter.get("/28car/listings/:stockId", requireAuth, (req: Request, res: Respo
     res.status(404).json({ error: "找不到車盤" });
     return;
   }
-  res.json({ listing, messages: listListingMessages(listing.stock_id) });
+  res.json({
+    time_zone: STAFF_TIME_ZONE,
+    listing: presentStaffTimes(listing),
+    messages: listListingMessages(listing.stock_id).map((message) => presentStaffTimes(message)),
+  });
 });
 
 apiRouter.post("/28car/sync", requireAdmin, async (_req: Request, res: Response) => {
@@ -271,7 +294,10 @@ apiRouter.get("/staff", requireAuth, (_req: Request, res: Response) => {
 });
 
 apiRouter.get("/whatsapp-lines", requireAdmin, (_req: Request, res: Response) => {
-  res.json({ lines: listWhatsAppLines() });
+  res.json({
+    time_zone: STAFF_TIME_ZONE,
+    lines: listWhatsAppLines().map((line) => presentStaffTimes(line)),
+  });
 });
 
 apiRouter.post("/whatsapp-lines", requireAdmin, (req: Request, res: Response) => {
@@ -285,7 +311,7 @@ apiRouter.post("/whatsapp-lines", requireAdmin, (req: Request, res: Response) =>
     res.status(400).json({ error: result.error });
     return;
   }
-  res.status(201).json({ line: result.line });
+  res.status(201).json({ time_zone: STAFF_TIME_ZONE, line: presentStaffTimes(result.line) });
 });
 
 apiRouter.post("/whatsapp-lines/:id/deactivate", requireAdmin, (req: Request, res: Response) => {
@@ -294,7 +320,7 @@ apiRouter.post("/whatsapp-lines/:id/deactivate", requireAdmin, (req: Request, re
     res.status(result.error === "找不到線路" ? 404 : 400).json({ error: result.error });
     return;
   }
-  res.json({ line: result.line });
+  res.json({ time_zone: STAFF_TIME_ZONE, line: presentStaffTimes(result.line) });
 });
 
 apiRouter.get("/push/config", requireAuth, (_req: Request, res: Response) => {

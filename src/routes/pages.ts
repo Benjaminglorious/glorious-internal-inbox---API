@@ -15,6 +15,7 @@ import {
 } from "../labels";
 import { registerTwentyeightcarPages } from "./twentyeightcar-pages";
 import { listingIndex, stockIdFromText } from "../services/twentyeightcar";
+import { formatHktIso, formatStaffTimestamp, parseStoredTimestamp, type StoredClock } from "../time";
 import {
   canViewComment,
   getComment,
@@ -57,6 +58,14 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function showTime(value: string | null | undefined, clock: StoredClock = "utc"): string {
+  const text = formatStaffTimestamp(value, clock, { relative: true });
+  if (!text) return "—";
+  const instant = value ? parseStoredTimestamp(value, clock) : null;
+  if (!instant) return escapeHtml(text);
+  return `<time datetime="${escapeHtml(formatHktIso(instant))}">${escapeHtml(text)}</time>`;
 }
 
 function sessionUser(req: Request): { displayName: string; isAdmin?: boolean } {
@@ -122,7 +131,8 @@ function replyPreview(c: CommentWithAssignee): string {
   const flat = c.last_reply_body.replace(/\s+/g, " ").trim();
   const text = flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
   const count = c.reply_count > 1 ? `（${c.reply_count}）` : "";
-  return `<div class="reply-preview">最新回覆${count} · ${escapeHtml(who)} · ${escapeHtml(delivery)}：${escapeHtml(text)}</div>`;
+  const when = c.last_reply_at ? ` · ${showTime(c.last_reply_at)}` : "";
+  return `<div class="reply-preview">最新回覆${count} · ${escapeHtml(who)}${when} · ${escapeHtml(delivery)}：${escapeHtml(text)}</div>`;
 }
 
 function layout(opts: {
@@ -369,6 +379,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
         <td class="preview">${escapeHtml(preview)}${replyPreview(c)}</td>
         <td>${vehicleCell}</td>
         <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span></td>
+        <td class="when">${showTime(c.created_at)}</td>
         <td>${c.assignee_name ? escapeHtml(c.assignee_name) : "未派"}</td>
         <td class="actions-cell"><a class="btn primary" href="/comments/${c.id}#reply">回覆</a>${whatsAppLinks(c, staffLines)}</td>
       </tr>`;
@@ -441,14 +452,15 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       <table>
         <thead>
           <tr>
-            <th>ID</th><th>來源／形式</th><th>留言者</th><th>內容</th><th>車輛</th><th>狀態</th><th>負責人</th><th>操作</th>
+            <th>ID</th><th>來源／形式</th><th>留言者</th><th>內容</th><th>車輛</th><th>狀態</th><th>時間（HKT）</th><th>負責人</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
-          ${rows || `<tr><td colspan="8" class="empty">暫無留言</td></tr>`}
+          ${rows || `<tr><td colspan="9" class="empty">暫無留言</td></tr>`}
         </tbody>
       </table>
     </div>
+    <p class="muted small">時間欄同留言詳情嘅建立、更新、回覆時間都係香港時間（HKT，UTC+8）。「剛剛」「分鐘前」「昨天」按香港日曆計。資料庫仍然儲存 UTC。</p>
     <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。回覆請入去留言，WhatsApp 按鈕只係次要。</p>
     <p class="muted small">快捷：${
       viewer.isAdmin ? `<a href="${qs({ mine: "1" })}">我的留言</a> · ` : ""
@@ -522,7 +534,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         ? `<p class="error small">${escapeHtml(reply.delivery_error)}</p>`
         : "";
       return `<article class="bubble staff">
-        <div class="who">同事 · ${escapeHtml(who)} · ${escapeHtml(reply.created_at)} · ${escapeHtml(deliveryDetail(reply.delivery_status, c.source))}</div>
+        <div class="who">同事 · ${escapeHtml(who)} · ${showTime(reply.created_at)} · ${escapeHtml(deliveryDetail(reply.delivery_status, c.source))}</div>
         ${errorLine}
         <div class="bubble-body">${escapeHtml(reply.body)}</div>
       </article>`;
@@ -546,14 +558,14 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         <dt>路徑</dt><dd>${c.entry_path ? escapeHtml(ENTRY_LABEL[c.entry_path]) : "—"}</dd>
         <dt>車輛</dt><dd>${c.vehicle_ref ? escapeHtml(c.vehicle_ref) : "—"}</dd>
         <dt>負責人</dt><dd>${c.assignee_name ? escapeHtml(c.assignee_name) : "未派"}</dd>
-        <dt>建立</dt><dd>${escapeHtml(c.created_at)}</dd>
-        <dt>更新</dt><dd>${escapeHtml(c.updated_at)}</dd>
+        <dt>建立</dt><dd>${showTime(c.created_at)}</dd>
+        <dt>更新</dt><dd>${showTime(c.updated_at)}</dd>
       </dl>
 
       <section class="thread" id="thread">
         <h2>對話</h2>
         <article class="bubble customer">
-          <div class="who">客戶 · ${escapeHtml(c.author_name)} · ${escapeHtml(c.created_at)}</div>
+          <div class="who">客戶 · ${escapeHtml(c.author_name)} · ${showTime(c.created_at)}</div>
           <div class="bubble-body">${escapeHtml(c.body)}</div>
         </article>
         ${thread || `<p class="muted small">未有同事回覆。</p>`}
