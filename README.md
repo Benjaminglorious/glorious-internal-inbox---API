@@ -24,7 +24,7 @@
 ```bash
 cp .env.example .env   # 改 SESSION_SECRET，以及 WEBHOOK_VERIFY_TOKEN（要用 webhook 先至需要）
 npm install
-npm run seed           # 本地：13 位同事 + 示範留言 + 公司 WhatsApp 總機
+npm run seed           # 本地：14 位同事 + 示範留言 + 公司 WhatsApp 總機
 npm start              # http://localhost:3001
 ```
 
@@ -60,10 +60,11 @@ npm run dev
 `npm start` 會做三件事：
 
 - 建立／對齊 schema（comments、replies、staff、whatsapp_lines、push、28car）
-- **staff 表係空**先至寫入同事名單同公司總機 `85221740001`（新帳號先用示範密碼；已有 `password_hash` 唔覆寫）
+- **staff 表係空**先至寫入全部同事名單同公司總機 `85221740001`（新帳號先用示範密碼；已有 `password_hash` 唔覆寫）
+- **已有同事**（包括 Render Postgres）啟動時確保 Benjamin（`benjamin`）係在職管理員：未有就新增並用示範密碼；用戶名不分大小寫，或者顯示名係 Benjamin，就升級同一列而唔另開帳號，唔改已有密碼。唔會降 Tony，亦唔會改其他同事嘅角色
 - **唔會**寫示範 Facebook／IG／WhatsApp／28car 留言或觀察車盤
 
-本地想要示範資料先至 `npm run seed`（或 `npm run seed:demo`）。正式環境要補同事用 Render Shell：`npm run seed:staff`（有同事都只係 upsert 姓名／角色／在職，唔改密碼，唔加留言）。
+本地想要示範資料先至 `npm run seed`（或 `npm run seed:demo`）。正式環境要一次過對齊成份名單（姓名／角色／在職，唔改密碼，唔加留言）先至用 Render Shell：`npm run seed:staff`。只係補 Benjamin 嘅話，下次 `npm start` 已經會做。
 
 如果舊 deploy 已經把示範留言寫入而家呢個 Postgres：Shell 跑 `npm run clear:demo`，或者管理員登入之後喺網站網域執行：
 
@@ -95,6 +96,7 @@ Glorious2026!
 |------|------|------|
 | Tony Chan | `tony` | 管理員 |
 | Eddie Lau | `eddie` | 管理員 |
+| Benjamin | `benjamin` | 管理員（同 Tony：唔參與公司線自動派單） |
 | Wing Cheng | `wing` | 同事 |
 | Jason Cheng | `jason` | 同事 |
 
@@ -106,7 +108,7 @@ Glorious2026!
 
 | 角色 | 登入 | 睇留言 | 回覆／改狀態 | 改派 |
 |------|------|--------|----------------|------|
-| 管理員（`tony`、`eddie`） | 可以 | 全部，包括未派 | 任何一則 | 可以 |
+| 管理員（`tony`、`eddie`、`benjamin`） | 可以 | 全部，包括未派 | 任何一則 | 可以 |
 | 在職同事（`wing`、`jason`） | 可以 | 只係 `assignee_staff_id` 等於自己 | 只係自己負責嗰啲 | 唔可以（403） |
 | 收藏（`active=0`） | 唔可以 | — | — | — |
 
@@ -416,7 +418,7 @@ Seed 會寫入公司總機：
 `routeWhatsAppInbound({ toPhone, fromPhone, body, externalId })`（`src/services/whatsapp.ts`）：
 
 1. **同事個人號**（`kind = staff` 而且啟用）→ 該對話／留言自動派畀綁定嘅同事。
-2. **公司總機 `85221740001`** → 用現有自動派單：**未完成（open + in_progress）最少嘅在職同事優先，同數則 Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）。Tony 唔參與自動派單**（管理員仍然可以人手改派畀佢）。
+2. **公司總機 `85221740001`** → 用現有自動派單：**未完成（open + in_progress）最少嘅在職同事優先，同數則 Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）。Tony 同 Benjamin 唔參與自動派單**（管理員仍然可以人手改派畀佢哋）。Eddie 都係管理員，但仍然參與。
 3. **未知或已停用號碼** → 仍然入庫（來源 `whatsapp`、狀態未處理），但**未派單**，並喺伺服器 log 記一筆。綁定同事已停用時同樣未派。
 
 有 `external_id` 時用佢做冪等鍵（webhook 重試唔會開新留言，亦唔會改走公司總機已派嘅同事）。冇 `external_id` 時，同一對「收件線路 + 寄件人」合成一條對話，新內容會附加。
@@ -558,7 +560,7 @@ Verify token = `WEBHOOK_VERIFY_TOKEN`。
 
 本地預設 SQLite（`better-sqlite3`），檔案喺 `data/inbox.db`（已加入 `.gitignore`）。設定 `DATABASE_URL` 或 `POSTGRES_URL` 就改用 PostgreSQL（`pg`，參數化查詢）。正式環境用 Render Postgres，見上面「Render」。兩種庫都係開機時對齊 schema。
 
-派單規則（seed／未指派留言／公司 WhatsApp 總機）：**未完成（open + in_progress）最少、而且 `active=1` 嘅同事優先，同數則 Eddie → Wing → Jason → 其餘（按 staff id，排喺 Jason 後面）**。**Tony（`username=tony`）唔參與自動派單**，即使在職。收藏（`active=0`）唔會被派單，亦登入唔到。優先名單係 `eddie`、`wing`、`jason`；其他在職同事排喺 Jason 後面。管理員可以人手改派，包括派畀 Tony。
+派單規則（seed／未指派留言／公司 WhatsApp 總機）：**未完成（open + in_progress）最少、而且 `active=1` 嘅同事優先，同數則 Eddie → Wing → Jason → 其餘（按 staff id，排喺 Jason 後面）**。**Tony（`username=tony`）同 Benjamin（`username=benjamin`）唔參與自動派單**，即使在職。排除係用戶名名單，唔係所有管理員（Eddie 仍然參與）。收藏（`active=0`）唔會被派單，亦登入唔到。優先名單係 `eddie`、`wing`、`jason`；其他在職同事排喺 Jason 後面。管理員可以人手改派，包括派畀 Tony 同 Benjamin。
 
 如果資料庫係舊版本（未有 `whatsapp`、未有 `instagram`，或者未有 `intake_kind`／`origin_site`），啟動時會自動重建 `comments` 表。原有留言 id、內容同負責人都保留。舊嘅網站留言會標成 `site_comment`；舊嘅 WhatsApp 會標成 `whatsapp_click`，`origin_site` 留空（直接 WhatsApp）。
 

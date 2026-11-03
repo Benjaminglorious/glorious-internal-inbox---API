@@ -14,9 +14,10 @@ import type { CommentSource, EntryPath, IntakeKind, OriginSite } from "../types"
 export const DEMO_PASSWORD = "Glorious2026!";
 
 /**
- * 可登入：兩位管理員 + 兩位在職同事。其餘種子同事收藏（active=0），保留列但登入唔到。
- * 全新資料庫插入次序係 eddie → wing → jason → tony，只影響 staff.id。
- * 自動派單唔包括 tony（見 assign.ts）：Eddie → Wing → Jason → 其餘在職同事。
+ * 可登入：三位管理員（eddie、tony、benjamin）+ 兩位在職同事。其餘種子同事收藏（active=0），保留列但登入唔到。
+ * 全新資料庫插入次序係 eddie → wing → jason → tony → benjamin，只影響 staff.id。
+ * 自動派單唔包括 tony、benjamin（見 assign.ts 用戶名名單，唔係因為 is_admin）：
+ * Eddie → Wing → Jason → 其餘在職同事。Eddie 都係管理員，但仍然參與自動派單。
  */
 export const SEED_STAFF: Array<{
   username: string;
@@ -28,6 +29,7 @@ export const SEED_STAFF: Array<{
   { username: "wing", display_name: "Wing Cheng", is_admin: 0, active: 1 },
   { username: "jason", display_name: "Jason Cheng", is_admin: 0, active: 1 },
   { username: "tony", display_name: "Tony Chan", is_admin: 1, active: 1 },
+  { username: "benjamin", display_name: "Benjamin", is_admin: 1, active: 1 },
   { username: "kaixin", display_name: "張嘉欣", is_admin: 0, active: 0 },
   { username: "ming", display_name: "王明軒", is_admin: 0, active: 0 },
   { username: "mei", display_name: "陳美玲", is_admin: 0, active: 0 },
@@ -334,28 +336,91 @@ const DEMO_REPLIES: Array<{ source: CommentSource; external_id: string; username
   },
 ];
 
+const UPSERT_STAFF_SQL = `
+  INSERT INTO staff (username, display_name, password_hash, is_admin, active)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(username) DO UPDATE SET
+    display_name = excluded.display_name,
+    is_admin = excluded.is_admin,
+    active = excluded.active
+`;
+
+/**
+ * 已有「Benjamin」但用戶名唔係小寫 benjamin（例如 Benjamin），或者顯示名係 Benjamin／Benjamin …，
+ * 而標準帳號未存在：改成 username=benjamin，之後 upsert 升做管理員。唔會另開一列，亦唔改密碼。
+ * 標準帳號已經存在就唔改其他列。
+ */
+function adoptBenjaminUsername(): void {
+  const row = db
+    .prepare(
+      `
+      SELECT id
+      FROM staff
+      WHERE username != 'benjamin'
+        AND NOT EXISTS (SELECT 1 FROM staff WHERE username = 'benjamin')
+        AND (
+          lower(username) = 'benjamin'
+          OR lower(trim(display_name)) = 'benjamin'
+          OR lower(trim(display_name)) LIKE 'benjamin %'
+        )
+      ORDER BY CASE WHEN lower(username) = 'benjamin' THEN 0 ELSE 1 END, id ASC
+      LIMIT 1
+      `
+    )
+    .get() as { id: number } | undefined;
+  if (!row) return;
+  db.prepare(`UPDATE staff SET username = 'benjamin' WHERE id = ?`).run(row.id);
+}
+
 /**
  * 以 username 做 upsert：衝突時更新 display_name、is_admin、active。
  * 密碼只喺新插入嗰陣寫入示範密碼；已存在嘅 password_hash 唔覆寫，
  * 避免同事改咗密碼之後再跑 seed 被重設。收藏同事同樣唔會被強制改密碼。
+ * 如果 Benjamin 已經存在（用戶名大小寫唔同，或顯示名係 Benjamin），升級同一列，唔會重複。
  */
 export function applySeedStaff(): void {
-  const insertStaff = db.prepare(`
-    INSERT INTO staff (username, display_name, password_hash, is_admin, active)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(username) DO UPDATE SET
-      display_name = excluded.display_name,
-      is_admin = excluded.is_admin,
-      active = excluded.active
-  `);
+  const insertStaff = db.prepare(UPSERT_STAFF_SQL);
 
   const passwordHash = hashPassword(DEMO_PASSWORD);
   const staffTx = db.transaction(() => {
+    adoptBenjaminUsername();
     for (const s of SEED_STAFF) {
       insertStaff.run(s.username, s.display_name, passwordHash, s.is_admin, s.active);
     }
   });
   staffTx();
+}
+
+/**
+ * 已有同事嘅庫用：只補或者升級 Benjamin 做在職管理員（同 Tony 一樣 is_admin=1、active=1）。
+ * 唔改其他同事，唔覆寫已有密碼，唔降 Tony。
+ */
+export function ensureBenjaminAdmin(): void {
+  const seed = SEED_STAFF.find((s) => s.username === "benjamin");
+  if (!seed) return;
+  const insertStaff = db.prepare(UPSERT_STAFF_SQL);
+  const passwordHash = hashPassword(DEMO_PASSWORD);
+  const tx = db.transaction(() => {
+    adoptBenjaminUsername();
+    insertStaff.run(seed.username, seed.display_name, passwordHash, seed.is_admin, seed.active);
+  });
+  tx();
+}
+
+/**
+ * npm start 用。空庫寫入全部同事；已有同事（Render Postgres）只確保 Benjamin 係管理員。
+ * 兩種情況都唔寫示範留言。新帳號用示範密碼；已有 password_hash 唔覆寫。
+ */
+export function syncStaffOnBoot(): void {
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM staff`).get() as { n: number };
+  if (Number(row.n) === 0) {
+    console.log("[boot] staff 表係空，寫入同事同公司 WhatsApp 總機（唔寫示範留言）");
+    seedStaff();
+    return;
+  }
+  console.log("[boot] 確保 Benjamin 係在職管理員（新帳號用示範密碼；已有密碼唔改；唔寫示範留言）");
+  ensureBenjaminAdmin();
+  ensureCompanyWhatsAppLine();
 }
 
 function logStaffRoster(companyLine: { phone_e164: string; display_label: string; kind: string; is_active: number | boolean }): void {

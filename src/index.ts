@@ -5,9 +5,9 @@ import path from "path";
 import fs from "fs";
 
 // Schema migrate runs when the db module loads. Postgres when DATABASE_URL / POSTGRES_URL is set.
-import { db, getPostgresSslMode, getPostgresUrl, usingPostgres } from "./db";
+import { getPostgresSslMode, getPostgresUrl, usingPostgres } from "./db";
 import { sslOptionFromMode } from "./db/pg-config";
-import { seedStaff } from "./db/seed";
+import { syncStaffOnBoot } from "./db/seed";
 
 import { authRouter } from "./routes/auth";
 import { apiRouter } from "./routes/api";
@@ -18,19 +18,8 @@ import {
   whatsappWebhookRouter,
 } from "./routes/webhooks";
 import { isPushConfigured } from "./services/push";
-import { ensureCompanyWhatsAppLine } from "./services/whatsapp";
 
-function bootStaff(): void {
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM staff`).get() as { n: number };
-  if (Number(row.n) === 0) {
-    console.log("[boot] staff 表係空，寫入同事同公司 WhatsApp 總機（唔寫示範留言）");
-    seedStaff();
-    return;
-  }
-  ensureCompanyWhatsAppLine();
-}
-
-bootStaff();
+syncStaffOnBoot();
 
 const PORT = Number(process.env.PORT || 3001);
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev-insecure-secret-change-me";

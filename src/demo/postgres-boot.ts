@@ -80,6 +80,42 @@ async function main(): Promise<number> {
     seedMod.seedStaff();
     const eddie = appDb.prepare(`SELECT password_hash AS h FROM staff WHERE username = 'eddie'`).get() as { h: string };
     check("再 seed:staff 唔覆寫密碼", eddie.h === "kept-hash");
+
+    appDb.prepare(`DELETE FROM staff WHERE username = 'benjamin'`).run();
+    appDb
+      .prepare(
+        `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
+         VALUES ('Benjamin', 'Benjamin', 'kept-ben-hash', 0, 0)`
+      )
+      .run();
+    const commentsBeforeBoot = Number((appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n);
+    seedMod.syncStaffOnBoot();
+    const benjamin = appDb
+      .prepare(`SELECT username, display_name, is_admin, active, password_hash FROM staff WHERE lower(username) = 'benjamin'`)
+      .all() as Array<{
+      username: string;
+      display_name: string;
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    }>;
+    const tonyRow = appDb.prepare(`SELECT is_admin, active FROM staff WHERE username = 'tony'`).get() as {
+      is_admin: number;
+      active: number;
+    };
+    const eddieAfter = appDb.prepare(`SELECT password_hash AS h FROM staff WHERE username = 'eddie'`).get() as { h: string };
+    check(
+      "已有庫啟動會把 Benjamin 升做管理員，唔會重複",
+      benjamin.length === 1 &&
+        benjamin[0].username === "benjamin" &&
+        benjamin[0].display_name === "Benjamin" &&
+        benjamin[0].is_admin === 1 &&
+        benjamin[0].active === 1 &&
+        benjamin[0].password_hash === "kept-ben-hash"
+    );
+    check("啟動對齊唔寫留言", Number((appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n) === commentsBeforeBoot);
+    check("啟動對齊唔降 Tony", tonyRow.is_admin === 1 && tonyRow.active === 1);
+    check("啟動對齊唔覆寫其他人密碼", eddieAfter.h === "kept-hash");
     check(
       "再 seed:staff 仍然冇留言",
       Number((appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n) === 0
@@ -108,9 +144,20 @@ async function main(): Promise<number> {
       .run();
 
     const tony = appDb.prepare(`SELECT id FROM staff WHERE username = 'tony'`).get() as { id: number };
+    const benjaminStaff = appDb.prepare(`SELECT id FROM staff WHERE username = 'benjamin'`).get() as { id: number };
     const picked = assignMod.pickLeastLoadedStaffId();
-    check("自動派單跳過 Tony", picked != null && picked !== tony.id, String(picked));
-    if (live.ok) check("新 WhatsApp 都唔派 Tony", live.assigneeStaffId !== tony.id, String(live.assigneeStaffId));
+    check(
+      "自動派單跳過 Tony 同 Benjamin",
+      picked != null && picked !== tony.id && picked !== benjaminStaff.id,
+      String(picked)
+    );
+    if (live.ok) {
+      check(
+        "新 WhatsApp 都唔派 Tony 或 Benjamin",
+        live.assigneeStaffId !== tony.id && live.assigneeStaffId !== benjaminStaff.id,
+        String(live.assigneeStaffId)
+      );
+    }
 
     const cleared = clearMod.clearDemoFixtures();
     check("clear:demo 刪到示範列", cleared.comments_deleted > 0, String(cleared.comments_deleted));

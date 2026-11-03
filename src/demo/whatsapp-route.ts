@@ -373,8 +373,8 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
 }
 
 /**
- * 同數時必須係 Eddie → Wing → Jason → 其餘（按 id），Tony 唔會被派，即使 Eddie 嘅 id 最大。
- * Tony 即使 id 最小、未完成數係 0，都唔可以被揀。只剩 Tony 時回 null。
+ * 同數時必須係 Eddie → Wing → Jason → 其餘（按 id），Tony 同 Benjamin 唔會被派，即使 Eddie 嘅 id 最大。
+ * 兩人即使 id 最小、未完成數係 0，都唔可以被揀。只剩佢哋時回 null。
  * 用 transaction 回滾，唔影響後面嘅線路示範。
  */
 function checkEqualLoadPriority(appDb: Database.Database): void {
@@ -386,8 +386,9 @@ function checkEqualLoadPriority(appDb: Database.Database): void {
       `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
        VALUES (?, ?, 'x', ?, 1)`
     );
-    // Tony 先插入，staff.id 最小。Eddie 最後插入而且係管理員，同數時仍然排第一。
+    // Tony、Benjamin 先插入，staff.id 較小。Eddie 最後插入而且係管理員，同數時仍然排第一。
     const tonyId = Number(insertStaff.run("tony", "Tony Chan", 1).lastInsertRowid);
+    const benjaminId = Number(insertStaff.run("benjamin", "Benjamin", 1).lastInsertRowid);
     const futureId = Number(insertStaff.run("newbie", "新同事", 0).lastInsertRowid);
     const jasonId = Number(insertStaff.run("jason", "Jason Cheng", 0).lastInsertRowid);
     const wingId = Number(insertStaff.run("wing", "Wing Cheng", 0).lastInsertRowid);
@@ -410,17 +411,17 @@ function checkEqualLoadPriority(appDb: Database.Database): void {
     for (let i = 0; i < 4; i += 1) {
       const id = pickLeastLoadedStaffId();
       if (id == null) throw new Error("沒有在職同事");
-      if (id === tonyId) throw new Error("自動派單唔可以派畀 Tony");
+      if (id === tonyId || id === benjaminId) throw new Error("自動派單唔可以派畀 Tony 或 Benjamin");
       picked.push(id);
       insertOpen.run(`prio-eq-${i}`, id);
     }
     const expected = [eddieId, wingId, jasonId, futureId];
-    if (picked.includes(tonyId)) {
-      throw new Error(`Tony 唔應被自動派單，實際 ${picked.join(",")}`);
+    if (picked.includes(tonyId) || picked.includes(benjaminId)) {
+      throw new Error(`Tony／Benjamin 唔應被自動派單，實際 ${picked.join(",")}`);
     }
     if (picked.join(",") !== expected.join(",")) {
       throw new Error(
-        `次序 ${picked.join(",")}，期望 Eddie → Wing → Jason → 新同事（唔包括 Tony ${tonyId}）（${expected.join(",")}）`
+        `次序 ${picked.join(",")}，期望 Eddie → Wing → Jason → 新同事（唔包括 Tony ${tonyId}、Benjamin ${benjaminId}）（${expected.join(",")}）`
       );
     }
 
@@ -436,13 +437,13 @@ function checkEqualLoadPriority(appDb: Database.Database): void {
     insertOpen.run("prio-tony-idle-n", futureId);
     const despiteTonyIdle = pickLeastLoadedStaffId();
     if (despiteTonyIdle !== eddieId) {
-      throw new Error(`Tony 零負荷時仍應派 Eddie，實際 ${despiteTonyIdle}`);
+      throw new Error(`Tony／Benjamin 零負荷時仍應派 Eddie，實際 ${despiteTonyIdle}`);
     }
 
-    appDb.prepare(`UPDATE staff SET active = 0 WHERE username != 'tony'`).run();
-    const onlyTony = pickLeastLoadedStaffId();
-    if (onlyTony != null) {
-      throw new Error(`只剩 Tony 時唔應派單，實際 ${onlyTony}`);
+    appDb.prepare(`UPDATE staff SET active = 0 WHERE username NOT IN ('tony', 'benjamin')`).run();
+    const onlyExcluded = pickLeastLoadedStaffId();
+    if (onlyExcluded != null) {
+      throw new Error(`只剩 Tony 同 Benjamin 時唔應派單，實際 ${onlyExcluded}`);
     }
 
     throw new Error("__rollback_priority__");
@@ -450,11 +451,11 @@ function checkEqualLoadPriority(appDb: Database.Database): void {
 
   try {
     probe();
-    check("同數次序 Eddie → Wing → Jason → 新同事，跳過 Tony", false, "transaction 冇回滾");
+    check("同數次序 Eddie → Wing → Jason → 新同事，跳過 Tony 同 Benjamin", false, "transaction 冇回滾");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     check(
-      "同數次序 Eddie → Wing → Jason → 新同事，跳過 Tony（即使 Eddie id 最大）",
+      "同數次序 Eddie → Wing → Jason → 新同事，跳過 Tony 同 Benjamin（即使 Eddie id 最大）",
       message === "__rollback_priority__",
       message === "__rollback_priority__" ? undefined : message
     );
