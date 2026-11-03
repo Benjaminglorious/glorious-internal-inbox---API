@@ -579,6 +579,55 @@ JSON 係文字訊息，`to` 係客戶 `wa_id`。成功標 `delivery_status=sent`
 
 同事個人線路、網站留言、Facebook、Instagram **唔**經呢條 Cloud API。Facebook／Instagram 用 Page token（見下一節）。官網仍然係 `stub`。唔會改 `whatsapp_lines` 嘅號碼，入站派單同 webhook 驗證都維持原樣。
 
+Cloud API 嘅 `/{phone-number-id}/messages` 只可以公司總機 `85221740001` 做寄件人。同事個人號只係 `whatsapp_lines` 入面嘅派單綁定，冇註冊做呢個 WABA 嘅發送號碼，所以 token 改唔到 `from`。`message_echoes` 唔用。
+
+## 同事用自己 WhatsApp 回覆客戶
+
+客人用 WhatsApp 搵同事（打去同事個人號，或者打去公司總機之後派咗人）時，留言頁同留言箱有 **「用我嘅 WhatsApp 發送畀客戶」／「回覆客戶」**。
+
+- 連結係 `https://api.whatsapp.com/send?phone=<客戶號碼>`，可選 `text=` 預填。
+- 打開嘅係同事部手機或電腦**而家登入**嘅 WhatsApp。請登入已綁定嘅個人號，唔好登入公司總機。
+- 公司總機嘅「發送回覆」仍然經 Cloud API，用 `85221740001`。
+- 未綁定個人號仍然可以開連結，頁面會提示先綁定。
+- 只係 WhatsApp 留言，而且要有客戶號碼。Facebook、Instagram、28car、官網唔顯示呢個按鈕。
+- 睇唔到嘅留言（唔係負責人、又唔係管理員）唔會出連結，亦唔會出客戶號碼。
+
+### Tony 點樣試
+
+1. 用同事帳號登入 https://glorious-internal-inbox.onrender.com （個人號要管理員喺「WhatsApp 線路」綁定）。
+2. 開一則 WhatsApp 留言：客戶打過嚟搵呢位同事，或者公司總機派咗畀佢。
+3. 頁面要顯示客戶號碼，同你綁定嘅個人號碼。
+4. 撳「用我嘅 WhatsApp 發送畀客戶」。應開 WhatsApp 同**客戶**對話，寄件人係你而家登入嘅號碼（應係個人號，唔係 `85221740001`）。
+5. 可選填預填文字，仍然要喺 WhatsApp 按發送。
+6. 同一則如果係公司總機，下面「發送回覆」仍然用公司號碼經 Cloud API 發出。
+7. 用另一位唔負責呢則嘅同事開同一條網址，應係找不到。
+8. Facebook／Instagram 留言唔應出現「用我嘅 WhatsApp 發送畀客戶」。
+9. 客戶傳圖片或語音之後，留言頁可以直接睇圖同播放語音（要已設定 `WHATSAPP_ACCESS_TOKEN`，媒體先下載到）。
+10. 喺同一頁可以「錄製語音」或上傳相片、影片。公司總機會用 `85221740001` 發出。同事個人號只會留喺收件箱播放，檔案要再喺自己 WhatsApp 傳送。
+
+## 相片、影片同語音
+
+客戶經 WhatsApp 傳圖片、影片或語音（包括 voice note）會入庫。Messenger／Instagram 私訊同 Facebook 留言如果 webhook 帶媒體連結，亦會下載。檔案放喺資料庫，唔係 Render 臨時硬碟。`GET /media/:id` 要登入，而且跟返留言可見範圍。
+
+同事可以喺留言頁「傳送相片、影片或語音」上傳，或者撳「錄製語音」。播放器就喺對話入面。
+
+| 渠道 | 出站 |
+|------|------|
+| 公司 WhatsApp 總機 | Cloud API 上傳再發送。瀏覽器 WebM 錄音會轉成 Ogg Opus。成功 `sent` |
+| 同事個人 WhatsApp | 只儲存同播放，標 `stub`。請用上面深連結，喺自己 WhatsApp 傳送檔案 |
+| Facebook／Instagram 私訊 | Graph `message_attachments` 再發私訊 |
+| 公開留言、28car、官網 | 檔案留喺收件箱，標 `failed`，唔會假裝發咗去客戶 |
+
+文字回覆、公司 Cloud API 文字、Facebook／Instagram 公開留言文字回覆都維持原樣。
+
+本地：
+
+```bash
+npm run demo:inbox-media
+```
+
+公司總機嘅文字同媒體都用下面呢組環境變數。
+
 ### Tony 要喺 Render 設定
 
 服務：`glorious-internal-inbox`。喺 Environment 加：
@@ -706,7 +755,7 @@ Render 免費服務係共用 IP，唔好在未接代理之前打開旗標。登�
 | 客戶所在 | 而家 |
 |----------|------|
 | 公司 WhatsApp，包括由網站或 IG 撳過嚟 | 有客戶號碼就 Cloud API 發送；成功 `sent`，失敗 `failed` |
-| 同事個人 WhatsApp | 收件箱儲存，標 `stub`（唔用公司 Cloud API 代發） |
+| 同事個人 WhatsApp | 文字同媒體都唔經 Cloud API。頁面有深連結，用同事自己嘅 WhatsApp 發畀客戶。媒體留喺收件箱播放 |
 | 28car 留言板 | 買家帖入庫為 `entry_path=28car_board`；代發要代理同旗標，否則排入隊列 |
 | 28car 留言區 WhatsApp | 公司 WhatsApp 入站，`entry_path=28car_wa_link`，仍然走現有 Cloud API |
 | 東榮官網留言 | 可用 `site-comment` webhook 入庫；出站 stub |

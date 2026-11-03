@@ -185,4 +185,25 @@ CREATE TABLE IF NOT EXISTS car_egress_state (
   last_operation TEXT,
   updated_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS message_media (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+  reply_id INTEGER REFERENCES comment_replies(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'audio')),
+  mime_type TEXT NOT NULL,
+  byte_size INTEGER NOT NULL DEFAULT 0,
+  is_voice INTEGER NOT NULL DEFAULT 0,
+  external_id TEXT,
+  sha256 TEXT,
+  fetch_error TEXT,
+  data BLOB,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_media_comment ON message_media(comment_id, id);
+CREATE INDEX IF NOT EXISTS idx_message_media_reply ON message_media(reply_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_message_media_inbound_external
+  ON message_media(comment_id, external_id)
+  WHERE external_id IS NOT NULL AND reply_id IS NULL;
 `;

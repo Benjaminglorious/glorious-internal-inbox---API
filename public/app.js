@@ -522,6 +522,149 @@
       });
   }
 
+  function bindStaffMedia() {
+    var root = document.getElementById("staff-media");
+    if (!root) return;
+    var commentId = root.getAttribute("data-comment-id");
+    if (!commentId || !/^\d+$/.test(commentId)) return;
+    var status = document.getElementById("staff-media-status");
+    var caption = document.getElementById("staff-media-caption");
+    var fileInput = document.getElementById("staff-media-file");
+    var recordBtn = document.getElementById("staff-media-record");
+    var sendBtn = document.getElementById("staff-media-send");
+    if (!status || !fileInput || !recordBtn || !sendBtn) return;
+
+    var pending = null;
+    var recorder = null;
+    var stream = null;
+
+    function setStatus(text) {
+      status.textContent = text || "";
+    }
+
+    function fileToBase64(file) {
+      return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function () {
+          var result = String(reader.result || "");
+          var comma = result.indexOf(",");
+          resolve(comma >= 0 ? result.slice(comma + 1) : result);
+        };
+        reader.onerror = function () {
+          reject(new Error("讀唔到檔案"));
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    fileInput.addEventListener("change", function () {
+      var file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      pending = { file: file, voice: false };
+      sendBtn.disabled = false;
+      setStatus("已揀好「" + file.name + "」。撳發送媒體。");
+    });
+
+    recordBtn.addEventListener("click", function () {
+      if (recorder && recorder.state === "recording") {
+        recorder.stop();
+        return;
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
+        setStatus("呢個瀏覽器未支援錄音。請上傳 ogg、m4a 或 mp3。");
+        return;
+      }
+      navigator.mediaDevices
+        .getUserMedia({ audio: true })
+        .then(function (mic) {
+          stream = mic;
+          var mime = "";
+          var candidates = ["audio/ogg;codecs=opus", "audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
+          for (var i = 0; i < candidates.length; i++) {
+            if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(candidates[i])) {
+              mime = candidates[i];
+              break;
+            }
+          }
+          recorder = mime ? new MediaRecorder(mic, { mimeType: mime }) : new MediaRecorder(mic);
+          var chunks = [];
+          recorder.ondataavailable = function (event) {
+            if (event.data && event.data.size) chunks.push(event.data);
+          };
+          recorder.onstop = function () {
+            if (stream) {
+              stream.getTracks().forEach(function (track) {
+                track.stop();
+              });
+              stream = null;
+            }
+            var type = recorder.mimeType || mime || "audio/webm";
+            pending = { file: new Blob(chunks, { type: type }), voice: true, name: "voice" };
+            sendBtn.disabled = false;
+            recordBtn.textContent = "錄製語音";
+            setStatus("已錄好語音。可以試聽之前先撳發送媒體。");
+          };
+          recorder.start();
+          recordBtn.textContent = "停止錄音";
+          setStatus("錄音中…再撳一次就停止。");
+        })
+        .catch(function () {
+          setStatus("未能使用麥克風。請允許錄音，或者改為上傳語音檔。");
+        });
+    });
+
+    sendBtn.addEventListener("click", function () {
+      if (!pending || !pending.file) return;
+      sendBtn.disabled = true;
+      setStatus("發送中…");
+      var file = pending.file;
+      var voice = pending.voice === true;
+      fileToBase64(file)
+        .then(function (data) {
+          return fetch("/api/comments/" + encodeURIComponent(commentId) + "/media-replies", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({
+              caption: caption && caption.value ? caption.value : "",
+              mime_type: file.type || "",
+              filename: file.name || (voice ? "voice" : "upload"),
+              is_voice: voice,
+              data_base64: data,
+            }),
+          });
+        })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            return { ok: res.ok, status: res.status, data: data };
+          });
+        })
+        .then(function (result) {
+          if (!result.ok) {
+            var message = result.data && result.data.error ? result.data.error : "未能發送媒體";
+            window.location.assign(
+              "/comments/" + encodeURIComponent(commentId) + "?error=" + encodeURIComponent(message) + "#staff-media"
+            );
+            return;
+          }
+          var delivery = result.data && result.data.reply ? result.data.reply.delivery_status : "stored";
+          window.location.assign(
+            "/comments/" +
+              encodeURIComponent(commentId) +
+              "?sent=1&delivery=" +
+              encodeURIComponent(delivery || "stored") +
+              "#thread"
+          );
+        })
+        .catch(function () {
+          sendBtn.disabled = false;
+          setStatus("未能發送媒體。請再試一次。");
+        });
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", bindStaffMedia);
+
   function dropPush() {
     if (!("serviceWorker" in navigator)) return Promise.resolve();
     return navigator.serviceWorker.ready.then(function (reg) {

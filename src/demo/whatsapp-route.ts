@@ -313,14 +313,28 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
           id: "wamid.IMAGE-ONLY",
           timestamp: "1749416383",
           type: "image",
-          image: { mime_type: "image/jpeg", sha256: "abc", id: "media-1" },
+          image: { mime_type: "image/jpeg", sha256: "abc", id: "123456789000001" },
         },
       ])
     );
-    const imageRow = appDb.prepare(`SELECT id FROM comments WHERE external_id = 'wamid.IMAGE-ONLY'`).get();
+    const imageRow = appDb.prepare(`SELECT id, body FROM comments WHERE external_id = 'wamid.IMAGE-ONLY'`).get() as
+      | { id: number; body: string }
+      | undefined;
+    const imageMedia = imageRow
+      ? (appDb
+          .prepare(`SELECT byte_size, fetch_error FROM message_media WHERE comment_id = ?`)
+          .get(imageRow.id) as { byte_size: number; fetch_error: string | null } | undefined)
+      : undefined;
     check(
-      "純媒體訊息忽略（唔下載）",
-      imageOnly.status === 200 && imageOnly.json.ok === true && imageOnly.json.ignored === true && imageRow == null
+      "純圖片會入庫，未有 token 就唔下載",
+      imageOnly.status === 200 &&
+        imageOnly.json.ok === true &&
+        imageOnly.json.ignored !== true &&
+        imageRow?.body === "［圖片］" &&
+        !!imageMedia &&
+        imageMedia.byte_size === 0 &&
+        (imageMedia.fetch_error || "").includes("WHATSAPP_ACCESS_TOKEN"),
+      imageRow ? `${imageRow.body} ${imageMedia?.fetch_error || ""}` : "未入庫"
     );
 
     const mixedId = "wamid.MIX-TEXT";
@@ -339,22 +353,25 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
           id: "wamid.MIX-IMG",
           timestamp: "1749416384",
           type: "image",
-          image: { mime_type: "image/jpeg", sha256: "def", id: "media-2" },
+          image: { mime_type: "image/jpeg", sha256: "def", id: "123456789000002" },
         },
       ])
     );
     const mixedText = appDb.prepare(`SELECT body FROM comments WHERE external_id = ?`).get(mixedId) as
       | { body: string }
       | undefined;
-    const mixedImage = appDb.prepare(`SELECT id FROM comments WHERE external_id = 'wamid.MIX-IMG'`).get();
+    const mixedImage = appDb.prepare(`SELECT id, body FROM comments WHERE external_id = 'wamid.MIX-IMG'`).get() as
+      | { id: number; body: string }
+      | undefined;
     const mixedResults = Array.isArray(mixed.json.results) ? mixed.json.results : [];
     check(
-      "文字加圖片只入文字",
+      "文字同圖片分別入庫",
       mixed.status === 200 &&
         mixed.json.ok === true &&
-        mixedResults.length === 1 &&
+        mixedResults.length === 2 &&
         mixedText?.body === "文字同圖" &&
-        mixedImage == null
+        mixedImage?.body === "［圖片］",
+      `results=${mixedResults.length} image=${mixedImage?.body || "none"}`
     );
 
     delete process.env.WEBHOOK_VERIFY_TOKEN;

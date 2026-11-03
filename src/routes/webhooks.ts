@@ -15,6 +15,7 @@ import {
   queryString,
   webhookTokenMatches,
 } from "../services/webhook-auth";
+import { ingestRemoteAttachments, ingestWhatsAppGraphMedia } from "../services/media-fetch";
 import { parseWhatsAppWebhookPayload, routeWhatsAppInbound } from "../services/whatsapp";
 
 export const whatsappWebhookRouter = Router();
@@ -56,9 +57,10 @@ whatsappWebhookRouter.get("/", hubVerify);
  * - 有 META_APP_SECRET 時驗證 X-Hub-Signature-256（失敗回 401）。
  * - 未設定 secret 時跳過簽名。
  * - Meta 推送唔帶 X-Webhook-Token；若請求帶咗 token 或 Bearer，就必須啱。
- * 簡單 JSON stub 仍然可以帶 token 試派單。呢度唔會打去 Meta／媒體下載。
+ * 簡單 JSON stub 仍然可以帶 token 試派單。
+ * 有圖片、影片或語音時，入庫之後先用 media id 下載（要有 WHATSAPP_ACCESS_TOKEN）。
  */
-whatsappWebhookRouter.post("/", (req: Request, res: Response) => {
+whatsappWebhookRouter.post("/", async (req: Request, res: Response) => {
   const auth = authorizeMetaPost(req);
   if (!auth.ok) {
     res.status(auth.status).json({ ok: false, error: auth.error });
@@ -75,10 +77,21 @@ whatsappWebhookRouter.post("/", (req: Request, res: Response) => {
     return;
   }
 
-  const results = parsed.messages.map((message) => {
+  const results = [];
+  for (const message of parsed.messages) {
     const routed = routeWhatsAppInbound(message);
-    if (!routed.ok) return { ok: false as const, error: routed.error };
-    return {
+    if (!routed.ok) {
+      results.push({ ok: false as const, error: routed.error });
+      continue;
+    }
+    if (message.media) {
+      try {
+        await ingestWhatsAppGraphMedia(routed.comment.id, message.media);
+      } catch (err) {
+        console.error("[whatsapp] 媒體未儲存", err instanceof Error ? err.message : err);
+      }
+    }
+    results.push({
       ok: true as const,
       outcome: routed.outcome,
       comment_id: routed.comment.id,
@@ -88,8 +101,8 @@ whatsappWebhookRouter.post("/", (req: Request, res: Response) => {
       intake_kind: routed.comment.intake_kind,
       origin_site: routed.comment.origin_site,
       entry_path: routed.comment.entry_path,
-    };
-  });
+    });
+  }
   const anyOk = results.some((result) => result.ok);
   res.status(anyOk ? 200 : 400).json({ ok: anyOk, results });
 });
@@ -229,6 +242,13 @@ metaWebhookRouter.post("/", async (req: Request, res: Response) => {
       const upserted = upsertSiteComment(item);
       if (!upserted.ok) return { ok: false as const, error: upserted.error, external_id: item.external_id };
       await attachParentPost(item, upserted.comment.id);
+      if (item.attachments?.length) {
+        try {
+          await ingestRemoteAttachments(upserted.comment.id, item.attachments);
+        } catch (err) {
+          console.error("[meta] 媒體未儲存", err instanceof Error ? err.message : err);
+        }
+      }
       return {
         ok: true as const,
         comment_id: upserted.comment.id,

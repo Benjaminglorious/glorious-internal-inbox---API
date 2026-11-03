@@ -1,5 +1,6 @@
 import { COMPANY_WHATSAPP_LABEL, COMPANY_WHATSAPP_PHONE } from "../config";
 import { db } from "../db";
+import { placeholderFor, type MediaKind } from "./media";
 import {
   infer28carWaLink,
   normalizeOriginSite,
@@ -26,12 +27,22 @@ const MAX_STORED_BODY = 20000;
 const MAX_EXTERNAL_ID = 200;
 const MAX_LABEL = 80;
 
+export interface InboundWhatsAppMedia {
+  kind: MediaKind;
+  graphMediaId: string;
+  mimeType: string;
+  isVoice: boolean;
+  sha256: string | null;
+}
+
 export interface RouteWhatsAppInboundInput {
   toPhone: string;
   fromPhone: string;
   body: string;
   externalId?: string | null;
   authorName?: string | null;
+  /** Cloud API 媒體 id。入庫之後先下載，派單唔靠呢個欄。 */
+  media?: InboundWhatsAppMedia | null;
   /**
    * 客戶係由邊個網站撳 WhatsApp 或簡介連結。
    * 可傳 `instagram` 或別名 `ig`。空則當直接 WhatsApp。
@@ -156,6 +167,144 @@ export function activeStaffLinesByStaffId(): Map<number, WhatsAppLine> {
     }
   }
   return map;
+}
+
+const THREAD_PHONES = /^wa:(\d{8,15}):(\d{8,15})$/;
+/** WhatsApp `text=` 預填。中文 percent-encoding 會拉長 URL，所以收短過收件箱回覆。 */
+const STAFF_WA_PREFILL_MAX = 500;
+
+function acceptableCustomerPhone(digits: string, linePhone: string): string {
+  if (!digits || digits.length < MIN_PHONE_DIGITS || digits.length > MAX_PHONE_DIGITS) return "";
+  if (digits === COMPANY_WHATSAPP_PHONE) return "";
+  if (linePhone && digits === linePhone) return "";
+  return digits;
+}
+
+/**
+ * WhatsApp 對話入面嘅客戶號碼（只留數字）。
+ * 優先 `wa_from_phone`，否則 `external_id` 嘅 `wa:{收件}:{寄件}`。
+ * 公司總機、收件線路本身、以及唔係 WhatsApp 嘅留言都唔當客戶。
+ * 只係讀號碼，唔會打去 Cloud API。
+ */
+export function resolveWhatsAppCustomerPhone(input: {
+  source: string;
+  externalId?: string | null;
+  waFromPhone?: string | null;
+  waToPhone?: string | null;
+}): string | null {
+  if (input.source !== "whatsapp") return null;
+  const thread = THREAD_PHONES.exec((input.externalId ?? "").trim());
+  const linePhone = normalizePhone(input.waToPhone) || thread?.[1] || "";
+  const stored = acceptableCustomerPhone(normalizePhone(input.waFromPhone), linePhone);
+  if (stored) return stored;
+  const fromThread = acceptableCustomerPhone(thread?.[2] ?? "", linePhone);
+  return fromThread || null;
+}
+
+/**
+ * 打開同事而家登入嘅 WhatsApp，同客戶開對話。
+ * `phone` 係客戶號碼，唔係同事號碼，亦唔係公司總機。
+ * 有 `text` 先至加預填。空字串唔加 `text=`。公司總機號碼會拒絕。
+ */
+export function staffToCustomerWhatsAppUrl(customerDigits: string, text?: string | null): string | null {
+  const phone = acceptableCustomerPhone(normalizePhone(customerDigits), "");
+  if (!phone) return null;
+  const base = `https://api.whatsapp.com/send?phone=${phone}`;
+  const trimmed = (text ?? "").replace(/\u0000/g, "").trim();
+  if (!trimmed) return base;
+  return `${base}&text=${encodeURIComponent(trimmed.slice(0, STAFF_WA_PREFILL_MAX))}`;
+}
+
+export interface StaffWhatsAppReplyLink {
+  available: boolean;
+  customer_phone: string | null;
+  /** 冇預填。頁面表格可以另加 `text`。 */
+  url: string | null;
+  viewer_phone: string | null;
+  viewer_label: string | null;
+  contacted_phone: string | null;
+  /** 客戶打去邊條線路。可直接顯示。 */
+  contacted_label: string | null;
+  reason: string | null;
+}
+
+function contactedLineCopy(phone: string, lines: WhatsAppLine[]): { phone: string | null; label: string | null } {
+  if (!phone) return { phone: null, label: null };
+  if (phone === COMPANY_WHATSAPP_PHONE) {
+    return {
+      phone,
+      label: `客戶打去公司總機 ${formatPhoneE164(phone)}。系統內「發送回覆」仍然用呢個公司號碼。你亦可以用自己嘅 WhatsApp 直接回覆客戶。`,
+    };
+  }
+  const line = lines.find((item) => item.phone_e164 === phone);
+  if (line?.kind === "staff") {
+    const who = line.staff_display_name || line.display_label || "同事";
+    return {
+      phone,
+      label: `客戶用 WhatsApp 搵${who}（${formatPhoneE164(phone)}）。`,
+    };
+  }
+  return { phone, label: `客戶打去 ${formatPhoneE164(phone)}。` };
+}
+
+/**
+ * 登入同事可唔可以用自己嘅 WhatsApp 開呢則客戶對話。
+ * 可見範圍由呼叫方先檢查。呢度唔會因為同事未綁定號碼而收起連結：
+ * 連結打開嘅係裝置上而家登入嘅 WhatsApp，綁定號碼只係提示同事用邊個號。
+ */
+export function staffWhatsAppReplyForViewer(
+  comment: {
+    source: string;
+    external_id: string;
+    wa_from_phone: string | null;
+    wa_to_phone: string | null;
+  },
+  viewerStaffId: number
+): StaffWhatsAppReplyLink {
+  const lines = listWhatsAppLines();
+  const viewerLine = lines.find(
+    (line) => line.is_active && line.kind === "staff" && line.staff_id === viewerStaffId
+  );
+  const thread = THREAD_PHONES.exec((comment.external_id ?? "").trim());
+  const contactedPhone = normalizePhone(comment.wa_to_phone) || thread?.[1] || "";
+  const contacted = contactedLineCopy(contactedPhone, lines);
+  const base = {
+    viewer_phone: viewerLine?.phone_e164 ?? null,
+    viewer_label: viewerLine?.display_label ?? null,
+    contacted_phone: contacted.phone,
+    contacted_label: contacted.label,
+  };
+  if (comment.source !== "whatsapp") {
+    return {
+      ...base,
+      available: false,
+      customer_phone: null,
+      url: null,
+      reason: "呢則唔係 WhatsApp 聯絡",
+    };
+  }
+  const customer = resolveWhatsAppCustomerPhone({
+    source: comment.source,
+    externalId: comment.external_id,
+    waFromPhone: comment.wa_from_phone,
+    waToPhone: comment.wa_to_phone,
+  });
+  if (!customer) {
+    return {
+      ...base,
+      available: false,
+      customer_phone: null,
+      url: null,
+      reason: "未有客戶 WhatsApp 號碼，開唔到同事 WhatsApp",
+    };
+  }
+  return {
+    ...base,
+    available: true,
+    customer_phone: customer,
+    url: staffToCustomerWhatsAppUrl(customer),
+    reason: null,
+  };
 }
 
 function findLineByPhone(phone: string, activeOnly: boolean): LineRow | undefined {
@@ -478,6 +627,42 @@ function messageBody(message: Record<string, unknown>): string {
   return "";
 }
 
+function graphMedia(message: Record<string, unknown>): (InboundWhatsAppMedia & { caption: string }) | null {
+  const rawType = asString(message.type).toLowerCase();
+  const type = rawType === "voice" ? "audio" : rawType === "sticker" ? "sticker" : rawType;
+  if (type !== "image" && type !== "video" && type !== "audio" && type !== "sticker") return null;
+  const block = asRecord(message[type]);
+  if (!block) return null;
+  const id = asString(block.id).trim();
+  if (!/^\d{5,32}$/.test(id)) return null;
+  const kind: MediaKind = type === "video" ? "video" : type === "audio" ? "audio" : "image";
+  const mime = asString(block.mime_type).trim().toLowerCase();
+  const voice = type === "audio" && (block.voice === true || block.voice === "true" || rawType === "voice");
+  const sha = asString(block.sha256).trim().toLowerCase();
+  return {
+    kind,
+    graphMediaId: id,
+    mimeType: mime,
+    isVoice: voice,
+    sha256: /^[a-f0-9]{64}$/.test(sha) ? sha : null,
+    caption: asString(block.caption).trim(),
+  };
+}
+
+function messageContent(
+  message: Record<string, unknown>
+): { body: string; media: InboundWhatsAppMedia | null } | null {
+  const text = messageBody(message).trim();
+  const media = graphMedia(message);
+  if (media) {
+    const { caption, ...stored } = media;
+    const body = text || caption || placeholderFor(stored.kind, stored.isVoice);
+    return { body, media: stored };
+  }
+  if (!text) return null;
+  return { body: text, media: null };
+}
+
 function classifyWhatsAppEntry(
   explicit: unknown,
   originSite: OriginSite | null,
@@ -550,8 +735,8 @@ function parseMetaEntries(entries: unknown[]): { messages: RouteWhatsAppInboundI
       for (const message of value.messages) {
         const messageRecord = asRecord(message);
         if (!messageRecord) continue;
-        const body = messageBody(messageRecord).trim();
-        if (!body) continue;
+        const content = messageContent(messageRecord);
+        if (!content) continue;
         const fromPhone = asString(messageRecord.from);
         const referral = referralUrlFrom(messageRecord);
         const origin = inboundOrigin(messageRecord);
@@ -565,11 +750,12 @@ function parseMetaEntries(entries: unknown[]): { messages: RouteWhatsAppInboundI
         out.push({
           toPhone,
           fromPhone,
-          body,
+          body: content.body,
           externalId: asString(messageRecord.id) || null,
           authorName: names.get(normalizePhone(fromPhone)) ?? null,
           originSite: entry.originSite,
           entryPath: entry.entryPath,
+          media: content.media,
         });
       }
     }

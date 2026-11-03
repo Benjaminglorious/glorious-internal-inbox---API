@@ -15,6 +15,8 @@
  * - Instagram DM：同一個 Page messages 端點，recipient 係 IGSID，唔帶 messaging_type
  */
 import { metaGraphVersion, metaPageAccessToken, metaPageId } from "../config";
+import type { MediaKind } from "../services/media";
+import { encodeFormData } from "./multipart";
 import type { OutboundReplyRequest, OutboundReplyResult } from "./outbound";
 
 const GRAPH_TIMEOUT_MS = 20_000;
@@ -296,4 +298,100 @@ export async function queueMetaSurfaceReply(
     const message = err instanceof Error ? err.message : "未知錯誤";
     return failed(provider, clipError(`發送失敗：${message}`, metaPageAccessToken()), input.commentId);
   }
+}
+
+/**
+ * Messenger／Instagram 私訊附帶相片、影片或語音。
+ * 公開留言維持文字（queueMetaSurfaceReply），呢度唔會改留言回覆。
+ */
+export async function queueMetaDmMedia(input: {
+  channel: MetaChannel;
+  commentId: number;
+  externalId: string;
+  metaSenderId: string | null;
+  metaSurface: string | null;
+  kind: MediaKind;
+  mimeType: string;
+  bytes: Buffer;
+}): Promise<OutboundReplyResult> {
+  const provider = `${input.channel}_graph`;
+  const label = CHANNEL_LABEL[input.channel];
+  const target = resolveMetaReplyTarget({
+    channel: input.channel,
+    externalId: input.externalId,
+    metaSenderId: input.metaSenderId,
+    metaSurface: input.metaSurface,
+  });
+  if (!target.ok) return failed(provider, target.error, input.commentId);
+  if (target.kind !== "message") {
+    return failed(provider, "公開留言只可以回文字。相片、影片同語音請用私訊或 WhatsApp。", input.commentId);
+  }
+
+  const accessToken = metaPageAccessToken();
+  if (!accessToken) {
+    return failed(`${input.channel}_unconfigured`, `META_PAGE_ACCESS_TOKEN 未設定，${label} 媒體未發送`, input.commentId);
+  }
+  const version = metaGraphVersion();
+  if (!version.ok) return failed(`${input.channel}_unconfigured`, version.error, input.commentId);
+  const pageId = metaPageId();
+  if (!pageId) return failed(`${input.channel}_unconfigured`, "META_PAGE_ID 未設定，私訊未發送", input.commentId);
+  if (!PAGE_ID.test(pageId)) {
+    return failed(`${input.channel}_unconfigured`, "META_PAGE_ID 格式不正確，私訊未發送", input.commentId);
+  }
+
+  const attachmentType = input.kind === "audio" ? "audio" : input.kind;
+  const form = encodeFormData([
+    {
+      name: "message",
+      value: JSON.stringify({
+        attachment: { type: attachmentType, payload: { is_reusable: true } },
+      }),
+    },
+    {
+      name: "filedata",
+      filename: input.kind === "audio" ? "voice.ogg" : input.kind === "video" ? "video.mp4" : "photo.jpg",
+      contentType: input.mimeType,
+      value: input.bytes,
+    },
+  ]);
+
+  let uploaded: Response;
+  try {
+    uploaded = await fetch(`${GRAPH_HOST}/${version.version}/${encodeURIComponent(pageId)}/message_attachments`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": form.contentType },
+      body: new Uint8Array(form.body),
+      signal: AbortSignal.timeout(GRAPH_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "網絡錯誤";
+    return failed(provider, clipError(`${label} 媒體上傳失敗：${message}`, accessToken), input.commentId);
+  }
+  const uploadRaw = await uploaded.text();
+  let uploadParsed: unknown = null;
+  try {
+    uploadParsed = uploadRaw ? (JSON.parse(uploadRaw) as unknown) : null;
+  } catch {
+    uploadParsed = null;
+  }
+  const uploadRecord = asRecord(uploadParsed);
+  const attachmentId =
+    uploadRecord && typeof uploadRecord.attachment_id === "string" ? uploadRecord.attachment_id.trim() : "";
+  if (!uploaded.ok || !attachmentId || (uploadRecord && uploadRecord.error)) {
+    return failed(provider, clipError(graphErrorMessage(uploaded.status, uploadParsed, uploadRaw), accessToken), input.commentId);
+  }
+
+  const payload: Record<string, unknown> = {
+    recipient: { id: target.recipientId },
+    message: { attachment: { type: attachmentType, payload: { attachment_id: attachmentId } } },
+  };
+  if (input.channel === "facebook") payload.messaging_type = "RESPONSE";
+  return postGraph({
+    provider,
+    commentId: input.commentId,
+    accessToken,
+    url: `${GRAPH_HOST}/${version.version}/${encodeURIComponent(pageId)}/messages`,
+    payload,
+    logDetail: `kind=media ${input.kind} to=${target.recipientId}`,
+  });
 }
