@@ -10,6 +10,9 @@ const MAX_BODY = 8000;
 const MAX_EXTERNAL_ID = 200;
 const MAX_AUTHOR = 120;
 const MAX_VEHICLE = 120;
+const MAX_POST_ID = 200;
+const MAX_POST_URL = 500;
+const MAX_POST_CAPTION = 500;
 
 /** 網站／FB／IG 留言來源（唔包括 whatsapp）。 */
 export const SITE_COMMENT_SOURCES = ["28car", "glorious_web", "facebook", "instagram"] as const;
@@ -39,6 +42,12 @@ export interface UpsertSiteCommentInput {
   meta_sender_id?: string | null;
   /** 公開留言 comment；私訊 message。 */
   meta_surface?: string | null;
+  /** Facebook post id 或 Instagram media id。只會寫入 facebook／instagram。 */
+  meta_post_id?: string | null;
+  /** 帖文 permalink。只接受 http(s)。 */
+  meta_post_permalink?: string | null;
+  /** 帖文內文或 caption 摘要。 */
+  meta_post_caption?: string | null;
 }
 
 export interface UpsertSiteCommentSuccess {
@@ -102,6 +111,35 @@ function cleanMetaSurface(value: unknown): MetaSurface | null {
   return isMetaSurface(value) ? value : null;
 }
 
+export function cleanMetaPostId(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) value = String(Math.trunc(value));
+  if (typeof value !== "string") return null;
+  const id = value.replace(/\u0000/g, "").trim();
+  if (!id || id.length > MAX_POST_ID) return null;
+  if (!/^[0-9A-Za-z_.:-]{1,200}$/.test(id)) return null;
+  return id;
+}
+
+export function cleanMetaPostPermalink(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.replace(/\u0000/g, "").trim();
+  if (!text || text.length > MAX_POST_URL) return null;
+  try {
+    const url = new URL(text);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function cleanMetaPostCaption(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return text.slice(0, MAX_POST_CAPTION);
+}
+
 /**
  * 入庫網站／FB／IG 留言（intake_kind=site_comment，origin_site=NULL）。
  * 以 (source, external_id) 冪等：已存在則更新內容，保留負責人；新留言用最少未完成同事派單。
@@ -154,6 +192,10 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
 
   const metaSenderId = cleanMetaSenderId(input.meta_sender_id);
   const metaSurface = cleanMetaSurface(input.meta_surface);
+  const storePost = source === "facebook" || source === "instagram";
+  const metaPostId = storePost ? cleanMetaPostId(input.meta_post_id) : null;
+  const metaPostPermalink = storePost ? cleanMetaPostPermalink(input.meta_post_permalink) : null;
+  const metaPostCaption = storePost ? cleanMetaPostCaption(input.meta_post_caption) : null;
 
   const run = db.transaction((): UpsertSiteCommentResult => {
     const existing = db
@@ -170,8 +212,9 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
         .prepare(
           `INSERT INTO comments (
              source, external_id, author_name, body, vehicle_ref, status, assignee_staff_id,
-             intake_kind, origin_site, entry_path, meta_sender_id, meta_surface
-           ) VALUES (?, ?, ?, ?, ?, 'open', ?, 'site_comment', NULL, ?, ?, ?)`
+             intake_kind, origin_site, entry_path, meta_sender_id, meta_surface,
+             meta_post_id, meta_post_permalink, meta_post_caption
+           ) VALUES (?, ?, ?, ?, ?, 'open', ?, 'site_comment', NULL, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           source,
@@ -182,7 +225,10 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
           assigneeStaffId,
           entryPath,
           metaSenderId,
-          metaSurface
+          metaSurface,
+          metaPostId,
+          metaPostPermalink,
+          metaPostCaption
         );
       const comment = getComment(Number(info.lastInsertRowid));
       if (!comment) return { ok: false, error: "入庫後讀唔返留言" };
@@ -196,16 +242,44 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
       (vehicleRef ?? null) !== (existing.vehicle_ref ?? null);
     if (changed && status === "done") status = "open";
 
-    db.prepare(
-      `UPDATE comments
-       SET author_name = ?, body = ?, vehicle_ref = ?, status = ?,
-           intake_kind = 'site_comment', origin_site = NULL,
-           entry_path = COALESCE(?, entry_path),
-           meta_sender_id = COALESCE(?, meta_sender_id),
-           meta_surface = COALESCE(?, meta_surface),
-           updated_at = datetime('now')
-       WHERE id = ?`
-    ).run(authorName, body, vehicleRef, status, entryPath, metaSenderId, metaSurface, existing.id);
+    if (storePost) {
+      db.prepare(
+        `UPDATE comments
+         SET author_name = ?, body = ?, vehicle_ref = ?, status = ?,
+             intake_kind = 'site_comment', origin_site = NULL,
+             entry_path = COALESCE(?, entry_path),
+             meta_sender_id = COALESCE(?, meta_sender_id),
+             meta_surface = COALESCE(?, meta_surface),
+             meta_post_id = COALESCE(?, meta_post_id),
+             meta_post_permalink = COALESCE(?, meta_post_permalink),
+             meta_post_caption = COALESCE(?, meta_post_caption),
+             updated_at = datetime('now')
+         WHERE id = ?`
+      ).run(
+        authorName,
+        body,
+        vehicleRef,
+        status,
+        entryPath,
+        metaSenderId,
+        metaSurface,
+        metaPostId,
+        metaPostPermalink,
+        metaPostCaption,
+        existing.id
+      );
+    } else {
+      db.prepare(
+        `UPDATE comments
+         SET author_name = ?, body = ?, vehicle_ref = ?, status = ?,
+             intake_kind = 'site_comment', origin_site = NULL,
+             entry_path = COALESCE(?, entry_path),
+             meta_sender_id = COALESCE(?, meta_sender_id),
+             meta_surface = COALESCE(?, meta_surface),
+             updated_at = datetime('now')
+         WHERE id = ?`
+      ).run(authorName, body, vehicleRef, status, entryPath, metaSenderId, metaSurface, existing.id);
+    }
 
     const comment = getComment(existing.id);
     if (!comment) return { ok: false, error: "更新後讀唔返留言" };
@@ -234,4 +308,33 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
     }
   }
   return result;
+}
+
+/**
+ * Graph 補回帖文內容或連結。只填空白欄，唔改留言時間，唔覆蓋 webhook 已有嘅值。
+ * 私訊同非 Meta 來源唔寫。
+ */
+export function fillMetaPostIfMissing(
+  id: number,
+  post: { id?: string | null; permalink?: string | null; caption?: string | null }
+): CommentWithAssignee | null {
+  const current = getComment(id);
+  if (!current) return null;
+  if (current.source !== "facebook" && current.source !== "instagram") return current;
+  const nextId = current.meta_post_id || cleanMetaPostId(post.id);
+  const nextLink = current.meta_post_permalink || cleanMetaPostPermalink(post.permalink);
+  const nextCaption = current.meta_post_caption || cleanMetaPostCaption(post.caption);
+  if (
+    nextId === current.meta_post_id &&
+    nextLink === current.meta_post_permalink &&
+    nextCaption === current.meta_post_caption
+  ) {
+    return current;
+  }
+  db.prepare(
+    `UPDATE comments
+     SET meta_post_id = ?, meta_post_permalink = ?, meta_post_caption = ?
+     WHERE id = ?`
+  ).run(nextId, nextLink, nextCaption, id);
+  return getComment(id);
 }

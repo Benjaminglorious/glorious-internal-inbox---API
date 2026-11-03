@@ -45,6 +45,7 @@ function openDatabase(): SqlDatabase {
   ensureWhatsAppPhoneColumns(sqlite);
   ensureEntryPathColumn(sqlite);
   ensureMetaReplyColumns(sqlite);
+  ensureMetaPostColumns(sqlite);
   backfillWhatsAppThreadPhones(sqlite);
   migrateCommentReplies(sqlite);
   return sqlite;
@@ -120,6 +121,15 @@ function ensureMetaReplyColumns(sqlite: DatabaseType): void {
   const cols = columnNames(sqlite, "comments");
   if (!cols.has("meta_sender_id")) sqlite.exec(`ALTER TABLE comments ADD COLUMN meta_sender_id TEXT`);
   if (!cols.has("meta_surface")) sqlite.exec(`ALTER TABLE comments ADD COLUMN meta_surface TEXT`);
+}
+
+/** Facebook／Instagram 公開留言所屬帖文。只加欄，舊列留空。 */
+function ensureMetaPostColumns(sqlite: DatabaseType): void {
+  const cols = columnNames(sqlite, "comments");
+  if (!cols.has("meta_post_id")) sqlite.exec(`ALTER TABLE comments ADD COLUMN meta_post_id TEXT`);
+  if (!cols.has("meta_post_permalink")) sqlite.exec(`ALTER TABLE comments ADD COLUMN meta_post_permalink TEXT`);
+  if (!cols.has("meta_post_caption")) sqlite.exec(`ALTER TABLE comments ADD COLUMN meta_post_caption TEXT`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_comments_meta_post ON comments(meta_post_id)`);
 }
 
 /** 舊庫加客戶 wa_id 同收件線路。只加欄，唔改派單、唔改號碼。 */

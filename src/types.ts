@@ -111,6 +111,12 @@ export interface Comment {
   meta_sender_id: string | null;
   /** 公開留言 comment；私訊 message。舊資料係 null，出站會再睇 external_id。 */
   meta_surface: MetaSurface | null;
+  /** Facebook post id（通常係 pageId_postId）或 Instagram media id。私訊同舊列係 null。 */
+  meta_post_id: string | null;
+  /** 帖文 permalink。Webhook 或 Graph 冇提供就係 null。 */
+  meta_post_permalink: string | null;
+  /** 帖文內文或 caption 摘要。冇就係 null。 */
+  meta_post_caption: string | null;
   /**
    * 28car_board：客戶寫喺網頁留言區。
    * 28car_wa_link：客戶撳咗留言區入面嘅 WhatsApp 連結，入公司 WhatsApp。

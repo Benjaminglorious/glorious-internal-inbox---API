@@ -1,18 +1,28 @@
 import { db } from "../db";
+import { ENTRY_LABEL, ORIGIN_LABEL, SOURCE_LABEL, intakeSummary } from "../labels";
 import type {
   CommentSource,
   CommentStatus,
   CommentStatusFilter,
   CommentWithAssignee,
   DeliveryStatus,
-  IntakeKind,
   EntryPath,
+  IntakeKind,
   OriginFilter,
   OriginSite,
   ReplyDirection,
   StaffPublic,
 } from "../types";
-import { isDeliveryStatus, isEntryPath, isIntakeKind, isMetaSurface, isOriginSite } from "../types";
+import {
+  COMMENT_SOURCES,
+  ENTRY_PATHS,
+  ORIGIN_SITES,
+  isDeliveryStatus,
+  isEntryPath,
+  isIntakeKind,
+  isMetaSurface,
+  isOriginSite,
+} from "../types";
 
 /** 已登入嘅人。管理員見全部（包括未派）；在職同事只見 assignee 係自己嘅留言。 */
 export interface CommentViewer {
@@ -38,6 +48,20 @@ export interface CommentFilters {
   staffId?: number;
   /** 有傳而且唔係管理員時，強制只返回派咗畀該同事嘅留言。 */
   viewer?: CommentViewer;
+  /** 關鍵字。空白當冇搜尋。最長見 normalizeInboxQuery。 */
+  q?: string;
+}
+
+/** 搜尋框同 API `q` 嘅上限，避免超長 LIKE。 */
+export const INBOX_QUERY_MAX = 120;
+
+/** 去掉頭尾空白；空字串當冇搜尋。陣列取第一個。 */
+export function normalizeInboxQuery(raw: unknown): string | undefined {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, INBOX_QUERY_MAX);
 }
 
 const PREVIEW_LEN = 80;
@@ -112,6 +136,9 @@ function mapComment(row: CommentRow): CommentWithAssignee {
     wa_to_phone: asOptionalText(row.wa_to_phone),
     meta_sender_id: asOptionalText(row.meta_sender_id),
     meta_surface: isMetaSurface(row.meta_surface) ? row.meta_surface : null,
+    meta_post_id: asOptionalText(row.meta_post_id),
+    meta_post_permalink: asOptionalText(row.meta_post_permalink),
+    meta_post_caption: asOptionalText(row.meta_post_caption),
   };
 }
 
@@ -264,16 +291,161 @@ export function listComments(filters: CommentFilters = {}): CommentWithAssignee[
     where.push("c.assignee_staff_id = ?");
     params.push(filters.staffId);
   }
+  const query = normalizeInboxQuery(filters.q);
+  if (query) appendInboxSearch(where, params, query);
+
+  // 冇搜尋時未處理排前面，方便日常清箱。
+  // 有搜尋時按更新時間，已完成嘅舊對話先搵到。
+  const order = query
+    ? "c.updated_at DESC, c.id DESC"
+    : `CASE c.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,
+      c.created_at DESC,
+      c.id DESC`;
 
   const sql = `
     ${COMMENT_SELECT}
     WHERE ${where.join(" AND ")}
     ORDER BY
-      CASE c.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,
-      c.created_at DESC,
-      c.id DESC
+      ${order}
   `;
   return (db.prepare(sql).all(...params) as CommentRow[]).map(mapComment);
+}
+
+/**
+ * 關鍵字 LIKE。`%`／`_` 當字面字，唔當萬用字元。
+ * 典型收件箱用渲染時掃描就夠；可見範圍（負責人）仍然先套上。
+ */
+function appendInboxSearch(where: string[], params: unknown[], query: string): void {
+  const pattern = likeContains(query);
+  const parts = [
+    "lower(c.author_name) LIKE ? ESCAPE '!'",
+    "lower(c.body) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(c.vehicle_ref, '')) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(c.wa_from_phone, '')) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(c.wa_to_phone, '')) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(c.external_id, '')) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(s.display_name, '')) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(s.username, '')) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(c.source, '')) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(c.origin_site, '')) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(c.entry_path, '')) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(c.meta_post_id, '')) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(c.meta_post_permalink, '')) LIKE ? ESCAPE '!'",
+    "lower(COALESCE(c.meta_post_caption, '')) LIKE ? ESCAPE '!'",
+    `EXISTS (
+      SELECT 1 FROM comment_replies r
+      WHERE r.comment_id = c.id AND lower(r.body) LIKE ? ESCAPE '!'
+    )`,
+  ];
+  for (let i = 0; i < parts.length; i++) params.push(pattern);
+
+  const digits = query.replace(/\D/g, "");
+  if (digits.length >= 4) {
+    const digitPattern = likeContains(digits);
+    const phoneExpr = (column: string) =>
+      `replace(replace(replace(COALESCE(${column}, ''), '+', ''), '-', ''), ' ', '') LIKE ? ESCAPE '!'`;
+    parts.push(phoneExpr("c.wa_from_phone"), phoneExpr("c.wa_to_phone"));
+    params.push(digitPattern, digitPattern);
+  }
+
+  for (const clause of searchLabelClauses(query)) {
+    parts.push(clause.sql);
+    params.push(...clause.params);
+  }
+
+  where.push(`(${parts.join(" OR ")})`);
+}
+
+function likeContains(term: string): string {
+  const escaped = term.toLowerCase().replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_");
+  return `%${escaped}%`;
+}
+
+function compactSearch(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, "");
+}
+
+/** 完整標籤，或者查詢包含成個標籤。短字（例如「留言」）唔會順便命中所有標籤。 */
+function mentionsLabel(query: string, label: string): boolean {
+  const q = compactSearch(query);
+  const lab = compactSearch(label);
+  if (q.length < 2 || lab.length < 2) return false;
+  if (q === lab || q.includes(lab)) return true;
+  if (q.length >= 3 && (lab.endsWith(q) || lab.startsWith(q))) return true;
+  return false;
+}
+
+function isAlias(query: string, aliases: readonly string[]): boolean {
+  const q = compactSearch(query);
+  return aliases.some((alias) => q === compactSearch(alias));
+}
+
+function searchLabelClauses(query: string): Array<{ sql: string; params: unknown[] }> {
+  const clauses: Array<{ sql: string; params: unknown[] }> = [];
+  const seen = new Set<string>();
+  const add = (sql: string, params: unknown[] = []) => {
+    if (seen.has(sql)) return;
+    seen.add(sql);
+    clauses.push({ sql, params });
+  };
+
+  const sourceAliases: Partial<Record<CommentSource, readonly string[]>> = {
+    facebook: ["fb"],
+    instagram: ["ig"],
+    glorious_web: ["官網", "glorious"],
+    whatsapp: ["wa"],
+  };
+  for (const source of COMMENT_SOURCES) {
+    const aliases = sourceAliases[source] ?? [];
+    if (mentionsLabel(query, SOURCE_LABEL[source]) || mentionsLabel(query, source) || isAlias(query, aliases)) {
+      add("c.source = ?", [source]);
+    }
+  }
+  for (const origin of ORIGIN_SITES) {
+    const summary = intakeSummary({
+      source: "whatsapp",
+      intake_kind: "whatsapp_click",
+      origin_site: origin,
+    });
+    const aliases = sourceAliases[origin] ?? [];
+    if (
+      mentionsLabel(query, ORIGIN_LABEL[origin]) ||
+      mentionsLabel(query, summary) ||
+      mentionsLabel(query, origin) ||
+      isAlias(query, aliases)
+    ) {
+      add(
+        `((c.intake_kind = 'site_comment' AND c.source = ?) OR (c.intake_kind = 'whatsapp_click' AND c.origin_site = ?))`,
+        [origin, origin]
+      );
+    }
+  }
+  if (
+    mentionsLabel(query, "直接 WhatsApp") ||
+    mentionsLabel(query, "直接 WhatsApp（冇經網站或 IG）") ||
+    isAlias(query, ["直接"])
+  ) {
+    add("(c.source = 'whatsapp' AND c.origin_site IS NULL AND c.intake_kind = 'whatsapp_click')");
+  }
+  for (const entry of ENTRY_PATHS) {
+    if (mentionsLabel(query, ENTRY_LABEL[entry]) || mentionsLabel(query, entry)) {
+      add("c.entry_path = ?", [entry]);
+    }
+  }
+  if (mentionsLabel(query, "WhatsApp 聯絡") || isAlias(query, ["wa"])) {
+    add("c.intake_kind = ?", ["whatsapp_click"]);
+  }
+  if (
+    mentionsLabel(query, "IG 留言") ||
+    mentionsLabel(query, "東榮 IG 留言") ||
+    isAlias(query, ["ig"])
+  ) {
+    add("(c.intake_kind = 'site_comment' AND c.source = 'instagram')");
+  }
+  if (mentionsLabel(query, "網站留言")) {
+    add("(c.intake_kind = 'site_comment' AND c.source <> 'instagram')");
+  }
+  return clauses;
 }
 
 export function getComment(id: number): CommentWithAssignee | null {

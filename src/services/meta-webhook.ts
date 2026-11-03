@@ -53,26 +53,109 @@ function isOwnMetaActor(id: string): boolean {
   return (page !== "" && actor === page) || (ig !== "" && actor === ig);
 }
 
+interface MetaPostBits {
+  postId?: string | null;
+  postPermalink?: string | null;
+  postCaption?: string | null;
+}
+
 function pushItem(
   items: UpsertSiteCommentInput[],
   source: SiteCommentSource,
   externalId: string,
   authorName: string,
   body: string,
-  meta?: { senderId?: string; surface?: MetaSurface }
+  meta?: { senderId?: string; surface?: MetaSurface } & MetaPostBits
 ): void {
   const id = externalId.trim();
   const text = body.trim();
   if (!id || !text) return;
   const senderId = (meta?.senderId ?? "").trim();
+  const surface = meta?.surface ?? null;
+  const onPost = surface === "comment";
   items.push({
     source,
     external_id: id.slice(0, 200),
     author_name: (authorName.trim() || "未知用戶").slice(0, 120),
     body: text.slice(0, 8000),
     meta_sender_id: senderId || null,
-    meta_surface: meta?.surface ?? null,
+    meta_surface: surface,
+    meta_post_id: onPost ? meta?.postId ?? null : null,
+    meta_post_permalink: onPost ? meta?.postPermalink ?? null : null,
+    meta_post_caption: onPost ? meta?.postCaption ?? null : null,
   });
+}
+
+/**
+ * Facebook comment id 常常係 `{pageId}_{postId}_{commentId}`。
+ * 有三段或以上數字時，帖文 id 係頭兩段。兩段唔猜，避免把 comment id 當成帖文。
+ */
+export function inferFacebookPostId(commentExternalId: string): string | null {
+  const parts = commentExternalId.trim().split("_");
+  if (parts.length < 3) return null;
+  if (!parts.every((part) => /^\d{1,20}$/.test(part))) return null;
+  if (parts[0].length < 5 || parts[1].length < 5) return null;
+  return `${parts[0]}_${parts[1]}`;
+}
+
+function cleanWebhookPostId(value: string): string | null {
+  const id = value.trim();
+  if (!/^[0-9A-Za-z_.:-]{1,200}$/.test(id)) return null;
+  return id;
+}
+
+function cleanWebhookUrl(value: string): string | null {
+  const text = value.trim();
+  if (!text || text.length > 500) return null;
+  try {
+    const url = new URL(text);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function cleanWebhookCaption(value: string): string | null {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return text.slice(0, 500);
+}
+
+/** 由 feed／comments／media 物件抽出帖文編號、連結、內文。私訊唔經呢度。 */
+function readParentPost(
+  value: Record<string, unknown>,
+  commentId: string,
+  source: SiteCommentSource
+): MetaPostBits {
+  const post = asRecord(value.post);
+  const media = asRecord(value.media);
+  const explicit =
+    cleanWebhookPostId(asString(value.post_id)) ||
+    cleanWebhookPostId(asString(post?.id)) ||
+    cleanWebhookPostId(asString(media?.id)) ||
+    cleanWebhookPostId(asString(value.media_id));
+  let postId = explicit;
+  if (!postId && source === "facebook") {
+    const parent = cleanWebhookPostId(asString(value.parent_id));
+    if (parent && /^\d+_\d+$/.test(parent) && commentId.startsWith(`${parent}_`)) postId = parent;
+    if (!postId) postId = inferFacebookPostId(commentId);
+  }
+  const permalink = cleanWebhookUrl(
+    asString(post?.permalink_url) ||
+      asString(post?.permalink) ||
+      asString(media?.permalink) ||
+      asString(value.permalink_url) ||
+      asString(value.permalink)
+  );
+  const caption = cleanWebhookCaption(
+    asString(post?.message) ||
+      asString(post?.caption) ||
+      asString(media?.caption) ||
+      asString(post?.story) ||
+      asString(value.caption)
+  );
+  return { postId, postPermalink: permalink, postCaption: caption };
 }
 
 /** Page feed comment（field=feed, item=comment）。 */
@@ -89,6 +172,7 @@ function parseFeedChange(value: Record<string, unknown>, items: UpsertSiteCommen
   pushItem(items, "facebook", commentId, fromName(from), message, {
     senderId: actorId(from),
     surface: "comment",
+    ...readParentPost(value, commentId, "facebook"),
   });
 }
 
@@ -101,6 +185,7 @@ function parseIgCommentChange(value: Record<string, unknown>, items: UpsertSiteC
   pushItem(items, "instagram", commentId, fromName(from), text, {
     senderId: actorId(from),
     surface: "comment",
+    ...readParentPost(value, commentId, "instagram"),
   });
 }
 
@@ -157,6 +242,7 @@ function parseEntry(entry: Record<string, unknown>, objectType: string, items: U
           pushItem(items, "facebook", commentId, fromName(from), text, {
             senderId: actorId(from),
             surface: "comment",
+            ...readParentPost(value, commentId, "facebook"),
           });
         }
       }
