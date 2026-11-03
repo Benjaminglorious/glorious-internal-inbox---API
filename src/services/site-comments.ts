@@ -48,6 +48,8 @@ export interface UpsertSiteCommentInput {
   meta_post_permalink?: string | null;
   /** 帖文內文或 caption 摘要。 */
   meta_post_caption?: string | null;
+  /** 私訊或留言附帶嘅媒體。upsert 唔寫入 comments，webhook 另外下載。 */
+  attachments?: Array<{ kind: "image" | "video" | "audio"; url: string; isVoice: boolean }>;
 }
 
 export interface UpsertSiteCommentSuccess {

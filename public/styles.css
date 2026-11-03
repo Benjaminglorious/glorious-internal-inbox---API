@@ -106,7 +106,30 @@ input, select {
   color: #166534;
 }
 .btn.whatsapp.staff:hover { background: #d1fae5; text-decoration: none; }
-.wa-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn.whatsapp.own {
+  background: #064e3b;
+  border-color: #064e3b;
+  color: #ecfdf5;
+}
+.btn.whatsapp.own:hover { background: #065f46; text-decoration: none; color: #ecfdf5; }
+.wa-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.staff-wa-form { display: grid; gap: 10px; margin-top: 8px; }
+.staff-wa-form textarea,
+#staff-media input[type="text"] {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+.staff-wa-form textarea { min-height: 96px; }
+.bubble-media { margin-top: 8px; }
+.bubble-media img,
+.bubble-media video { max-width: min(100%, 420px); border-radius: 8px; display: block; }
+.bubble-media audio { width: min(100%, 420px); }
+.media-error { color: #b91c1c; font-size: 13px; margin: 6px 0 0; }
+.media-status:empty { display: none; }
+label.btn input[type="file"] { display: none; }
 .topbar .btn.ghost { color: #fff; }
 .error { color: #b91c1c; background: #fef2f2; padding: 8px 10px; border-radius: 8px; }
 .notice { color: #166534; background: #ecfdf3; padding: 8px 10px; border-radius: 8px; }

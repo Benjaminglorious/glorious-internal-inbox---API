@@ -29,14 +29,20 @@ const publicDir = path.join(process.cwd(), "public");
 
 app.set("trust proxy", 1);
 app.use(express.urlencoded({ extended: false }));
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
+app.use((req, res, next) => {
+  const url = req.originalUrl || req.url || "";
+  const mediaUpload = req.method === "POST" && /\/comments\/\d+\/media-replies(?:\?|$)/.test(url);
+  if (mediaUpload) {
+    return express.json({ limit: "28mb" })(req, res, next);
+  }
+  return express.json({
+    limit: "100kb",
+    verify: (innerReq, _res, buf) => {
       // Meta X-Hub-Signature-256 需要原始 bytes；有 META_APP_SECRET 時先用。
-      (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+      (innerReq as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
     },
-  })
-);
+  })(req, res, next);
+});
 
 app.get("/sw.js", (_req, res) => {
   res.setHeader("Cache-Control", "no-cache");

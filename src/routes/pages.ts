@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import { PASSWORD_CHANGED_MESSAGE, PASSWORD_CHANGE_ERRORS, changeOwnPassword } from "../auth/change-password";
 import { requireAuth, sessionViewer } from "../auth/middleware";
 import { verifyPassword } from "../auth/passwords";
-import { companyWhatsAppChatUrl, whatsAppSendUrl } from "../config";
+import { COMPANY_WHATSAPP_PHONE, companyWhatsAppChatUrl, whatsAppSendUrl } from "../config";
 import {
   DELIVERY_LABEL,
   ENTRY_LABEL,
@@ -27,6 +27,7 @@ import {
   updateStatus,
   reassign,
 } from "../services/comments";
+import { isPlaceholderBody, listMediaForComment, type MediaRecord } from "../services/media";
 import { createStaffReply, listReplies } from "../services/replies";
 import {
   activeStaffLinesByStaffId,
@@ -34,7 +35,12 @@ import {
   deactivateWhatsAppLine,
   formatPhoneE164,
   listWhatsAppLines,
+  normalizePhone,
+  resolveWhatsAppCustomerPhone,
+  staffToCustomerWhatsAppUrl,
+  staffWhatsAppReplyForViewer,
 } from "../services/whatsapp";
+import { sendMedia } from "./media-http";
 import {
   COMMENT_SOURCES,
   ORIGIN_FILTERS,
@@ -51,6 +57,10 @@ import {
 } from "../types";
 
 export const pagesRouter = Router();
+
+pagesRouter.get("/media/:id", requireAuth, (req: Request, res: Response) => {
+  void sendMedia(req, res);
+});
 
 function escapeHtml(s: string): string {
   return s
@@ -89,6 +99,87 @@ function whatsAppLinks(
   const staffHref = whatsAppSendUrl(line.phone_e164, ctx);
   const staff = `<a class="btn whatsapp staff" href="${escapeHtml(staffHref)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(line.display_label)}">同事 WhatsApp</a>`;
   return `<div class="wa-actions">${company}${staff}</div>`;
+}
+
+function customerReplyButton(
+  c: Pick<CommentWithAssignee, "source" | "external_id" | "wa_from_phone" | "wa_to_phone">
+): string {
+  const phone = resolveWhatsAppCustomerPhone({
+    source: c.source,
+    externalId: c.external_id,
+    waFromPhone: c.wa_from_phone,
+    waToPhone: c.wa_to_phone,
+  });
+  const href = phone ? staffToCustomerWhatsAppUrl(phone) : null;
+  if (!phone || !href) return "";
+  return `<a class="btn whatsapp own" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" title="用你而家登入嘅 WhatsApp 發畀 ${escapeHtml(formatPhoneE164(phone))}">回覆客戶</a>`;
+}
+
+function renderMediaBlocks(items: MediaRecord[]): string {
+  if (!items.length) return "";
+  return items
+    .map((item) => {
+      if (item.fetch_error || item.byte_size <= 0) {
+        return `<p class="media-error">${escapeHtml(item.fetch_error || "未能載入媒體")}</p>`;
+      }
+      const src = `/media/${item.id}`;
+      if (item.kind === "image") {
+        return `<div class="bubble-media"><img src="${src}" alt="圖片"></div>`;
+      }
+      if (item.kind === "video") {
+        return `<div class="bubble-media"><video controls preload="metadata" src="${src}"></video><p class="muted small">影片</p></div>`;
+      }
+      const label = item.is_voice ? "語音" : "錄音";
+      return `<div class="bubble-media"><p class="muted small">${escapeHtml(label)}</p><audio controls preload="metadata" src="${src}"></audio></div>`;
+    })
+    .join("");
+}
+
+function renderStaffWhatsAppPanel(c: CommentWithAssignee, viewerStaffId: number): string {
+  if (c.source !== "whatsapp") return "";
+  const link = staffWhatsAppReplyForViewer(c, viewerStaffId);
+  if (!link.available || !link.customer_phone) {
+    return `<section class="reply-panel" id="staff-wa">
+      <h2>用同事 WhatsApp 回覆客戶</h2>
+      <p class="muted small">${escapeHtml(link.reason || "未有客戶 WhatsApp 號碼，開唔到同事 WhatsApp。舊嘅 wamid 要等客戶再傳一則先至有號碼。")}</p>
+    </section>`;
+  }
+  const viewerLine = link.viewer_phone
+    ? `<p>你嘅 WhatsApp：<strong>${escapeHtml(formatPhoneE164(link.viewer_phone))}</strong>${
+        link.viewer_label ? `（${escapeHtml(link.viewer_label)}）` : ""
+      }。請喺已登入<strong>呢個號碼</strong>嘅手機或 WhatsApp 網頁打開。公司 Cloud API 只可以總機 ${COMPANY_WHATSAPP_PHONE} 代發，改唔到寄件人。</p>`
+    : `<p class="muted small">你未有啟用中嘅個人 WhatsApp。管理員可以喺「WhatsApp 線路」綁定。下面條連結會打開你而家登入嘅 WhatsApp；請唔好用公司總機 ${COMPANY_WHATSAPP_PHONE} 登入。</p>`;
+  return `<section class="reply-panel" id="staff-wa">
+    <h2>用同事 WhatsApp 回覆客戶</h2>
+    <p class="muted small">客人用 WhatsApp 搵同事時，同事要用自己嘅 WhatsApp 回覆。下面會開新分頁，由你而家登入嘅號碼發送。你仍然要喺 WhatsApp 按發送。</p>
+    ${link.contacted_label ? `<p>${escapeHtml(link.contacted_label)}</p>` : ""}
+    <p>客戶號碼：<strong>${escapeHtml(formatPhoneE164(link.customer_phone))}</strong></p>
+    ${viewerLine}
+    <form class="staff-wa-form" method="GET" action="https://api.whatsapp.com/send" target="_blank" referrerpolicy="no-referrer">
+      <input type="hidden" name="phone" value="${escapeHtml(link.customer_phone)}">
+      <label>預填訊息（可選）
+        <textarea name="text" maxlength="500" rows="4" placeholder="可留空。有字會預填喺你嘅 WhatsApp，客戶會見到。內部備註唔好寫喺度。"></textarea>
+      </label>
+      <button type="submit" class="btn whatsapp own">用我嘅 WhatsApp 發送畀客戶</button>
+    </form>
+  </section>`;
+}
+
+function mediaComposerHint(c: CommentWithAssignee): string {
+  if (c.source === "whatsapp") {
+    const line = normalizePhone(c.wa_to_phone);
+    if (line && line !== COMPANY_WHATSAPP_PHONE) {
+      return "呢條係同事個人 WhatsApp。系統可以儲存同播放語音、相片、影片，但唔可以經公司 Cloud API 代發。請用「用我嘅 WhatsApp」打開對話，再喺 WhatsApp 傳送。";
+    }
+    return `公司總機可以經 Cloud API 發送相片、影片同語音（用公司號碼 ${COMPANY_WHATSAPP_PHONE}）。同事個人號請用「用我嘅 WhatsApp」。`;
+  }
+  if ((c.source === "facebook" || c.source === "instagram") && c.meta_surface === "message") {
+    return "私訊可以經 Graph 發送相片、影片同語音。公開留言只可以回文字。";
+  }
+  if (c.source === "facebook" || c.source === "instagram") {
+    return "公開留言只可以回文字。上傳嘅媒體只會留喺收件箱，唔會發去帖文。";
+  }
+  return "呢個渠道未支援由系統代發媒體。上傳之後只會留喺收件箱，畀同事查看同播放。";
 }
 
 function requirePageAdmin(req: Request, res: Response): boolean {
@@ -429,7 +520,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
         <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span></td>
         <td class="when">${showTime(c.created_at)}</td>
         <td>${c.assignee_name ? escapeHtml(c.assignee_name) : "未派"}</td>
-        <td class="actions-cell"><a class="btn primary" href="/comments/${c.id}#reply">回覆</a>${whatsAppLinks(c, staffLines)}</td>
+        <td class="actions-cell"><a class="btn primary" href="/comments/${c.id}#reply">回覆</a>${customerReplyButton(c)}${whatsAppLinks(c, staffLines)}</td>
       </tr>`;
     })
     .join("");
@@ -520,7 +611,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     </div>
     <p class="muted small">搜尋會搵你睇到嘅留言同回覆：留言者、電話、內容、車輛、來源，以及 Facebook／Instagram 帖文編號、連結同內容。可以同上面嘅篩選一齊用。</p>
     <p class="muted small">時間欄同留言詳情嘅建立、更新、回覆時間都係香港時間（HKT，UTC+8）。「剛剛」「分鐘前」「昨天」按香港日曆計。資料庫仍然儲存 UTC。</p>
-    <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。回覆請入去留言，WhatsApp 按鈕只係次要。</p>
+    <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。回覆請入去留言。「回覆客戶」會打開你而家登入嘅 WhatsApp 發畀客戶。公司「WhatsApp」同「同事 WhatsApp」係聯絡總機或負責人，唔係發畀客戶。</p>
     <p class="muted small">快捷：${
       viewer.isAdmin ? `<a href="${qs({ mine: "1" })}">我的留言</a> · ` : ""
     }<a href="${qs({ status: "pending", mine: "" })}">擱置／未處理</a> ·
@@ -559,6 +650,15 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   const staff = listStaff().filter((s) => s.active);
   const staffLines = activeStaffLinesByStaffId();
   const replies = listReplies(c.id);
+  const media = listMediaForComment(c.id);
+  const customerMedia = media.filter((item) => item.reply_id == null);
+  const mediaByReply = new Map<number, MediaRecord[]>();
+  for (const item of media) {
+    if (item.reply_id == null) continue;
+    const list = mediaByReply.get(item.reply_id) ?? [];
+    list.push(item);
+    mediaByReply.set(item.reply_id, list);
+  }
   const error = typeof req.query.error === "string" ? req.query.error.slice(0, 500) : "";
   const sent = req.query.sent === "1";
   const deliveryQuery = typeof req.query.delivery === "string" ? req.query.delivery : "";
@@ -592,10 +692,13 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       const errorLine = reply.delivery_error
         ? `<p class="error small">${escapeHtml(reply.delivery_error)}</p>`
         : "";
+      const replyMedia = mediaByReply.get(reply.id) ?? [];
+      const showBody = reply.body && !(replyMedia.length && isPlaceholderBody(reply.body));
       return `<article class="bubble staff">
         <div class="who">同事 · ${escapeHtml(who)} · ${showTime(reply.created_at)} · ${escapeHtml(deliveryDetail(reply.delivery_status, c.source))}</div>
         ${errorLine}
-        <div class="bubble-body">${escapeHtml(reply.body)}</div>
+        ${showBody ? `<div class="bubble-body">${escapeHtml(reply.body)}</div>` : ""}
+        ${renderMediaBlocks(replyMedia)}
       </article>`;
     })
     .join("");
@@ -608,7 +711,11 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         ${renderSourceBadges(c)}
         <span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span>
       </div>
-      <p class="muted small">主要喺下面回覆。公司 WhatsApp 總機（有客戶號碼）會經 Cloud API 發送：成功標「已經 WhatsApp 發送」，失敗會寫低原因。同事個人線路、網站同 IG 留言仍然只係示範待發送。如果原本係未處理，會改做處理中，並且繼續出現喺「擱置／未處理」。</p>
+      <p class="muted small">${
+        c.source === "whatsapp"
+          ? `公司 WhatsApp 總機（有客戶號碼）會經 Cloud API 用 ${COMPANY_WHATSAPP_PHONE} 發送：成功標「已經 WhatsApp 發送」，失敗會寫低原因。客人用 WhatsApp 搵同事時，用「用我嘅 WhatsApp 發送畀客戶」打開你已綁定嘅個人 WhatsApp。相片、影片同語音可以喺下面播放同發送。如果原本係未處理，系統內回覆會改做處理中，並且繼續出現喺「擱置／未處理」。`
+          : "主要喺下面回覆。公司 WhatsApp 總機（有客戶號碼）會經 Cloud API 發送：成功標「已經 WhatsApp 發送」，失敗會寫低原因。Facebook、Instagram 有 Page token 就經 Graph 發送。如果原本係未處理，會改做處理中，並且繼續出現喺「擱置／未處理」。"
+      }</p>
       <dl class="meta">
         <dt>形式</dt><dd>${escapeHtml(intakeBadgeText(c.intake_kind, c.source))}</dd>
         <dt>相關網站</dt><dd>${escapeHtml(originText)}</dd>
@@ -627,9 +734,32 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         <h2>對話</h2>
         <article class="bubble customer">
           <div class="who">客戶 · ${escapeHtml(c.author_name)} · ${showTime(c.created_at)}</div>
-          <div class="bubble-body">${escapeHtml(c.body)}</div>
+          ${
+            customerMedia.length && isPlaceholderBody(c.body)
+              ? ""
+              : `<div class="bubble-body">${escapeHtml(c.body)}</div>`
+          }
+          ${renderMediaBlocks(customerMedia)}
         </article>
         ${thread || `<p class="muted small">未有同事回覆。</p>`}
+      </section>
+
+      ${renderStaffWhatsAppPanel(c, req.session.staffId ?? 0)}
+
+      <section class="reply-panel" id="staff-media" data-comment-id="${c.id}">
+        <h2>傳送相片、影片或語音</h2>
+        <p class="muted small">${escapeHtml(mediaComposerHint(c))}</p>
+        <p class="media-status" id="staff-media-status" role="status"></p>
+        <label>說明（可選。相片同影片會一併發給支援嘅渠道；語音說明只顯示喺收件箱）
+          <input id="staff-media-caption" type="text" maxlength="1000" placeholder="可留空">
+        </label>
+        <div class="wa-actions">
+          <label class="btn">上傳相片、影片或語音
+            <input id="staff-media-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/3gpp,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/webm,audio/*" hidden>
+          </label>
+          <button type="button" class="btn" id="staff-media-record">錄製語音</button>
+          <button type="button" class="btn primary" id="staff-media-send" disabled>發送媒體</button>
+        </div>
       </section>
 
       <section class="reply-panel" id="reply">
@@ -640,7 +770,9 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
             ? `<p class="notice">${escapeHtml(
                 deliveryQuery === "sent" && c.source === "whatsapp"
                   ? "已透過 WhatsApp 發送畀客戶。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。"
-                  : deliveryQuery === "sent" && c.source === "28car"
+                  : deliveryQuery === "stub" && c.source === "whatsapp"
+                    ? "已儲存喺收件箱。同事個人 WhatsApp 唔經公司 Cloud API 代發。請用「用我嘅 WhatsApp」打開對話，喺你自己嘅 WhatsApp 發送。"
+                    : deliveryQuery === "sent" && c.source === "28car"
                     ? "已送到 28car 留言板。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。"
                     : deliveryQuery === "stored" && c.source === "28car"
                       ? "回覆已排入 28car 留言板隊列，未發送。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。"
@@ -662,8 +794,12 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       </section>
 
       <section class="secondary-box">
-        <h2>次要：開 WhatsApp 網頁</h2>
-        <p class="muted small">如果要喺 WhatsApp 網頁睇對話，可以開新分頁。主要回覆請用上面個表格。真實 Meta／Glorious 連接尚未啟用，呢度唔會代你發送。</p>
+        <h2>次要：聯絡公司或負責人</h2>
+        <p class="muted small">${
+          c.source === "whatsapp"
+            ? "呢度係開公司總機或負責人個人號，並預填內部備註，唔係發畀客戶。發畀客戶請用「用我嘅 WhatsApp 發送畀客戶」。公司總機回覆請用「發送回覆」。"
+            : "如果要喺 WhatsApp 網頁同公司或負責人傾，可以開新分頁。主要回覆請用上面個表格。"
+        }</p>
         ${whatsAppLinks(c, staffLines)}
       </section>
 

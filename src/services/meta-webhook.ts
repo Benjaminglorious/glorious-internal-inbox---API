@@ -1,6 +1,7 @@
 import type { UpsertSiteCommentInput } from "./site-comments";
 import type { SiteCommentSource } from "./site-comments";
 import type { MetaSurface } from "../types";
+import { placeholderFor, type MediaKind } from "./media";
 
 /**
  * 將 Meta Page／Instagram webhook JSON 拆成 upsertSiteComment 輸入。
@@ -57,6 +58,7 @@ interface MetaPostBits {
   postId?: string | null;
   postPermalink?: string | null;
   postCaption?: string | null;
+  attachments?: UpsertSiteCommentInput["attachments"];
 }
 
 function pushItem(
@@ -83,6 +85,7 @@ function pushItem(
     meta_post_id: onPost ? meta?.postId ?? null : null,
     meta_post_permalink: onPost ? meta?.postPermalink ?? null : null,
     meta_post_caption: onPost ? meta?.postCaption ?? null : null,
+    attachments: meta?.attachments,
   });
 }
 
@@ -167,12 +170,15 @@ function parseFeedChange(value: Record<string, unknown>, items: UpsertSiteCommen
 
   const commentId = asString(value.comment_id) || asString(value.commentId);
   const message = asString(value.message) || asString(value.text);
+  const photo = asString(value.photo).trim();
+  const body = message.trim() || (photo ? placeholderFor("image", false) : "");
   const from = asRecord(value.from);
   if (isOwnMetaActor(actorId(from))) return;
-  pushItem(items, "facebook", commentId, fromName(from), message, {
+  pushItem(items, "facebook", commentId, fromName(from), body, {
     senderId: actorId(from),
     surface: "comment",
     ...readParentPost(value, commentId, "facebook"),
+    attachments: photo ? [{ kind: "image", url: photo, isVoice: false }] : undefined,
   });
 }
 
@@ -187,6 +193,30 @@ function parseIgCommentChange(value: Record<string, unknown>, items: UpsertSiteC
     surface: "comment",
     ...readParentPost(value, commentId, "instagram"),
   });
+}
+
+function readDmAttachments(message: Record<string, unknown>): NonNullable<UpsertSiteCommentInput["attachments"]> {
+  const out: NonNullable<UpsertSiteCommentInput["attachments"]> = [];
+  for (const raw of asArray(message.attachments)) {
+    const attachment = asRecord(raw);
+    if (!attachment) continue;
+    const type = asString(attachment.type).toLowerCase();
+    const payload = asRecord(attachment.payload);
+    const url = payload ? asString(payload.url).trim() : "";
+    if (!url) continue;
+    let kind: MediaKind | null = null;
+    let isVoice = false;
+    if (type === "image") kind = "image";
+    else if (type === "video") kind = "video";
+    else if (type === "audio" || type === "voice") {
+      kind = "audio";
+      isVoice = true;
+    }
+    if (!kind) continue;
+    out.push({ kind, url, isVoice });
+    if (out.length >= 4) break;
+  }
+  return out;
 }
 
 /** Messenger / IG messaging（entry.messaging[]）。 */
@@ -204,14 +234,20 @@ function parseMessaging(
     if (message.is_echo === true || message.is_echo === "true") continue;
 
     const mid = asString(message.mid) || asString(message.id);
-    const text = asString(message.text);
-    if (!text) continue;
+    const text = asString(message.text).trim();
+    const attachments = readDmAttachments(message);
+    const body = text || (attachments[0] ? placeholderFor(attachments[0].kind, attachments[0].isVoice) : "");
+    if (!body) continue;
     const sender = asRecord(event.sender);
     const senderId = actorId(sender);
     if (isOwnMetaActor(senderId)) continue;
     const author = fromName(sender) || senderId;
-    const externalId = mid || (senderId ? `msg:${senderId}:${text.slice(0, 40)}` : "");
-    pushItem(items, source, externalId, author, text, { senderId, surface: "message" });
+    const externalId = mid || (senderId ? `msg:${senderId}:${body.slice(0, 40)}` : "");
+    pushItem(items, source, externalId, author, body, {
+      senderId,
+      surface: "message",
+      attachments: attachments.length ? attachments : undefined,
+    });
   }
 }
 

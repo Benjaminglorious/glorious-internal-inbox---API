@@ -15,8 +15,10 @@ import {
   updateStatus,
   findStaffById,
 } from "../services/comments";
-import { createStaffReply, listReplies } from "../services/replies";
-import { addStaffWhatsAppLine, deactivateWhatsAppLine, listWhatsAppLines } from "../services/whatsapp";
+import { listMediaForComment, presentMedia } from "../services/media";
+import { createStaffMediaReply, createStaffReply, listReplies } from "../services/replies";
+import { addStaffWhatsAppLine, deactivateWhatsAppLine, listWhatsAppLines, staffWhatsAppReplyForViewer } from "../services/whatsapp";
+import { sendMedia } from "./media-http";
 import { twentyeightcarStatus } from "../adapters/twentyeightcar-config";
 import { flushHeldReplies, getListing, listListingMessages, listListings, syncStateForUi, syncTwentyeightcar } from "../services/twentyeightcar";
 import {
@@ -163,6 +165,39 @@ apiRouter.get("/comments/:id/replies", requireAuth, (req: Request, res: Response
   res.json({ time_zone: STAFF_TIME_ZONE, replies: listReplies(id).map((reply) => presentStaffTimes(reply)) });
 });
 
+apiRouter.get("/media/:id", requireAuth, (req: Request, res: Response) => {
+  void sendMedia(req, res);
+});
+
+apiRouter.post("/comments/:id/media-replies", requireAuth, async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const viewer = sessionViewer(req);
+  try {
+    const result = await createStaffMediaReply({
+      commentId: id,
+      staffId: req.session.staffId!,
+      viewer,
+      caption: typeof req.body?.caption === "string" ? req.body.caption : "",
+      mimeType: typeof req.body?.mime_type === "string" ? req.body.mime_type : "",
+      isVoice: req.body?.is_voice === true,
+      dataBase64: typeof req.body?.data_base64 === "string" ? req.body.data_base64 : "",
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    res.status(201).json({
+      time_zone: STAFF_TIME_ZONE,
+      reply: presentStaffTimes(result.reply),
+      comment: presentStaffTimes(result.comment),
+      media: listMediaForComment(id).map(presentMedia),
+    });
+  } catch (err) {
+    console.error("[media] 未能寫入媒體回覆", err);
+    res.status(500).json({ error: "未能發送媒體" });
+  }
+});
+
 apiRouter.post("/comments/:id/replies", requireAuth, async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const viewer = sessionViewer(req);
@@ -199,6 +234,8 @@ apiRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
     time_zone: STAFF_TIME_ZONE,
     comment: presentStaffTimes(row),
     replies: listReplies(id).map((reply) => presentStaffTimes(reply)),
+    media: listMediaForComment(id).map(presentMedia),
+    staff_whatsapp_reply: staffWhatsAppReplyForViewer(row, req.session.staffId!),
   });
 });
 

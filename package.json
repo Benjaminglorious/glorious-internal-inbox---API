@@ -14,6 +14,8 @@
     "clear:demo": "tsx src/db/clear-demo.ts",
     "demo:whatsapp-route": "tsx src/demo/whatsapp-route.ts",
     "demo:whatsapp-outbound": "tsx src/demo/whatsapp-outbound.ts",
+    "demo:whatsapp-staff-send": "tsx src/demo/inbox-media.ts",
+    "demo:inbox-media": "tsx src/demo/inbox-media.ts",
     "demo:meta-outbound": "tsx src/demo/meta-outbound.ts",
     "demo:staff-visibility": "tsx src/demo/staff-visibility.ts",
     "demo:inbox-search": "tsx src/demo/inbox-search.ts",
