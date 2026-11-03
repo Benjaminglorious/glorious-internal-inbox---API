@@ -127,8 +127,13 @@ async function main(): Promise<number> {
     check("觀察車盤已刪", observed === 0, String(observed));
 
     const tony = appDb.prepare(`SELECT id FROM staff WHERE username = 'tony'`).get() as { id: number };
+    const benjamin = appDb.prepare(`SELECT id FROM staff WHERE username = 'benjamin'`).get() as { id: number };
     const picked = assignMod.pickLeastLoadedStaffId();
-    check("自動派單唔係 Tony", picked != null && picked !== tony.id, String(picked));
+    check(
+      "自動派單唔係 Tony 或 Benjamin",
+      picked != null && picked !== tony.id && picked !== benjamin.id,
+      String(picked)
+    );
 
     process.env.NODE_ENV = "production";
     let refused = false;

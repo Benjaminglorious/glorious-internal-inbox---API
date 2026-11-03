@@ -86,6 +86,7 @@ async function main(): Promise<number> {
 
     appDb.prepare(`UPDATE staff SET display_name = '陳東榮', is_admin = 0, active = 0 WHERE username = 'tony'`).run();
     appDb.prepare(`UPDATE staff SET display_name = 'Temp', is_admin = 1, active = 1 WHERE username = 'kaixin'`).run();
+    appDb.prepare(`UPDATE staff SET display_name = 'Temp Ben', is_admin = 0, active = 0 WHERE username = 'benjamin'`).run();
     seedMod.applySeedStaff();
 
     const staff = appDb
@@ -112,6 +113,7 @@ async function main(): Promise<number> {
       );
     };
     expectRow("tony", "Tony Chan", 1, 1);
+    expectRow("benjamin", "Benjamin", 1, 1);
     expectRow("eddie", "Eddie Lau", 1, 1);
     expectRow("wing", "Wing Cheng", 0, 1);
     expectRow("jason", "Jason Cheng", 0, 1);
@@ -121,6 +123,7 @@ async function main(): Promise<number> {
     }
 
     const tony = byName.get("tony")!;
+    const benjamin = byName.get("benjamin")!;
     const wing = byName.get("wing")!;
     const jason = byName.get("jason")!;
     const kaixin = byName.get("kaixin")!;
@@ -128,9 +131,16 @@ async function main(): Promise<number> {
     const picked = assignApi.pickLeastLoadedStaffId();
     const pickedRow = staff.find((row) => row.id === picked);
     check(
-      "自動派單只計 active=1，而且唔會揀 Tony",
-      !!pickedRow && pickedRow.active === 1 && pickedRow.username !== "tony",
+      "自動派單只計 active=1，而且唔會揀 Tony 或 Benjamin",
+      !!pickedRow &&
+        pickedRow.active === 1 &&
+        pickedRow.username !== "tony" &&
+        pickedRow.username !== "benjamin",
       pickedRow ? pickedRow.username : "沒有人選"
+    );
+    check(
+      "Benjamin 同 Tony 一樣係在職管理員",
+      benjamin.is_admin === 1 && benjamin.active === 1 && tony.is_admin === 1 && tony.active === 1
     );
 
     check(
@@ -221,19 +231,23 @@ async function main(): Promise<number> {
 
     const wingLogin = await login(base, "wing");
     const tonyLogin = await login(base, "tony");
+    const benjaminLogin = await login(base, "benjamin");
     const eddieLogin = await login(base, "eddie");
     const jasonLogin = await login(base, "jason");
     const kaixinLogin = await login(base, "kaixin");
     check("Wing 可以登入", wingLogin.status === 302 && wingLogin.cookie.includes("connect.sid="));
     check("Tony 可以登入", tonyLogin.status === 302 && tonyLogin.cookie.includes("connect.sid="));
+    check("Benjamin 可以登入", benjaminLogin.status === 302 && benjaminLogin.cookie.includes("connect.sid="));
     check("Eddie 可以登入", eddieLogin.status === 302 && eddieLogin.cookie.includes("connect.sid="));
     check("收藏帳號 kaixin 登入唔到", kaixinLogin.status === 302 && kaixinLogin.location.includes("error") && !kaixinLogin.cookie);
 
     const linesPage = await fetch(`${base}/whatsapp-lines`, { headers: { cookie: tonyLogin.cookie } });
     const linesHtml = await linesPage.text();
     check(
-      "WhatsApp 線路頁寫明 Tony 唔參與自動派單",
-      linesPage.status === 200 && linesHtml.includes("Tony 唔參與自動派單") && linesHtml.includes("Eddie → Wing → Jason")
+      "WhatsApp 線路頁寫明 Tony 同 Benjamin 唔參與自動派單",
+      linesPage.status === 200 &&
+        linesHtml.includes("Tony 同 Benjamin 唔參與自動派單") &&
+        linesHtml.includes("Eddie → Wing → Jason")
     );
 
     const wingHeaders = { cookie: wingLogin.cookie, accept: "application/json" };
@@ -424,6 +438,122 @@ async function main(): Promise<number> {
       status: string;
     };
     check("API：Tony 可以改未派留言狀態", tonyStatus.status === 200 && unassignedStatus.status === "in_progress");
+
+    const benjaminHeaders = { cookie: benjaminLogin.cookie, accept: "application/json" };
+    const benjaminPage = await fetch(`${base}/`, { headers: { cookie: benjaminLogin.cookie } });
+    const benjaminHtml = await benjaminPage.text();
+    check(
+      "網頁：Benjamin 同 Tony 一樣見到未派",
+      benjaminPage.status === 200 &&
+        benjaminHtml.includes("只睇我嘅") &&
+        benjaminHtml.includes("· 管理員") &&
+        benjaminHtml.includes("UNASSIGNED-ONLY-ADMIN")
+    );
+    const benjaminDetail = await fetch(`${base}/comments/${unassignedId}`, {
+      headers: { cookie: benjaminLogin.cookie },
+    });
+    const benjaminDetailHtml = await benjaminDetail.text();
+    check(
+      "網頁：Benjamin 可以開未派並見到改派",
+      benjaminDetail.status === 200 &&
+        benjaminDetailHtml.includes("/assign") &&
+        benjaminDetailHtml.includes("UNASSIGNED-ONLY-ADMIN")
+    );
+    const benjaminLines = await fetch(`${base}/whatsapp-lines`, { headers: { cookie: benjaminLogin.cookie } });
+    check("Benjamin 可以開 WhatsApp 線路頁", benjaminLines.status === 200);
+    const benjaminAssign = await fetch(`${base}/api/comments/${jasonId}/assign`, {
+      method: "POST",
+      headers: { ...benjaminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ staff_id: jason.id }),
+    });
+    check("API：Benjamin 可以改派", benjaminAssign.status === 200);
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const passwords = require("../auth/passwords") as typeof import("../auth/passwords");
+    appDb
+      .prepare(
+        `UPDATE staff SET username = 'Benjamin', display_name = 'Benjamin', is_admin = 0, active = 0, password_hash = 'kept-ben-hash' WHERE username = 'benjamin'`
+      )
+      .run();
+    seedMod.applySeedStaff();
+    const adoptedCase = appDb
+      .prepare(
+        `SELECT username, display_name, is_admin, active, password_hash
+         FROM staff
+         WHERE lower(username) = 'benjamin' OR lower(display_name) LIKE 'benjamin%'`
+      )
+      .all() as Array<{
+      username: string;
+      display_name: string;
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    }>;
+    check(
+      "用戶名 Benjamin 會升級成 benjamin 管理員，唔會重複",
+      adoptedCase.length === 1 &&
+        adoptedCase[0].username === "benjamin" &&
+        adoptedCase[0].display_name === "Benjamin" &&
+        adoptedCase[0].is_admin === 1 &&
+        adoptedCase[0].active === 1 &&
+        adoptedCase[0].password_hash === "kept-ben-hash"
+    );
+
+    appDb
+      .prepare(
+        `UPDATE staff SET username = 'bchan', display_name = 'Benjamin', is_admin = 0, active = 0, password_hash = 'kept-ben-hash' WHERE username = 'benjamin'`
+      )
+      .run();
+    seedMod.ensureBenjaminAdmin();
+    const adoptedName = appDb
+      .prepare(
+        `SELECT username, display_name, is_admin, active, password_hash
+         FROM staff
+         WHERE lower(username) IN ('benjamin', 'bchan') OR lower(trim(display_name)) = 'benjamin'`
+      )
+      .all() as Array<{
+      username: string;
+      display_name: string;
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    }>;
+    check(
+      "顯示名 Benjamin 會升級同一列，唔會另開帳號",
+      adoptedName.length === 1 &&
+        adoptedName[0].username === "benjamin" &&
+        adoptedName[0].is_admin === 1 &&
+        adoptedName[0].active === 1 &&
+        adoptedName[0].password_hash === "kept-ben-hash"
+    );
+
+    const tonyStill = appDb.prepare(`SELECT is_admin, active FROM staff WHERE username = 'tony'`).get() as {
+      is_admin: number;
+      active: number;
+    };
+    appDb.prepare(`DELETE FROM staff WHERE username = 'benjamin'`).run();
+    const commentsBefore = (appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n;
+    seedMod.syncStaffOnBoot();
+    const commentsAfter = (appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n;
+    const inserted = appDb
+      .prepare(`SELECT display_name, is_admin, active, password_hash FROM staff WHERE username = 'benjamin'`)
+      .get() as { display_name: string; is_admin: number; active: number; password_hash: string };
+    const tonyAfterBoot = appDb.prepare(`SELECT is_admin, active FROM staff WHERE username = 'tony'`).get() as {
+      is_admin: number;
+      active: number;
+    };
+    check(
+      "已有同事嘅庫啟動會補 Benjamin 管理員",
+      inserted.display_name === "Benjamin" &&
+        inserted.is_admin === 1 &&
+        inserted.active === 1 &&
+        passwords.verifyPassword(DEMO_PASSWORD, inserted.password_hash)
+    );
+    check("啟動對齊唔寫新留言", commentsAfter === commentsBefore);
+    check(
+      "補 Benjamin 唔會降 Tony",
+      tonyStill.is_admin === 1 && tonyStill.active === 1 && tonyAfterBoot.is_admin === 1 && tonyAfterBoot.active === 1
+    );
 
     if (failures.length) {
       console.error(`\n${failures.length} 項失敗`);
