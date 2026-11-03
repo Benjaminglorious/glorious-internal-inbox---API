@@ -20,7 +20,7 @@ function check(name: string, cond: boolean, detail?: string): void {
   console.log(`OK   ${name}`);
 }
 
-function main(): number {
+async function main(): Promise<number> {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "glorious-site-"));
   const dbFile = path.join(tmp, "inbox.db");
   let appDb: Database.Database | undefined;
@@ -104,8 +104,14 @@ function main(): number {
                 item: "comment",
                 verb: "add",
                 comment_id: "fb-meta-9",
+                post_id: "1111111111_2222222222",
                 message: "想問價錢",
                 from: { id: "u1", name: "Cindy" },
+                post: {
+                  id: "1111111111_2222222222",
+                  permalink_url: "https://www.facebook.com/GloriousMotors/posts/2222222222",
+                  message: "紅色 Alphard 現貨",
+                },
               },
             },
           ],
@@ -130,6 +136,13 @@ function main(): number {
         parsed.items[0]?.meta_sender_id === "u1"
     );
     check(
+      "Meta feed 記住帖文編號、連結同內容",
+      parsed.items[0]?.meta_post_id === "1111111111_2222222222" &&
+        parsed.items[0]?.meta_post_caption === "紅色 Alphard 現貨" &&
+        parsed.items[0]?.meta_post_permalink === "https://www.facebook.com/GloriousMotors/posts/2222222222"
+    );
+    check("Meta 私訊唔帶帖文", parsed.items[1]?.meta_post_id == null && parsed.items[1]?.meta_post_caption == null);
+    check(
       "Meta 私訊記住 mid 同 PSID",
       parsed.items[1]?.external_id === "mid.1" &&
         parsed.items[1]?.meta_surface === "message" &&
@@ -140,6 +153,13 @@ function main(): number {
       "入庫寫低 meta_sender_id",
       storedMeta.ok && storedMeta.comment.meta_sender_id === "u1" && storedMeta.comment.meta_surface === "comment"
     );
+    check(
+      "入庫寫低帖文",
+      storedMeta.ok &&
+        storedMeta.comment.meta_post_id === "1111111111_2222222222" &&
+        storedMeta.comment.meta_post_caption === "紅色 Alphard 現貨" &&
+        storedMeta.comment.meta_post_permalink === "https://www.facebook.com/GloriousMotors/posts/2222222222"
+    );
     const againMeta = site.upsertSiteComment({
       source: "facebook",
       external_id: "fb-meta-9",
@@ -148,7 +168,11 @@ function main(): number {
     });
     check(
       "重複入庫唔洗走 meta 欄",
-      againMeta.ok && againMeta.comment.meta_sender_id === "u1" && againMeta.comment.meta_surface === "comment"
+      againMeta.ok &&
+        againMeta.comment.meta_sender_id === "u1" &&
+        againMeta.comment.meta_surface === "comment" &&
+        againMeta.comment.meta_post_id === "1111111111_2222222222" &&
+        againMeta.comment.meta_post_caption === "紅色 Alphard 現貨"
     );
 
     const ig = meta.parseMetaWebhookPayload({
@@ -162,6 +186,12 @@ function main(): number {
                 id: "ig-c-1",
                 text: "IG 帖文留言",
                 from: { id: "ig1", username: "buyer" },
+                media: {
+                  id: "178900000000099",
+                  media_product_type: "FEED",
+                  caption: "白色 Alphard 限量",
+                  permalink: "https://www.instagram.com/p/abc123/",
+                },
               },
             },
           ],
@@ -174,6 +204,61 @@ function main(): number {
       ig.items[0]?.external_id === "ig-c-1" &&
         ig.items[0]?.meta_surface === "comment" &&
         ig.items[0]?.meta_sender_id === "ig1"
+    );
+    check(
+      "IG 留言記住 media id、caption 同 permalink",
+      ig.items[0]?.meta_post_id === "178900000000099" &&
+        ig.items[0]?.meta_post_caption === "白色 Alphard 限量" &&
+        ig.items[0]?.meta_post_permalink === "https://www.instagram.com/p/abc123/"
+    );
+
+    const inferred = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          changes: [
+            {
+              field: "feed",
+              value: {
+                item: "comment",
+                verb: "add",
+                comment_id: "178900000000001_178900000000002_9001",
+                message: "冇 post_id 都要猜到帖文",
+                from: { id: "u9", name: "客人" },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "Facebook comment id 三段數字可以還原帖文 id",
+      inferred.items[0]?.meta_post_id === "178900000000001_178900000000002" &&
+        inferred.items[0]?.external_id === "178900000000001_178900000000002_9001"
+    );
+    const badLink = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          changes: [
+            {
+              field: "feed",
+              value: {
+                item: "comment",
+                verb: "add",
+                comment_id: "fb-bad-link",
+                message: "壞連結",
+                from: { id: "u8", name: "客人" },
+                post: { id: "155_166", permalink_url: "javascript:alert(1)", message: "帖文" },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "帖文連結必須係 http(s)",
+      badLink.items[0]?.meta_post_id === "155_166" && badLink.items[0]?.meta_post_permalink == null
     );
 
     const savedPage = process.env.META_PAGE_ID;
@@ -283,6 +368,87 @@ function main(): number {
     check("POST 未設 WEBHOOK_VERIFY_TOKEN 回 503", !missingEnv.ok && missingEnv.status === 503);
     process.env.WEBHOOK_VERIFY_TOKEN = savedToken;
 
+    const postCols = new Set(
+      (appDb.prepare(`PRAGMA table_info(comments)`).all() as Array<{ name: string }>).map((row) => row.name)
+    );
+    check(
+      "留言表有帖文欄",
+      postCols.has("meta_post_id") && postCols.has("meta_post_permalink") && postCols.has("meta_post_caption")
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const graph = require("../adapters/meta-graph") as typeof import("../adapters/meta-graph");
+    delete process.env.META_PAGE_ACCESS_TOKEN;
+    const noToken = await graph.lookupMetaParentPost({ channel: "facebook", postId: "1111111111_2222222222" });
+    check("冇 Page token 唔打 Graph 補帖文", noToken == null);
+
+    const bare = site.upsertSiteComment({
+      source: "facebook",
+      external_id: "178900000000002_9001",
+      author_name: "客人",
+      body: "帖文編號同 comment id 分開",
+      meta_surface: "comment",
+      meta_post_id: "1111111111_2222222222",
+    });
+    check("先入庫帖文編號", bare.ok && bare.comment.meta_post_caption == null);
+    const originalFetch = globalThis.fetch;
+    process.env.META_PAGE_ACCESS_TOKEN = "page-token";
+    process.env.META_GRAPH_VERSION = "v21.0";
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const href = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      check(
+        "補帖文係 GET 帖文，唔係回覆 comment",
+        href.includes("/1111111111_2222222222") && !href.includes("/comments") && !href.includes("/replies")
+      );
+      return new Response(
+        JSON.stringify({
+          id: "178900000000001_178900000000002",
+          message: "Graph 補回嘅帖文",
+          permalink_url: "https://www.facebook.com/permalink.php?story_fbid=2&id=1",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as typeof fetch;
+    try {
+      const looked = await graph.lookupMetaParentPost({
+        channel: "facebook",
+        postId: "1111111111_2222222222",
+      });
+      check(
+        "Graph 補到 caption 同 permalink",
+        looked?.caption === "Graph 補回嘅帖文" &&
+          looked.permalink === "https://www.facebook.com/permalink.php?story_fbid=2&id=1"
+      );
+      if (bare.ok && looked) {
+        const filled = site.fillMetaPostIfMissing(bare.comment.id, {
+          id: "1111111111_2222222222",
+          caption: looked.caption,
+          permalink: looked.permalink,
+        });
+        check(
+          "空白帖文欄先補，external_id 仍然係 comment id",
+          filled?.meta_post_caption === "Graph 補回嘅帖文" &&
+            filled.meta_post_permalink === "https://www.facebook.com/permalink.php?story_fbid=2&id=1" &&
+            filled.external_id === "178900000000002_9001" &&
+            filled.meta_post_id === "1111111111_2222222222"
+        );
+        const target = graph.resolveMetaReplyTarget({
+          channel: "facebook",
+          externalId: filled?.external_id || "",
+          metaSenderId: null,
+          metaSurface: "comment",
+        });
+        check(
+          "補帖文之後回覆仍然打 comment id",
+          target.ok && target.kind === "comment" && target.commentId === "178900000000002_9001"
+        );
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      delete process.env.META_PAGE_ACCESS_TOKEN;
+      delete process.env.META_GRAPH_VERSION;
+    }
+
     if (failures.length) {
       console.error(`\n${failures.length} 項失敗`);
       return 1;
@@ -300,5 +466,10 @@ function main(): number {
   }
 }
 
-const code = main();
-process.exit(code);
+main().then(
+  (code) => process.exit(code),
+  (err) => {
+    console.error(err);
+    process.exit(1);
+  }
+);

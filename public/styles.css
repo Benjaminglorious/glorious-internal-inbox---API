@@ -129,6 +129,8 @@ input, select {
   margin: 16px 0;
 }
 .filters .check { display: flex; align-items: center; gap: 8px; font-weight: 600; padding-bottom: 8px; }
+.filters label.search { flex: 1 1 280px; }
+.filters label.search input[type="search"] { width: 100%; }
 
 .table-wrap {
   overflow-x: auto;
@@ -206,6 +208,17 @@ td.when time, .who time, .meta time, .reply-preview time { color: inherit; }
 .actions h2 { font-size: 1rem; margin: 16px 0 8px; }
 .inline-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .actions-cell { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.post-hint { margin-top: 6px; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.parent-post {
+  margin: 16px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand-2);
+  border-radius: 10px;
+  background: #fffdf6;
+}
+.parent-post h2 { font-size: 1rem; margin: 0 0 8px; }
+.parent-post .caption { margin: 0 0 8px; white-space: pre-wrap; line-height: 1.55; }
 .reply-preview { margin-top: 6px; font-size: 12px; line-height: 1.45; color: var(--brand); }
 .reply-preview.none { color: var(--muted); }
 .thread, .reply-panel { margin-top: 20px; }

@@ -1,9 +1,12 @@
 import { Router, Request, Response } from "express";
+import { lookupMetaParentPost } from "../adapters/meta-graph";
 import { parseMetaWebhookPayload } from "../services/meta-webhook";
 import {
+  fillMetaPostIfMissing,
   normalizeSiteCommentSource,
   upsertSiteComment,
   type SiteCommentSource,
+  type UpsertSiteCommentInput,
 } from "../services/site-comments";
 import {
   authorizeMetaPost,
@@ -184,7 +187,27 @@ metaWebhookRouter.get("/", hubVerify);
  * - 認得嘅留言／私訊會 upsert 為 site_comment（facebook 或 instagram）。
  * - Meta 推送唔帶 X-Webhook-Token；若同時帶咗 token 就必須啱。
  */
-metaWebhookRouter.post("/", (req: Request, res: Response) => {
+/** Webhook 已入庫之後先補帖文。Graph 失敗唔影響入庫，亦唔改回覆路徑。 */
+async function attachParentPost(item: UpsertSiteCommentInput, commentId: number): Promise<void> {
+  if (item.meta_surface === "message") return;
+  if (item.source !== "facebook" && item.source !== "instagram") return;
+  const postId = typeof item.meta_post_id === "string" ? item.meta_post_id.trim() : "";
+  if (!postId) return;
+  if (item.meta_post_permalink && item.meta_post_caption) return;
+  try {
+    const looked = await lookupMetaParentPost({ channel: item.source, postId });
+    if (!looked) return;
+    fillMetaPostIfMissing(commentId, {
+      id: postId,
+      permalink: looked.permalink,
+      caption: looked.caption,
+    });
+  } catch (err) {
+    console.error("[meta] 帖文資料未補上", err);
+  }
+}
+
+metaWebhookRouter.post("/", async (req: Request, res: Response) => {
   const auth = authorizeMetaPost(req);
   if (!auth.ok) {
     res.status(auth.status).json({ ok: false, error: auth.error });
@@ -201,19 +224,23 @@ metaWebhookRouter.post("/", (req: Request, res: Response) => {
     return;
   }
 
-  const results = parsed.items.map((item) => {
-    const upserted = upsertSiteComment(item);
-    if (!upserted.ok) return { ok: false as const, error: upserted.error, external_id: item.external_id };
-    return {
-      ok: true as const,
-      comment_id: upserted.comment.id,
-      source: upserted.comment.source,
-      created: upserted.created,
-      assignee_staff_id: upserted.assigneeStaffId,
-      intake_kind: upserted.comment.intake_kind,
-      external_id: item.external_id,
-    };
-  });
+  const results = await Promise.all(
+    parsed.items.map(async (item) => {
+      const upserted = upsertSiteComment(item);
+      if (!upserted.ok) return { ok: false as const, error: upserted.error, external_id: item.external_id };
+      await attachParentPost(item, upserted.comment.id);
+      return {
+        ok: true as const,
+        comment_id: upserted.comment.id,
+        source: upserted.comment.source,
+        created: upserted.created,
+        assignee_staff_id: upserted.assigneeStaffId,
+        intake_kind: upserted.comment.intake_kind,
+        external_id: item.external_id,
+        meta_post_id: upserted.comment.meta_post_id,
+      };
+    })
+  );
   const anyOk = results.some((r) => r.ok);
   res.status(anyOk ? 200 : 400).json({ ok: anyOk, results });
 });

@@ -10,6 +10,7 @@ import {
   listCommentUpdates,
   listComments,
   listStaff,
+  normalizeInboxQuery,
   reassign,
   updateStatus,
   findStaffById,
@@ -112,6 +113,7 @@ apiRouter.get("/comments", requireAuth, (req: Request, res: Response) => {
   const entryRaw = typeof req.query.entry === "string" ? req.query.entry : undefined;
   const entry = entryRaw && isEntryPath(entryRaw) ? entryRaw : undefined;
   const mine = req.query.mine === "1" || req.query.mine === "true";
+  const q = normalizeInboxQuery(req.query.q);
   if (sourceRaw && !source) {
     res.status(400).json({ error: "無效來源" });
     return;
@@ -141,6 +143,7 @@ apiRouter.get("/comments", requireAuth, (req: Request, res: Response) => {
     mine,
     staffId: req.session.staffId,
     viewer: sessionViewer(req),
+    q,
   });
   res.json({ time_zone: STAFF_TIME_ZONE, comments: rows.map((row) => presentStaffTimes(row)) });
 });

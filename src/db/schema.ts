@@ -17,6 +17,9 @@ export const COMMENTS_CREATE_COLUMNS = `
   entry_path TEXT CHECK (entry_path IS NULL OR entry_path IN ('28car_board', '28car_wa_link')),
   meta_sender_id TEXT,
   meta_surface TEXT CHECK (meta_surface IS NULL OR meta_surface IN ('comment', 'message')),
+  meta_post_id TEXT,
+  meta_post_permalink TEXT,
+  meta_post_caption TEXT,
   UNIQUE (source, external_id),
   CHECK (
     (

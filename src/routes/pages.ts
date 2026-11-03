@@ -23,6 +23,7 @@ import {
   listCommentsWithCursor,
   listStaff,
   findStaffByUsername,
+  normalizeInboxQuery,
   updateStatus,
   reassign,
 } from "../services/comments";
@@ -120,6 +121,50 @@ function renderSourceBadges(
     ${origin}
     ${entry}
   </div>`;
+}
+
+function safePostUrl(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function renderPostHint(c: CommentWithAssignee): string {
+  if (c.source !== "facebook" && c.source !== "instagram") return "";
+  if (c.meta_surface === "message") return `<div class="post-hint">私訊</div>`;
+  const caption = c.meta_post_caption?.replace(/\s+/g, " ").trim() || "";
+  const postId = c.meta_post_id?.trim() || "";
+  if (!caption && !postId) return "";
+  const text = caption ? (caption.length > 60 ? `${caption.slice(0, 60)}…` : caption) : postId;
+  return `<div class="post-hint">帖文：${escapeHtml(text)}</div>`;
+}
+
+function renderParentPost(c: CommentWithAssignee): string {
+  if (c.source !== "facebook" && c.source !== "instagram") return "";
+  const channel = c.source === "instagram" ? "Instagram" : "Facebook";
+  if (c.meta_surface === "message") {
+    return `<section class="parent-post"><h2>所屬帖文</h2><p class="muted small">呢則係${channel}私訊，唔係公開帖文留言。</p></section>`;
+  }
+  const caption = c.meta_post_caption?.trim() || "";
+  const postId = c.meta_post_id?.trim() || "";
+  const href = safePostUrl(c.meta_post_permalink);
+  if (!caption && !postId && !href) {
+    return `<section class="parent-post"><h2>所屬帖文</h2><p class="muted small">未有${channel}帖文資料。新嘅 Meta webhook 如果帶帖文編號、內容或連結，就會顯示喺度。</p></section>`;
+  }
+  const link = href
+    ? `<p><a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">開啟${channel}原帖</a></p>`
+    : "";
+  return `<section class="parent-post">
+    <h2>所屬${channel}帖文</h2>
+    ${caption ? `<p class="caption">${escapeHtml(caption)}</p>` : `<p class="muted small">未有帖文內容。</p>`}
+    <p class="muted small">帖文編號：<code>${postId ? escapeHtml(postId) : "—"}</code></p>
+    ${link}
+  </section>`;
 }
 
 function replyPreview(c: CommentWithAssignee): string {
@@ -326,6 +371,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
   const originRaw = typeof req.query.origin === "string" ? req.query.origin : undefined;
   const entryRaw = typeof req.query.entry === "string" ? req.query.entry : undefined;
   const mine = req.query.mine === "1";
+  const q = normalizeInboxQuery(req.query.q);
   const src = sourceRaw && isCommentSource(sourceRaw) ? sourceRaw : undefined;
   const st = statusRaw && isCommentStatusFilter(statusRaw) ? statusRaw : undefined;
   const intake: IntakeKind | undefined = intakeRaw && isIntakeKind(intakeRaw) ? intakeRaw : undefined;
@@ -342,6 +388,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     mine: viewer.isAdmin && mine,
     staffId: req.session.staffId,
     viewer,
+    q,
   });
   const staffLines = activeStaffLinesByStaffId();
   const listingsByStock = listingIndex();
@@ -354,6 +401,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     if (origin) p.set("origin", origin);
     if (entry) p.set("entry", entry);
     if (mine) p.set("mine", "1");
+    if (q) p.set("q", q);
     for (const [k, v] of Object.entries(extra)) {
       if (v === "") p.delete(k);
       else p.set(k, v);
@@ -376,7 +424,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
         <td><a href="/comments/${c.id}">#${c.id}</a></td>
         <td>${renderSourceBadges(c)}</td>
         <td>${escapeHtml(c.author_name)}</td>
-        <td class="preview">${escapeHtml(preview)}${replyPreview(c)}</td>
+        <td class="preview">${escapeHtml(preview)}${renderPostHint(c)}${replyPreview(c)}</td>
         <td>${vehicleCell}</td>
         <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span></td>
         <td class="when">${showTime(c.created_at)}</td>
@@ -389,14 +437,17 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
   const body = `
     <div class="page-head">
       <h1>留言箱</h1>
-      <p class="muted">共 ${comments.length} 條</p>
+      <p class="muted">${q ? `搵到 ${comments.length} 條` : `共 ${comments.length} 條`}</p>
     </div>
     ${
       viewer.isAdmin
         ? ""
-        : `<p class="muted">你只會見到派咗畀你嘅留言。未派同其他同事嘅留言只係管理員睇到。</p>`
+        : `<p class="muted">你只會見到派咗畀你嘅留言。未派同其他同事嘅留言只係管理員睇到。搜尋同樣只包括呢啲留言。</p>`
     }
     <form class="filters" method="GET" action="/">
+      <label class="search">搜尋
+        <input type="search" name="q" value="${q ? escapeHtml(q) : ""}" maxlength="120" placeholder="姓名、電話、內容、來源、帖文" />
+      </label>
       <label>來源
         <select name="source">
           <option value="">全部</option>
@@ -456,10 +507,18 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
           </tr>
         </thead>
         <tbody>
-          ${rows || `<tr><td colspan="9" class="empty">暫無留言</td></tr>`}
+          ${
+            rows ||
+            `<tr><td colspan="9" class="empty">${
+              q
+                ? `搵唔到同「${escapeHtml(q)}」相符嘅留言。試下其他字，或者 <a href="/">重設</a>。`
+                : "暫無留言"
+            }</td></tr>`
+          }
         </tbody>
       </table>
     </div>
+    <p class="muted small">搜尋會搵你睇到嘅留言同回覆：留言者、電話、內容、車輛、來源，以及 Facebook／Instagram 帖文編號、連結同內容。可以同上面嘅篩選一齊用。</p>
     <p class="muted small">時間欄同留言詳情嘅建立、更新、回覆時間都係香港時間（HKT，UTC+8）。「剛剛」「分鐘前」「昨天」按香港日曆計。資料庫仍然儲存 UTC。</p>
     <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。回覆請入去留言，WhatsApp 按鈕只係次要。</p>
     <p class="muted small">快捷：${
@@ -561,6 +620,8 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         <dt>建立</dt><dd>${showTime(c.created_at)}</dd>
         <dt>更新</dt><dd>${showTime(c.updated_at)}</dd>
       </dl>
+
+      ${renderParentPost(c)}
 
       <section class="thread" id="thread">
         <h2>對話</h2>

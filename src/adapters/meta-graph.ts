@@ -178,6 +178,57 @@ async function postGraph(input: {
   return { delivery_status: "sent", provider: input.provider, error: null };
 }
 
+export interface MetaParentPost {
+  permalink: string | null;
+  caption: string | null;
+}
+
+const LOOKUP_TIMEOUT_MS = 4000;
+
+/**
+ * 讀公開帖文嘅 caption／permalink。冇 token、Graph 失敗或超時都回 null，唔拋出。
+ * 回覆仍然走 queueMetaSurfaceReply，呢度只係 GET，唔會發留言。
+ */
+export async function lookupMetaParentPost(input: {
+  channel: MetaChannel;
+  postId: string;
+}): Promise<MetaParentPost | null> {
+  const accessToken = metaPageAccessToken();
+  if (!accessToken) return null;
+  const version = metaGraphVersion();
+  if (!version.ok) return null;
+  const postId = input.postId.trim();
+  if (!/^[0-9A-Za-z_.:-]{1,200}$/.test(postId)) return null;
+  const fields = input.channel === "instagram" ? "id,caption,permalink" : "id,message,permalink_url,story";
+  const url = `${GRAPH_HOST}/${version.version}/${encodeURIComponent(postId)}?fields=${encodeURIComponent(fields)}`;
+  try {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
+    });
+    const raw = await response.text();
+    if (!response.ok) return null;
+    let parsed: unknown = null;
+    try {
+      parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    } catch {
+      return null;
+    }
+    const record = asRecord(parsed);
+    if (!record || record.error) return null;
+    const textOf = (key: string): string => {
+      const value = record[key];
+      return typeof value === "string" ? value.trim() : "";
+    };
+    const caption = input.channel === "instagram" ? textOf("caption") : textOf("message") || textOf("story");
+    const permalink = input.channel === "instagram" ? textOf("permalink") : textOf("permalink_url");
+    if (!caption && !permalink) return null;
+    return { caption: caption || null, permalink: permalink || null };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 同事回覆送去 Facebook 或 Instagram。
  * 成功先標 sent。缺 token、缺私訊對象、Graph 錯誤都標 failed，唔會拋出。
