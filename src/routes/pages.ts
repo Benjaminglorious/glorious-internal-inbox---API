@@ -20,6 +20,7 @@ import {
   canViewComment,
   getComment,
   getCommentWithCursor,
+  latestCustomerMessageText,
   listCommentsWithCursor,
   listStaff,
   findStaffByUsername,
@@ -508,7 +509,8 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
 
   const rows = comments
     .map((c) => {
-      const preview = c.body.length > 80 ? c.body.slice(0, 80) + "…" : c.body;
+      const customerText = latestCustomerMessageText(c);
+      const preview = customerText.length > 80 ? customerText.slice(0, 80) + "…" : customerText;
       const stockId = stockIdFromText(c.vehicle_ref);
       const known = stockId ? listingsByStock.get(stockId) : undefined;
       const vehicleCell = known
@@ -520,7 +522,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
         <td><a href="/comments/${c.id}">#${c.id}</a></td>
         <td>${renderSourceBadges(c)}</td>
         <td>${escapeHtml(c.author_name)}</td>
-        <td class="preview">${escapeHtml(preview)}${renderPostHint(c)}${replyPreview(c)}</td>
+        <td class="preview"><span class="content-preview">${escapeHtml(preview)}</span>${renderPostHint(c)}${replyPreview(c)}</td>
         <td>${vehicleCell}</td>
         <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span></td>
         <td class="when">${showTime(c.created_at)}</td>

@@ -23,6 +23,7 @@ const UTC_KEYS = new Set([
   "created_at",
   "updated_at",
   "last_reply_at",
+  "latest_inbound_at",
   "last_synced_at",
   "last_run_at",
 ]);

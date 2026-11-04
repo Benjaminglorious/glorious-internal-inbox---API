@@ -133,6 +133,12 @@ export interface CommentWithAssignee extends Comment {
   last_reply_staff_name: string | null;
   last_reply_delivery_status: DeliveryStatus | null;
   last_reply_direction: ReplyDirection | null;
+  /**
+   * 客戶最新一句再留言（inbound）。未有再留言就係 null。
+   * 留言箱「內容」用呢句；同事回覆唔會寫入呢度。
+   */
+  latest_inbound_body: string | null;
+  latest_inbound_at: string | null;
 }
 
 export interface CommentReply {
