@@ -87,6 +87,7 @@ async function main(): Promise<number> {
     appDb.prepare(`UPDATE staff SET display_name = '陳東榮', is_admin = 0, active = 0 WHERE username = 'tony'`).run();
     appDb.prepare(`UPDATE staff SET display_name = 'Temp', is_admin = 1, active = 1 WHERE username = 'kaixin'`).run();
     appDb.prepare(`UPDATE staff SET display_name = 'Temp Ben', is_admin = 0, active = 0 WHERE username = 'benjamin'`).run();
+    appDb.prepare(`UPDATE staff SET display_name = 'Temp Viv', is_admin = 0, active = 0 WHERE username = 'vivian'`).run();
     seedMod.applySeedStaff();
 
     const staff = appDb
@@ -114,6 +115,7 @@ async function main(): Promise<number> {
     };
     expectRow("tony", "Tony Chan", 1, 1);
     expectRow("benjamin", "Benjamin", 1, 1);
+    expectRow("vivian", "Vivian", 1, 1);
     expectRow("eddie", "Eddie Lau", 1, 1);
     expectRow("wing", "Wing Cheng", 0, 1);
     expectRow("jason", "Jason Cheng", 0, 1);
@@ -124,6 +126,8 @@ async function main(): Promise<number> {
 
     const tony = byName.get("tony")!;
     const benjamin = byName.get("benjamin")!;
+    const vivian = byName.get("vivian")!;
+    const eddie = byName.get("eddie")!;
     const wing = byName.get("wing")!;
     const jason = byName.get("jason")!;
     const kaixin = byName.get("kaixin")!;
@@ -131,16 +135,24 @@ async function main(): Promise<number> {
     const picked = assignApi.pickLeastLoadedStaffId();
     const pickedRow = staff.find((row) => row.id === picked);
     check(
-      "自動派單只計 active=1，而且唔會揀 Tony 或 Benjamin",
+      "自動派單只計 active=1，而且唔會揀 Tony、Benjamin 或 Vivian",
       !!pickedRow &&
         pickedRow.active === 1 &&
         pickedRow.username !== "tony" &&
-        pickedRow.username !== "benjamin",
+        pickedRow.username !== "benjamin" &&
+        pickedRow.username !== "vivian",
       pickedRow ? pickedRow.username : "沒有人選"
     );
     check(
-      "Benjamin 同 Tony 一樣係在職管理員",
-      benjamin.is_admin === 1 && benjamin.active === 1 && tony.is_admin === 1 && tony.active === 1
+      "Vivian 同 Benjamin、Tony 一樣係在職管理員",
+      vivian.is_admin === 1 &&
+        vivian.active === 1 &&
+        benjamin.is_admin === 1 &&
+        benjamin.active === 1 &&
+        tony.is_admin === 1 &&
+        tony.active === 1 &&
+        eddie.is_admin === 1 &&
+        eddie.active === 1
     );
 
     check(
@@ -232,21 +244,23 @@ async function main(): Promise<number> {
     const wingLogin = await login(base, "wing");
     const tonyLogin = await login(base, "tony");
     const benjaminLogin = await login(base, "benjamin");
+    const vivianLogin = await login(base, "vivian");
     const eddieLogin = await login(base, "eddie");
     const jasonLogin = await login(base, "jason");
     const kaixinLogin = await login(base, "kaixin");
     check("Wing 可以登入", wingLogin.status === 302 && wingLogin.cookie.includes("connect.sid="));
     check("Tony 可以登入", tonyLogin.status === 302 && tonyLogin.cookie.includes("connect.sid="));
     check("Benjamin 可以登入", benjaminLogin.status === 302 && benjaminLogin.cookie.includes("connect.sid="));
+    check("Vivian 可以登入", vivianLogin.status === 302 && vivianLogin.cookie.includes("connect.sid="));
     check("Eddie 可以登入", eddieLogin.status === 302 && eddieLogin.cookie.includes("connect.sid="));
     check("收藏帳號 kaixin 登入唔到", kaixinLogin.status === 302 && kaixinLogin.location.includes("error") && !kaixinLogin.cookie);
 
     const linesPage = await fetch(`${base}/whatsapp-lines`, { headers: { cookie: tonyLogin.cookie } });
     const linesHtml = await linesPage.text();
     check(
-      "WhatsApp 線路頁寫明 Tony 同 Benjamin 唔參與自動派單",
+      "WhatsApp 線路頁寫明 Tony、Benjamin、Vivian 唔參與自動派單",
       linesPage.status === 200 &&
-        linesHtml.includes("Tony 同 Benjamin 唔參與自動派單") &&
+        linesHtml.includes("Tony、Benjamin、Vivian 唔參與自動派單") &&
         linesHtml.includes("Eddie → Wing → Jason")
     );
 
@@ -468,6 +482,42 @@ async function main(): Promise<number> {
     });
     check("API：Benjamin 可以改派", benjaminAssign.status === 200);
 
+    const vivianHeaders = { cookie: vivianLogin.cookie, accept: "application/json" };
+    const vivianPage = await fetch(`${base}/`, { headers: { cookie: vivianLogin.cookie } });
+    const vivianHtml = await vivianPage.text();
+    check(
+      "網頁：Vivian 同 Benjamin 一樣見到未派",
+      vivianPage.status === 200 &&
+        vivianHtml.includes("只睇我嘅") &&
+        vivianHtml.includes("· 管理員") &&
+        vivianHtml.includes("UNASSIGNED-ONLY-ADMIN")
+    );
+    const vivianDetail = await fetch(`${base}/comments/${unassignedId}`, {
+      headers: { cookie: vivianLogin.cookie },
+    });
+    const vivianDetailHtml = await vivianDetail.text();
+    check(
+      "網頁：Vivian 可以開未派並見到改派",
+      vivianDetail.status === 200 &&
+        vivianDetailHtml.includes("/assign") &&
+        vivianDetailHtml.includes("UNASSIGNED-ONLY-ADMIN")
+    );
+    const vivianLines = await fetch(`${base}/whatsapp-lines`, { headers: { cookie: vivianLogin.cookie } });
+    check("Vivian 可以開 WhatsApp 線路頁", vivianLines.status === 200);
+    const staffPage = await fetch(`${base}/staff`, { headers: { cookie: vivianLogin.cookie } });
+    const staffHtml = await staffPage.text();
+    check(
+      "Vivian 可以開同事名單，而且自己係管理員／啟用",
+      staffPage.status === 200 &&
+        /<code>vivian<\/code><\/td>\s*<td>管理員<\/td>\s*<td>啟用<\/td>/.test(staffHtml)
+    );
+    const vivianAssign = await fetch(`${base}/api/comments/${jasonId}/assign`, {
+      method: "POST",
+      headers: { ...vivianHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ staff_id: jason.id }),
+    });
+    check("API：Vivian 可以改派", vivianAssign.status === 200);
+
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const passwords = require("../auth/passwords") as typeof import("../auth/passwords");
     appDb
@@ -527,32 +577,122 @@ async function main(): Promise<number> {
         adoptedName[0].password_hash === "kept-ben-hash"
     );
 
+    appDb
+      .prepare(
+        `UPDATE staff SET username = 'Vivian', display_name = 'Vivian', is_admin = 0, active = 0, password_hash = 'kept-viv-hash' WHERE username = 'vivian'`
+      )
+      .run();
+    seedMod.applySeedStaff();
+    const adoptedVivianCase = appDb
+      .prepare(
+        `SELECT username, display_name, is_admin, active, password_hash
+         FROM staff
+         WHERE lower(username) = 'vivian' OR lower(display_name) LIKE 'vivian%'`
+      )
+      .all() as Array<{
+      username: string;
+      display_name: string;
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    }>;
+    check(
+      "用戶名 Vivian 會升級成 vivian 管理員，唔會重複",
+      adoptedVivianCase.length === 1 &&
+        adoptedVivianCase[0].username === "vivian" &&
+        adoptedVivianCase[0].display_name === "Vivian" &&
+        adoptedVivianCase[0].is_admin === 1 &&
+        adoptedVivianCase[0].active === 1 &&
+        adoptedVivianCase[0].password_hash === "kept-viv-hash"
+    );
+
+    appDb
+      .prepare(
+        `UPDATE staff SET username = 'vchan', display_name = 'Vivian Chan', is_admin = 0, active = 0, password_hash = 'kept-viv-hash' WHERE username = 'vivian'`
+      )
+      .run();
+    seedMod.ensureVivianAdmin();
+    const adoptedVivianName = appDb
+      .prepare(
+        `SELECT username, display_name, is_admin, active, password_hash
+         FROM staff
+         WHERE lower(username) IN ('vivian', 'vchan') OR lower(trim(display_name)) = 'vivian' OR lower(trim(display_name)) LIKE 'vivian %'`
+      )
+      .all() as Array<{
+      username: string;
+      display_name: string;
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    }>;
+    check(
+      "顯示名 Vivian … 會升級同一列，唔會另開帳號",
+      adoptedVivianName.length === 1 &&
+        adoptedVivianName[0].username === "vivian" &&
+        adoptedVivianName[0].display_name === "Vivian" &&
+        adoptedVivianName[0].is_admin === 1 &&
+        adoptedVivianName[0].active === 1 &&
+        adoptedVivianName[0].password_hash === "kept-viv-hash"
+    );
+
     const tonyStill = appDb.prepare(`SELECT is_admin, active FROM staff WHERE username = 'tony'`).get() as {
       is_admin: number;
       active: number;
     };
-    appDb.prepare(`DELETE FROM staff WHERE username = 'benjamin'`).run();
+    const eddieStill = appDb.prepare(`SELECT is_admin, active, password_hash FROM staff WHERE username = 'eddie'`).get() as {
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    };
+    const benjaminStill = appDb.prepare(`SELECT is_admin, active, password_hash FROM staff WHERE username = 'benjamin'`).get() as {
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    };
+    appDb.prepare(`UPDATE staff SET is_admin = 0, active = 0 WHERE username = 'benjamin'`).run();
+    appDb.prepare(`DELETE FROM staff WHERE username = 'vivian'`).run();
     const commentsBefore = (appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n;
     seedMod.syncStaffOnBoot();
     const commentsAfter = (appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n;
     const inserted = appDb
-      .prepare(`SELECT display_name, is_admin, active, password_hash FROM staff WHERE username = 'benjamin'`)
+      .prepare(`SELECT display_name, is_admin, active, password_hash FROM staff WHERE username = 'vivian'`)
       .get() as { display_name: string; is_admin: number; active: number; password_hash: string };
+    const benjaminAfterBoot = appDb
+      .prepare(`SELECT is_admin, active, password_hash FROM staff WHERE username = 'benjamin'`)
+      .get() as { is_admin: number; active: number; password_hash: string };
     const tonyAfterBoot = appDb.prepare(`SELECT is_admin, active FROM staff WHERE username = 'tony'`).get() as {
       is_admin: number;
       active: number;
     };
+    const eddieAfterBoot = appDb
+      .prepare(`SELECT is_admin, active, password_hash FROM staff WHERE username = 'eddie'`)
+      .get() as { is_admin: number; active: number; password_hash: string };
     check(
-      "已有同事嘅庫啟動會補 Benjamin 管理員",
-      inserted.display_name === "Benjamin" &&
+      "已有同事嘅庫啟動會補 Vivian 管理員",
+      inserted.display_name === "Vivian" &&
         inserted.is_admin === 1 &&
         inserted.active === 1 &&
         passwords.verifyPassword(DEMO_PASSWORD, inserted.password_hash)
     );
     check("啟動對齊唔寫新留言", commentsAfter === commentsBefore);
     check(
-      "補 Benjamin 唔會降 Tony",
-      tonyStill.is_admin === 1 && tonyStill.active === 1 && tonyAfterBoot.is_admin === 1 && tonyAfterBoot.active === 1
+      "啟動仍然確保 Benjamin 係管理員，而且唔改佢密碼",
+      benjaminStill.password_hash.length > 0 &&
+        benjaminAfterBoot.is_admin === 1 &&
+        benjaminAfterBoot.active === 1 &&
+        benjaminAfterBoot.password_hash === benjaminStill.password_hash
+    );
+    check(
+      "補 Vivian 唔會降 Tony 或 Eddie，亦唔改 Eddie 密碼",
+      tonyStill.is_admin === 1 &&
+        tonyStill.active === 1 &&
+        tonyAfterBoot.is_admin === 1 &&
+        tonyAfterBoot.active === 1 &&
+        eddieStill.is_admin === 1 &&
+        eddieStill.active === 1 &&
+        eddieAfterBoot.is_admin === 1 &&
+        eddieAfterBoot.active === 1 &&
+        eddieAfterBoot.password_hash === eddieStill.password_hash
     );
 
     if (failures.length) {
