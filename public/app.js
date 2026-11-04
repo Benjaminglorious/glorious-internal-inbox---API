@@ -684,7 +684,13 @@
     });
   }
 
-  document.addEventListener("DOMContentLoaded", bindStaffMedia);
+  document.addEventListener("DOMContentLoaded", function () {
+    bindStaffMedia();
+    var id = (window.location.hash || "").replace(/^#/, "");
+    var target = id ? document.getElementById(id) : null;
+    var box = target && target.closest ? target.closest("details") : null;
+    if (box) box.open = true;
+  });
 
   function dropPush() {
     if (!("serviceWorker" in navigator)) return Promise.resolve();

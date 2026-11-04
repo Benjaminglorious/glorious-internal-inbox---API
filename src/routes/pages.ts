@@ -117,6 +117,13 @@ function customerReplyButton(
   return `<a class="btn whatsapp own" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" title="用你而家登入嘅 WhatsApp 發畀 ${escapeHtml(formatPhoneE164(phone))}">回覆客戶</a>`;
 }
 
+/** 預設收起。留言操作只留「回覆」喺外面。 */
+function collapsedMore(inner: string, className = "more-actions"): string {
+  const body = inner.trim();
+  if (!body) return "";
+  return `<details class="${className}"><summary>更多</summary><div class="more-actions-body">${body}</div></details>`;
+}
+
 function renderMediaBlocks(items: MediaRecord[]): string {
   if (!items.length) return "";
   return items
@@ -527,7 +534,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
         <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span></td>
         <td class="when">${showTime(c.created_at)}</td>
         <td>${c.assignee_name ? escapeHtml(c.assignee_name) : "未派"}</td>
-        <td class="actions-cell"><a class="btn primary" href="/comments/${c.id}#reply">回覆</a>${customerReplyButton(c)}${whatsAppLinks(c, staffLines)}</td>
+        <td class="actions-cell"><a class="btn primary" href="/comments/${c.id}#reply">回覆</a>${collapsedMore(`${customerReplyButton(c)}${whatsAppLinks(c, staffLines)}`)}</td>
       </tr>`;
     })
     .join("");
@@ -619,7 +626,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     <p class="muted small">搜尋會搵你睇到嘅留言同回覆：留言者、電話、內容、車輛、來源，以及 Facebook／Instagram 帖文編號、連結同內容。可以同上面嘅篩選一齊用。</p>
     <p class="muted small">同一個留言者未完成（未處理或處理中）嘅新訊息會併入最早嗰個 ID。狀態係已完成之後，下一則先至開新 ID。</p>
     <p class="muted small">時間欄同留言詳情嘅建立、更新、回覆時間都係香港時間（HKT，UTC+8）。「剛剛」「分鐘前」「昨天」按香港日曆計。資料庫仍然儲存 UTC。</p>
-    <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。回覆請入去留言。「回覆客戶」會打開你而家登入嘅 WhatsApp 發畀客戶。公司「WhatsApp」同「同事 WhatsApp」係聯絡總機或負責人，唔係發畀客戶。</p>
+    <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。每條留言只展開「回覆」。回覆客戶、公司 WhatsApp、同事 WhatsApp 收喺「更多」。「回覆客戶」會打開你而家登入嘅 WhatsApp 發畀客戶。公司「WhatsApp」同「同事 WhatsApp」係聯絡總機或負責人，唔係發畀客戶。改狀態同改派喺留言頁嘅「更多」。</p>
     <p class="muted small">快捷：${
       viewer.isAdmin ? `<a href="${qs({ mine: "1" })}">我的留言</a> · ` : ""
     }<a href="${qs({ status: "pending", mine: "" })}">擱置／未處理</a> ·
@@ -754,24 +761,6 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         ${thread || `<p class="muted small">未有同事回覆。</p>`}
       </section>
 
-      ${renderStaffWhatsAppPanel(c, req.session.staffId ?? 0)}
-
-      <section class="reply-panel" id="staff-media" data-comment-id="${c.id}">
-        <h2>傳送相片、影片或語音</h2>
-        <p class="muted small">${escapeHtml(mediaComposerHint(c))}</p>
-        <p class="media-status" id="staff-media-status" role="status"></p>
-        <label>說明（可選。相片同影片會一併發給支援嘅渠道；語音說明只顯示喺收件箱）
-          <input id="staff-media-caption" type="text" maxlength="1000" placeholder="可留空">
-        </label>
-        <div class="wa-actions">
-          <label class="btn">上傳相片、影片或語音
-            <input id="staff-media-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/3gpp,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/webm,audio/*" hidden>
-          </label>
-          <button type="button" class="btn" id="staff-media-record">錄製語音</button>
-          <button type="button" class="btn primary" id="staff-media-send" disabled>發送媒體</button>
-        </div>
-      </section>
-
       <section class="reply-panel" id="reply">
         <h2>在系統內回覆</h2>
         ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
@@ -803,6 +792,23 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         </form>
       </section>
 
+      ${collapsedMore(
+        `${renderStaffWhatsAppPanel(c, req.session.staffId ?? 0)}
+      <section class="reply-panel" id="staff-media" data-comment-id="${c.id}">
+        <h2>傳送相片、影片或語音</h2>
+        <p class="muted small">${escapeHtml(mediaComposerHint(c))}</p>
+        <p class="media-status" id="staff-media-status" role="status"></p>
+        <label>說明（可選。相片同影片會一併發給支援嘅渠道；語音說明只顯示喺收件箱）
+          <input id="staff-media-caption" type="text" maxlength="1000" placeholder="可留空">
+        </label>
+        <div class="wa-actions">
+          <label class="btn">上傳相片、影片或語音
+            <input id="staff-media-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/3gpp,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/webm,audio/*" hidden>
+          </label>
+          <button type="button" class="btn" id="staff-media-record">錄製語音</button>
+          <button type="button" class="btn primary" id="staff-media-send" disabled>發送媒體</button>
+        </div>
+      </section>
       <section class="secondary-box">
         <h2>次要：聯絡公司或負責人</h2>
         <p class="muted small">${
@@ -812,7 +818,6 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         }</p>
         ${whatsAppLinks(c, staffLines)}
       </section>
-
       <section class="actions">
         <h2>更新狀態</h2>
         <form method="POST" action="/comments/${c.id}/status" class="inline-form">
@@ -823,9 +828,10 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
           </select>
           <button type="submit" class="btn">儲存狀態</button>
         </form>
-
         ${assignBlock}
-      </section>
+      </section>`,
+        "more-actions page-more"
+      )}
     </article>
   `;
 
