@@ -20,6 +20,7 @@
     "demo:staff-visibility": "tsx src/demo/staff-visibility.ts",
     "demo:inbox-search": "tsx src/demo/inbox-search.ts",
     "demo:inbox-preview": "tsx src/demo/inbox-customer-preview.ts",
+    "demo:inbox-actions": "tsx src/demo/inbox-actions.ts",
     "demo:staff-time": "tsx src/demo/staff-time.ts",
     "demo:change-password": "tsx src/demo/change-password.ts",
     "vapid:keys": "web-push generate-vapid-keys --json",
