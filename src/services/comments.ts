@@ -106,7 +106,9 @@ const COMMENT_SELECT = `
          lr.created_at AS last_reply_at,
          lr.delivery_status AS last_reply_delivery_status,
          lr.direction AS last_reply_direction,
-         rs.display_name AS last_reply_staff_name
+         rs.display_name AS last_reply_staff_name,
+         li.body AS latest_inbound_body,
+         li.created_at AS latest_inbound_at
   FROM comments c
   LEFT JOIN staff s ON s.id = c.assignee_staff_id
   LEFT JOIN (
@@ -116,6 +118,13 @@ const COMMENT_SELECT = `
   ) rc ON rc.comment_id = c.id
   LEFT JOIN comment_replies lr ON lr.id = rc.last_id
   LEFT JOIN staff rs ON rs.id = lr.staff_id
+  LEFT JOIN comment_replies li ON li.id = (
+    SELECT r.id
+    FROM comment_replies r
+    WHERE r.comment_id = c.id AND r.direction = 'inbound'
+    ORDER BY r.created_at DESC, r.id DESC
+    LIMIT 1
+  )
 `;
 
 function asDelivery(value: unknown): DeliveryStatus | null {
@@ -139,6 +148,8 @@ function mapComment(row: CommentRow): CommentWithAssignee {
     last_reply_staff_name: row.last_reply_staff_name ?? null,
     last_reply_delivery_status: asDelivery(row.last_reply_delivery_status),
     last_reply_direction: asDirection(row.last_reply_direction),
+    latest_inbound_body: typeof row.latest_inbound_body === "string" ? row.latest_inbound_body : null,
+    latest_inbound_at: asOptionalText(row.latest_inbound_at),
     wa_from_phone: asOptionalText(row.wa_from_phone),
     wa_to_phone: asOptionalText(row.wa_to_phone),
     meta_sender_id: asOptionalText(row.meta_sender_id),
@@ -340,6 +351,23 @@ function previewText(body: string): string {
   const flat = body.replace(/\s+/g, " ").trim();
   if (flat.length <= PREVIEW_LEN) return flat;
   return flat.slice(0, PREVIEW_LEN) + "…";
+}
+
+/**
+ * 留言箱「內容」用客戶最新一句。
+ * 第一句留喺 comments.body；之後嘅客戶訊息係 inbound reply。
+ * 同事回覆唔會取代呢句。再留言比原本那句舊，就仍然顯示原本那句。
+ */
+export function latestCustomerMessageText(comment: {
+  body: string;
+  created_at: string;
+  latest_inbound_body?: string | null;
+  latest_inbound_at?: string | null;
+}): string {
+  const inbound = comment.latest_inbound_body ?? "";
+  const at = (comment.latest_inbound_at ?? "").trim();
+  if (inbound.trim() && at && at >= comment.created_at) return inbound;
+  return comment.body;
 }
 
 export function listComments(filters: CommentFilters = {}): CommentWithAssignee[] {
