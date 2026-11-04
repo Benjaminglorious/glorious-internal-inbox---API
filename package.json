@@ -26,6 +26,7 @@
     "build": "tsc && node -e \"const fs=require('fs'); fs.mkdirSync('dist/db',{recursive:true}); fs.copyFileSync('src/db/pg-worker.cjs','dist/db/pg-worker.cjs')\"",
     "start:prod": "node dist/index.js",
     "demo:site-comment": "tsx src/demo/site-comment-ingest.ts",
+    "demo:commenter-thread": "tsx src/demo/commenter-thread.ts",
     "demo:28car": "tsx src/demo/twentyeightcar-sync.ts",
     "demo:clear-fixtures": "tsx src/demo/clear-fixtures.ts",
     "demo:postgres": "tsx src/demo/postgres-boot.ts"

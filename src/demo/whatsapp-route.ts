@@ -133,11 +133,12 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
     const openResult = Array.isArray(open.json.results) ? (open.json.results[0] as Record<string, unknown>) : undefined;
     const stored = appDb
       .prepare(
-        `SELECT source, intake_kind, origin_site, author_name, body, assignee_staff_id, wa_from_phone, wa_to_phone
-         FROM comments WHERE external_id = ?`
+        `SELECT id, source, intake_kind, origin_site, author_name, body, assignee_staff_id, wa_from_phone, wa_to_phone
+         FROM comments WHERE external_id = 'wamid.OFFICIAL-SAMPLE'`
       )
-      .get(sampleId) as
+      .get() as
       | {
+          id: number;
           source: string;
           intake_kind: string;
           origin_site: string | null;
@@ -148,12 +149,22 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
           wa_to_phone: string | null;
         }
       | undefined;
+    const sampleReply = stored
+      ? (appDb
+          .prepare(
+            `SELECT body FROM comment_replies
+             WHERE comment_id = ? AND direction = 'inbound' AND body = ?`
+          )
+          .get(stored.id, "Does it come in another color?") as { body: string } | undefined)
+      : undefined;
     check(
       "Meta 樣本冇 X-Webhook-Token 入公司總機",
       open.status === 200 &&
         open.json.ok === true &&
         openResult?.outcome === "company" &&
-        openResult?.created === true &&
+        openResult?.created === false &&
+        openResult?.appended === true &&
+        openResult?.comment_id === stored?.id &&
         openResult?.line_id === company?.id &&
         openResult?.intake_kind === "whatsapp_click" &&
         stored?.source === "whatsapp" &&
@@ -163,7 +174,8 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
         stored?.body === "Does it come in another color?" &&
         stored?.assignee_staff_id != null &&
         stored?.wa_from_phone === "16505551234" &&
-        stored?.wa_to_phone === COMPANY_WHATSAPP_PHONE,
+        stored?.wa_to_phone === COMPANY_WHATSAPP_PHONE &&
+        sampleReply?.body === "Does it come in another color?",
       `status=${open.status} body=${JSON.stringify(open.json)}`
     );
 
@@ -238,13 +250,17 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
       },
       body: signedRaw,
     });
-    const signedJson = (await signed.json()) as { ok?: boolean; results?: Array<{ outcome?: string; created?: boolean }> };
+    const signedJson = (await signed.json()) as {
+      ok?: boolean;
+      results?: Array<{ outcome?: string; created?: boolean; appended?: boolean }>;
+    };
     check(
       "簽名正確且冇自訂 token 入庫",
       signed.status === 200 &&
         signedJson.ok === true &&
         signedJson.results?.[0]?.outcome === "company" &&
-        signedJson.results?.[0]?.created === true
+        signedJson.results?.[0]?.created === false &&
+        signedJson.results?.[0]?.appended === true
     );
     const signedWrongToken = await fetch(`${base}/api/webhooks/whatsapp`, {
       method: "POST",
@@ -357,20 +373,28 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
         },
       ])
     );
-    const mixedText = appDb.prepare(`SELECT body FROM comments WHERE external_id = ?`).get(mixedId) as
-      | { body: string }
-      | undefined;
-    const mixedImage = appDb.prepare(`SELECT id, body FROM comments WHERE external_id = 'wamid.MIX-IMG'`).get() as
+    const mixedText = appDb.prepare(`SELECT id, body FROM comments WHERE external_id = ?`).get(mixedId) as
       | { id: number; body: string }
       | undefined;
+    const mixedImage = mixedText
+      ? (appDb
+          .prepare(
+            `SELECT body FROM comment_replies
+             WHERE comment_id = ? AND direction = 'inbound' AND body = '［圖片］'`
+          )
+          .get(mixedText.id) as { body: string } | undefined)
+      : undefined;
     const mixedResults = Array.isArray(mixed.json.results) ? mixed.json.results : [];
+    const mixedIds = mixedResults.map((row) => (row as { comment_id?: number }).comment_id);
     check(
-      "文字同圖片分別入庫",
+      "同一客人嘅文字同圖片併入同一個 ID",
       mixed.status === 200 &&
         mixed.json.ok === true &&
         mixedResults.length === 2 &&
         mixedText?.body === "文字同圖" &&
-        mixedImage?.body === "［圖片］",
+        mixedImage?.body === "［圖片］" &&
+        mixedIds[0] === mixedText?.id &&
+        mixedIds[1] === mixedText?.id,
       `results=${mixedResults.length} image=${mixedImage?.body || "none"}`
     );
 

@@ -24,11 +24,14 @@
     if (!root) return;
     var raw = root.getAttribute("data-latest-id");
     if (raw == null || !/^\d+$/.test(raw)) return;
-    startWatcher(Number(raw));
+    var replyRaw = root.getAttribute("data-latest-reply-id");
+    var initialReply = replyRaw != null && /^\d+$/.test(replyRaw) ? Number(replyRaw) : null;
+    startWatcher(Number(raw), initialReply);
   });
 
-  function startWatcher(initialCursor) {
+  function startWatcher(initialCursor, initialReplyCursor) {
     var cursor = initialCursor;
+    var replyCursor = initialReplyCursor;
     var unseenCount = 0;
     var newest = null;
     var baseTitle = document.title;
@@ -109,12 +112,17 @@
       }
     }
 
-    function absorb(comments) {
+    function absorb(comments, followUp) {
       var fresh = [];
       for (var i = 0; i < comments.length; i++) {
         var comment = comments[i];
-        var id = Number(comment && comment.id);
-        if (!isFinite(id) || id <= cursor) continue;
+        if (followUp) {
+          var replyId = Number(comment && comment.reply_id);
+          if (replyCursor == null || !isFinite(replyId) || replyId <= replyCursor) continue;
+        } else {
+          var id = Number(comment && comment.id);
+          if (!isFinite(id) || id <= cursor) continue;
+        }
         fresh.push(comment);
       }
       if (!fresh.length) return;
@@ -134,7 +142,9 @@
       polling = true;
       window.clearTimeout(timer);
       var nextMs = POLL_MS;
-      fetch("/api/comments/updates?since_id=" + encodeURIComponent(cursor), {
+      var updatesUrl = "/api/comments/updates?since_id=" + encodeURIComponent(cursor);
+      if (replyCursor != null) updatesUrl += "&since_reply_id=" + encodeURIComponent(replyCursor);
+      fetch(updatesUrl, {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
         cache: "no-store",
@@ -150,13 +160,24 @@
         .then(function (data) {
           if (!data) return;
           var comments = Array.isArray(data.comments) ? data.comments : [];
-          if (comments.length) absorb(comments);
+          var followUps = Array.isArray(data.follow_ups) ? data.follow_ups : [];
+          if (comments.length) absorb(comments, false);
+          if (followUps.length) absorb(followUps, true);
           if (data.has_more && comments.length) {
             var lastId = Number(comments[comments.length - 1].id);
             if (isFinite(lastId) && lastId > cursor) cursor = lastId;
             nextMs = 400;
           } else if (typeof data.latest_id === "number" && data.latest_id > cursor) {
             cursor = data.latest_id;
+          }
+          if (replyCursor != null && typeof data.latest_reply_id === "number") {
+            if (data.follow_ups_has_more && followUps.length) {
+              var lastReply = Number(followUps[followUps.length - 1].reply_id);
+              if (isFinite(lastReply) && lastReply > replyCursor) replyCursor = lastReply;
+              nextMs = 400;
+            } else if (data.latest_reply_id > replyCursor) {
+              replyCursor = data.latest_reply_id;
+            }
           }
         })
         .catch(function () {

@@ -21,6 +21,7 @@ ALTER TABLE comments ADD COLUMN IF NOT EXISTS meta_surface TEXT;
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS meta_post_id TEXT;
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS meta_post_permalink TEXT;
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS meta_post_caption TEXT;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS commenter_key TEXT;
 CREATE INDEX IF NOT EXISTS idx_comments_meta_post ON comments(meta_post_id);
 -- connect-pg-simple's bundled table.sql uses WITH (OIDS=FALSE), which PostgreSQL 12+ rejects.
 -- Create the session table here so the library finds it and skips that script.

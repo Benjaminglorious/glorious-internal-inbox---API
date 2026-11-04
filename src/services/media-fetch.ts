@@ -81,13 +81,18 @@ function asRecord(value: unknown): Record<string, unknown> | null {
  * 用 WhatsApp media id 下載。URL 只會跟 Graph 回應入面、而且網域係 Meta 嘅連結。
  * 未設定 token 就唔會打網絡。
  */
-export async function ingestWhatsAppGraphMedia(commentId: number, media: GraphInboundMedia): Promise<void> {
+export async function ingestWhatsAppGraphMedia(
+  commentId: number,
+  media: GraphInboundMedia,
+  replyId?: number | null
+): Promise<void> {
   const externalId = media.graphMediaId.trim();
   if (!/^\d{5,32}$/.test(externalId)) return;
   const settings = whatsAppCloudSettings();
   if (!settings.ok) {
     await saveInboundMedia({
       commentId,
+      replyId,
       externalId,
       kind: media.kind,
       mimeType: media.mimeType,
@@ -121,6 +126,7 @@ export async function ingestWhatsAppGraphMedia(commentId: number, media: GraphIn
     if (!inspected.ok) throw new Error(inspected.error);
     await saveInboundMedia({
       commentId,
+      replyId,
       externalId,
       kind: inspected.media.kind,
       mimeType: inspected.media.mimeType,
@@ -133,6 +139,7 @@ export async function ingestWhatsAppGraphMedia(commentId: number, media: GraphIn
     console.error(`[media] WhatsApp 媒體未下載 comment=${commentId} media=${externalId}`);
     await saveInboundMedia({
       commentId,
+      replyId,
       externalId,
       kind: media.kind,
       mimeType: media.mimeType,
@@ -144,7 +151,11 @@ export async function ingestWhatsAppGraphMedia(commentId: number, media: GraphIn
 }
 
 /** Messenger／IG／Facebook 留言附帶嘅 https 媒體。唔跟非 Meta 網域，避免 SSRF。 */
-export async function ingestRemoteAttachments(commentId: number, items: RemoteInboundMedia[]): Promise<void> {
+export async function ingestRemoteAttachments(
+  commentId: number,
+  items: RemoteInboundMedia[],
+  replyId?: number | null
+): Promise<void> {
   const token = process.env.META_PAGE_ACCESS_TOKEN?.trim() || process.env.WHATSAPP_ACCESS_TOKEN?.trim() || "";
   const limited = items.slice(0, 4);
   for (const item of limited) {
@@ -159,6 +170,7 @@ export async function ingestRemoteAttachments(commentId: number, items: RemoteIn
     if (parsed.protocol !== "https:" || !isMediaHostAllowed(parsed.hostname)) {
       await saveInboundMedia({
         commentId,
+        replyId,
         externalId,
         kind: item.kind,
         mimeType: fallbackMime,
@@ -176,6 +188,7 @@ export async function ingestRemoteAttachments(commentId: number, items: RemoteIn
       if (!inspected.ok) throw new Error(inspected.error);
       await saveInboundMedia({
         commentId,
+        replyId,
         externalId,
         kind: inspected.media.kind,
         mimeType: inspected.media.mimeType,
@@ -187,6 +200,7 @@ export async function ingestRemoteAttachments(commentId: number, items: RemoteIn
       console.error(`[media] 遠端媒體未下載 comment=${commentId}`);
       await saveInboundMedia({
         commentId,
+        replyId,
         externalId,
         kind: item.kind,
         mimeType: item.kind === "image" ? "image/jpeg" : item.kind === "video" ? "video/mp4" : "audio/mp4",

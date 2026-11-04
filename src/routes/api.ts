@@ -16,6 +16,7 @@ import {
   findStaffById,
 } from "../services/comments";
 import { listMediaForComment, presentMedia } from "../services/media";
+import { blockingOpenThreadId } from "../services/commenter-thread";
 import { createStaffMediaReply, createStaffReply, listReplies } from "../services/replies";
 import { addStaffWhatsAppLine, deactivateWhatsAppLine, listWhatsAppLines, staffWhatsAppReplyForViewer } from "../services/whatsapp";
 import { sendMedia } from "./media-http";
@@ -94,12 +95,26 @@ apiRouter.get("/comments/updates", requireAuth, (req: Request, res: Response) =>
       return;
     }
   }
-  const updates = listCommentUpdates(sinceId, 30, sessionViewer(req));
+  const replyRaw = req.query.since_reply_id;
+  let sinceReplyId: number | null = null;
+  if (replyRaw != null && replyRaw !== "") {
+    if (typeof replyRaw !== "string" || !/^\d+$/.test(replyRaw)) {
+      res.status(400).json({ error: "since_reply_id 必須係非負整數" });
+      return;
+    }
+    sinceReplyId = Number(replyRaw);
+    if (!Number.isSafeInteger(sinceReplyId)) {
+      res.status(400).json({ error: "since_reply_id 必須係非負整數" });
+      return;
+    }
+  }
+  const updates = listCommentUpdates(sinceId, 30, sessionViewer(req), sinceReplyId);
   res.set("Cache-Control", "no-store");
   res.json({
     ...updates,
     time_zone: STAFF_TIME_ZONE,
     comments: updates.comments.map((comment) => presentStaffTimes(comment)),
+    follow_ups: updates.follow_ups.map((comment) => presentStaffTimes(comment)),
   });
 });
 
@@ -248,6 +263,14 @@ apiRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Response
   }
   if (!visibleComment(req, id)) {
     res.status(404).json({ error: "找不到留言" });
+    return;
+  }
+  const conflict = blockingOpenThreadId(id, status);
+  if (conflict) {
+    res.status(409).json({
+      error: `呢位留言者已有未完成對話 #${conflict}。狀態係已完成先至可以再開一條。`,
+      open_comment_id: conflict,
+    });
     return;
   }
   const updated = updateStatus(id, status);

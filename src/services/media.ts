@@ -288,13 +288,18 @@ export async function storeOutboundMedia(input: {
   return { ok: true, id };
 }
 
-function findInbound(commentId: number, externalId: string): { id: number; byte_size: number } | undefined {
+function findInbound(
+  commentId: number,
+  externalId: string
+): { id: number; byte_size: number; reply_id: number | null } | undefined {
   return db
     .prepare(
-      `SELECT id, byte_size FROM message_media
-       WHERE comment_id = ? AND external_id = ? AND reply_id IS NULL`
+      `SELECT id, byte_size, reply_id FROM message_media
+       WHERE comment_id = ? AND external_id = ?
+       ORDER BY id ASC
+       LIMIT 1`
     )
-    .get(commentId, externalId) as { id: number; byte_size: number } | undefined;
+    .get(commentId, externalId) as { id: number; byte_size: number; reply_id: number | null } | undefined;
 }
 
 export async function saveInboundMedia(input: {
@@ -306,8 +311,14 @@ export async function saveInboundMedia(input: {
   sha256?: string | null;
   bytes?: Buffer | null;
   fetchError?: string | null;
+  /** 併入同一對話嘅後續訊息。空則貼喺原帖。 */
+  replyId?: number | null;
 }): Promise<void> {
   const existing = findInbound(input.commentId, input.externalId);
+  const replyId = input.replyId ?? null;
+  if (existing && replyId != null && existing.reply_id == null) {
+    db.prepare(`UPDATE message_media SET reply_id = ? WHERE id = ? AND reply_id IS NULL`).run(replyId, existing.id);
+  }
   if (existing && existing.byte_size > 0) return;
   const bytes = input.bytes ?? null;
   const fetchError = input.fetchError?.trim().slice(0, 300) || null;
@@ -316,7 +327,7 @@ export async function saveInboundMedia(input: {
   if (!id) {
     id = insertMeta({
       commentId: input.commentId,
-      replyId: null,
+      replyId,
       kind: input.kind,
       mimeType: mime,
       byteSize: bytes?.length ?? 0,

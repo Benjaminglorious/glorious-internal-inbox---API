@@ -86,7 +86,7 @@ whatsappWebhookRouter.post("/", async (req: Request, res: Response) => {
     }
     if (message.media) {
       try {
-        await ingestWhatsAppGraphMedia(routed.comment.id, message.media);
+        await ingestWhatsAppGraphMedia(routed.comment.id, message.media, routed.inboundReplyId);
       } catch (err) {
         console.error("[whatsapp] 媒體未儲存", err instanceof Error ? err.message : err);
       }
@@ -97,6 +97,7 @@ whatsappWebhookRouter.post("/", async (req: Request, res: Response) => {
       comment_id: routed.comment.id,
       assignee_staff_id: routed.assigneeStaffId,
       created: routed.created,
+      appended: routed.appended,
       line_id: routed.line?.id ?? null,
       intake_kind: routed.comment.intake_kind,
       origin_site: routed.comment.origin_site,
@@ -167,6 +168,7 @@ function handleSiteCommentPost(req: Request, res: Response, forcedSource?: SiteC
   res.status(result.created ? 201 : 200).json({
     ok: true,
     created: result.created,
+    appended: result.appended,
     comment_id: result.comment.id,
     assignee_staff_id: result.assigneeStaffId,
     source: result.comment.source,
@@ -244,7 +246,7 @@ metaWebhookRouter.post("/", async (req: Request, res: Response) => {
       await attachParentPost(item, upserted.comment.id);
       if (item.attachments?.length) {
         try {
-          await ingestRemoteAttachments(upserted.comment.id, item.attachments);
+          await ingestRemoteAttachments(upserted.comment.id, item.attachments, upserted.inboundReplyId);
         } catch (err) {
           console.error("[meta] 媒體未儲存", err instanceof Error ? err.message : err);
         }
@@ -254,6 +256,7 @@ metaWebhookRouter.post("/", async (req: Request, res: Response) => {
         comment_id: upserted.comment.id,
         source: upserted.comment.source,
         created: upserted.created,
+        appended: upserted.appended,
         assignee_staff_id: upserted.assigneeStaffId,
         intake_kind: upserted.comment.intake_kind,
         external_id: item.external_id,

@@ -3,6 +3,15 @@ import type { CommentSource, CommentStatus, CommentWithAssignee, MetaSurface } f
 import { isCommentSource, isMetaSurface, type EntryPath } from "../types";
 import { resolveEntryPath } from "../intake";
 import { pickLeastLoadedStaffId } from "./assign";
+import {
+  appendInboundMessage,
+  commenterKey,
+  findOpenThread,
+  isOpenCommenterConflict,
+  keySafeToStore,
+  replayFoldedMessage,
+  type ThreadFills,
+} from "./commenter-thread";
 import { getComment } from "./comments";
 import { notifyNewComment } from "./push";
 
@@ -56,6 +65,10 @@ export interface UpsertSiteCommentSuccess {
   ok: true;
   comment: CommentWithAssignee;
   created: boolean;
+  /** 新訊息併入未完成對話，冇開新 ID。 */
+  appended: boolean;
+  /** 併入嘅客戶再留言。新開或更新原帖時係 null。 */
+  inboundReplyId: number | null;
   assigneeStaffId: number | null;
 }
 
@@ -198,6 +211,21 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
   const metaPostId = storePost ? cleanMetaPostId(input.meta_post_id) : null;
   const metaPostPermalink = storePost ? cleanMetaPostPermalink(input.meta_post_permalink) : null;
   const metaPostCaption = storePost ? cleanMetaPostCaption(input.meta_post_caption) : null;
+  const identityKey = commenterKey({
+    source,
+    authorName,
+    externalId,
+    metaSenderId,
+  });
+  const fills: ThreadFills = {
+    metaSenderId,
+    metaSurface,
+    vehicleRef,
+    entryPath,
+    metaPostId,
+    metaPostPermalink,
+    metaPostCaption,
+  };
 
   const run = db.transaction((): UpsertSiteCommentResult => {
     const existing = db
@@ -209,14 +237,51 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
       .get(source, externalId) as ExistingRow | undefined;
 
     if (!existing) {
+      const folded = replayFoldedMessage(source, externalId, body);
+      if (folded) {
+        const comment = getComment(folded.commentId);
+        if (!comment) return { ok: false, error: "更新後讀唔返留言" };
+        return {
+          ok: true,
+          comment,
+          created: false,
+          appended: false,
+          inboundReplyId: folded.replyId,
+          assigneeStaffId: comment.assignee_staff_id,
+        };
+      }
+
+      const open = findOpenThread({ source, key: identityKey, authorName });
+      if (open) {
+        const appended = appendInboundMessage({
+          commentId: open.id,
+          source,
+          externalId,
+          body,
+          authorName,
+          commenterKey: identityKey,
+          fills,
+        });
+        const comment = getComment(open.id);
+        if (!comment) return { ok: false, error: "更新後讀唔返留言" };
+        return {
+          ok: true,
+          comment,
+          created: false,
+          appended: !appended.duplicate,
+          inboundReplyId: appended.replyId,
+          assigneeStaffId: comment.assignee_staff_id,
+        };
+      }
+
       const assigneeStaffId = pickLeastLoadedStaffId();
       const info = db
         .prepare(
           `INSERT INTO comments (
              source, external_id, author_name, body, vehicle_ref, status, assignee_staff_id,
              intake_kind, origin_site, entry_path, meta_sender_id, meta_surface,
-             meta_post_id, meta_post_permalink, meta_post_caption
-           ) VALUES (?, ?, ?, ?, ?, 'open', ?, 'site_comment', NULL, ?, ?, ?, ?, ?, ?)`
+             meta_post_id, meta_post_permalink, meta_post_caption, commenter_key
+           ) VALUES (?, ?, ?, ?, ?, 'open', ?, 'site_comment', NULL, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           source,
@@ -230,11 +295,12 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
           metaSurface,
           metaPostId,
           metaPostPermalink,
-          metaPostCaption
+          metaPostCaption,
+          identityKey
         );
       const comment = getComment(Number(info.lastInsertRowid));
       if (!comment) return { ok: false, error: "入庫後讀唔返留言" };
-      return { ok: true, comment, created: true, assigneeStaffId };
+      return { ok: true, comment, created: true, appended: false, inboundReplyId: null, assigneeStaffId };
     }
 
     let status: CommentStatus = existing.status;
@@ -242,7 +308,11 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
       body !== existing.body ||
       authorName !== existing.author_name ||
       (vehicleRef ?? null) !== (existing.vehicle_ref ?? null);
-    if (changed && status === "done") status = "open";
+    if (changed && status === "done") {
+      const otherOpen = findOpenThread({ source, key: identityKey, authorName, excludeId: existing.id });
+      if (!otherOpen) status = "open";
+    }
+    const keyToStore = keySafeToStore(source, existing.id, identityKey, status);
 
     if (storePost) {
       db.prepare(
@@ -255,6 +325,7 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
              meta_post_id = COALESCE(?, meta_post_id),
              meta_post_permalink = COALESCE(?, meta_post_permalink),
              meta_post_caption = COALESCE(?, meta_post_caption),
+             commenter_key = COALESCE(commenter_key, ?),
              updated_at = datetime('now')
          WHERE id = ?`
       ).run(
@@ -268,6 +339,7 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
         metaPostId,
         metaPostPermalink,
         metaPostCaption,
+        keyToStore,
         existing.id
       );
     } else {
@@ -278,9 +350,10 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
              entry_path = COALESCE(?, entry_path),
              meta_sender_id = COALESCE(?, meta_sender_id),
              meta_surface = COALESCE(?, meta_surface),
+             commenter_key = COALESCE(commenter_key, ?),
              updated_at = datetime('now')
          WHERE id = ?`
-      ).run(authorName, body, vehicleRef, status, entryPath, metaSenderId, metaSurface, existing.id);
+      ).run(authorName, body, vehicleRef, status, entryPath, metaSenderId, metaSurface, keyToStore, existing.id);
     }
 
     const comment = getComment(existing.id);
@@ -289,11 +362,19 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
       ok: true,
       comment,
       created: false,
+      appended: false,
+      inboundReplyId: null,
       assigneeStaffId: comment.assignee_staff_id,
     };
   });
 
-  const result = run();
+  let result: UpsertSiteCommentResult;
+  try {
+    result = run();
+  } catch (err) {
+    if (!isOpenCommenterConflict(err)) throw err;
+    result = run();
+  }
   if (result.ok && result.created) {
     try {
       notifyNewComment({
