@@ -2,16 +2,16 @@ import { db } from "../db";
 
 /**
  * 公司自動派單次序（未完成數相同時）：Eddie → Wing → Jason → 其餘在職同事。
- * 其餘唔包括 Tony、Benjamin。兩人即使 active=1 都唔會被自動派單；管理員可以人手改派畀佢哋。
+ * 其餘唔包括 Tony、Benjamin、Vivian。三人即使 active=1 都唔會被自動派單；管理員可以人手改派畀佢哋。
  * 排除係用戶名名單，唔係所有管理員。Eddie（is_admin）仍然喺優先名單。
  * 新同事（唔喺優先名單、亦唔喺排除名單）排喺 Jason 後面，以 staff.id 升序。只計 active = 1。
  */
 export const AUTO_ASSIGN_PRIORITY_USERNAMES = ["eddie", "wing", "jason"] as const;
-export const AUTO_ASSIGN_EXCLUDED_USERNAMES = ["tony", "benjamin"] as const;
+export const AUTO_ASSIGN_EXCLUDED_USERNAMES = ["tony", "benjamin", "vivian"] as const;
 
 /**
  * Least open comments, then Eddie → Wing → Jason → other active staff by id.
- * Tony and Benjamin are excluded by username. Inactive (active = 0) staff are excluded.
+ * Tony, Benjamin, and Vivian are excluded by username. Inactive (active = 0) staff are excluded.
  * Eddie remains eligible even though he is an admin.
  * 公司 WhatsApp 總機入站（routeWhatsAppInbound）、網站留言 ingest、同 seed 都用呢條規則。
  */
