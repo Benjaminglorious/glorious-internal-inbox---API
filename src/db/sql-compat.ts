@@ -41,11 +41,19 @@ export function translateSql(sql: string): string {
   return out;
 }
 
-/** INSERT … RETURNING id so the sync driver can fill lastInsertRowid. */
+/**
+ * INSERT … RETURNING id so the sync driver can fill lastInsertRowid.
+ * Skip tables whose key is not a column named id. Postgres raises 42703
+ * (column "id" does not exist) and aborts the statement, including the
+ * boot-time fold into comment_message_keys.
+ */
+const INSERT_WITHOUT_ID_COLUMN =
+  /^insert\s+into\s+(?:car_sync_state|comment_message_keys)\b/i;
+
 export function insertReturningId(sql: string): string {
   const trimmed = sql.trim();
   if (!/^insert\s+/i.test(trimmed)) return sql;
   if (/\breturning\b/i.test(trimmed)) return sql;
-  if (/^insert\s+into\s+car_sync_state\b/i.test(trimmed)) return sql;
+  if (INSERT_WITHOUT_ID_COLUMN.test(trimmed)) return sql;
   return `${trimmed.replace(/;\s*$/, "")} RETURNING id`;
 }

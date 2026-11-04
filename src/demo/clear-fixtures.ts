@@ -38,11 +38,19 @@ async function main(): Promise<number> {
       translateSql("UPDATE t SET updated_at = datetime('now') WHERE id = ?").includes("HH24:MI:SS") &&
         translateSql("UPDATE t SET updated_at = datetime('now') WHERE id = ?").includes("$1")
     );
+    const messageKeyInsert = `INSERT INTO comment_message_keys (source, external_id, comment_id, reply_id)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT (source, external_id) DO UPDATE SET
+       comment_id = excluded.comment_id,
+       reply_id = COALESCE(excluded.reply_id, comment_message_keys.reply_id)`;
     check(
-      "INSERT 補 RETURNING id，car_sync_state 唔補",
+      "INSERT 補 RETURNING id，冇 id 欄嘅表唔補",
       insertReturningId("INSERT INTO staff (username) VALUES (?)").endsWith("RETURNING id") &&
+        insertReturningId("INSERT INTO comment_replies (comment_id, body) VALUES (?, ?)").endsWith("RETURNING id") &&
         insertReturningId("INSERT INTO car_sync_state (source) VALUES (?)") ===
-          "INSERT INTO car_sync_state (source) VALUES (?)"
+          "INSERT INTO car_sync_state (source) VALUES (?)" &&
+        insertReturningId(messageKeyInsert) === messageKeyInsert &&
+        !/\breturning\s+id\b/i.test(translateSql(insertReturningId(messageKeyInsert)))
     );
 
     // eslint-disable-next-line @typescript-eslint/no-require-imports

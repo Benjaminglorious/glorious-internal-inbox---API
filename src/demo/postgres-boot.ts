@@ -193,6 +193,73 @@ async function main(): Promise<number> {
     }
     check("production seed 被拒絕", refused);
 
+    const keyColumns = appDb
+      .prepare(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'comment_message_keys'
+         ORDER BY ordinal_position`
+      )
+      .all() as Array<{ column_name: string }>;
+    const keyColumnNames = keyColumns.map((row) => row.column_name);
+    check(
+      "comment_message_keys 主鍵唔係 id",
+      keyColumnNames.includes("source") &&
+        keyColumnNames.includes("external_id") &&
+        keyColumnNames.includes("comment_id") &&
+        !keyColumnNames.includes("id"),
+      keyColumnNames.join(",")
+    );
+
+    appDb.exec(`DROP INDEX IF EXISTS idx_comments_one_open_commenter`);
+    const insertOpen = appDb.prepare(
+      `INSERT INTO comments (
+         source, external_id, author_name, body, status, intake_kind,
+         wa_from_phone, wa_to_phone, commenter_key
+       ) VALUES ('whatsapp', ?, '舊客', ?, 'open', 'whatsapp_click', '85291110000', '85221740001', 'wa:85291110000')`
+    );
+    const foldA = Number(insertOpen.run("wamid.FOLD-A", "舊第一句").lastInsertRowid);
+    const foldB = Number(insertOpen.run("wamid.FOLD-B", "舊第二句").lastInsertRowid);
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const threads = require("../services/commenter-thread") as typeof import("../services/commenter-thread");
+    let foldError = "";
+    let merged = 0;
+    try {
+      merged = threads.unifyOpenCommenterThreads();
+    } catch (err) {
+      foldError = err instanceof Error ? err.message : String(err);
+    }
+    const kept = appDb.prepare(`SELECT id, status FROM comments WHERE id = ?`).get(foldA) as
+      | { id: number; status: string }
+      | undefined;
+    const gone = appDb.prepare(`SELECT id FROM comments WHERE id = ?`).get(foldB) as { id: number } | undefined;
+    const mapped = appDb
+      .prepare(
+        `SELECT comment_id, reply_id FROM comment_message_keys WHERE source = 'whatsapp' AND external_id = 'wamid.FOLD-B'`
+      )
+      .get() as { comment_id: number; reply_id: number | null } | undefined;
+    const stillOpen = Number(
+      (
+        appDb
+          .prepare(
+            `SELECT COUNT(*) AS n FROM comments
+             WHERE source = 'whatsapp' AND commenter_key = 'wa:85291110000' AND status <> 'done'`
+          )
+          .get() as { n: number }
+      ).n
+    );
+    check(
+      "Postgres 啟動合併唔會因為 comment_message_keys 冇 id 而崩潰",
+      foldError === "" &&
+        merged >= 1 &&
+        !!kept &&
+        kept.status !== "done" &&
+        gone == null &&
+        mapped?.comment_id === foldA &&
+        stillOpen === 1,
+      foldError ||
+        `merged=${merged} kept=${kept?.id ?? "none"} gone=${gone?.id ?? "none"} mapped=${mapped?.comment_id ?? "none"} open=${stillOpen}`
+    );
+
     if (failures.length) {
       console.error(`\n${failures.length} 項失敗`);
       return 1;
