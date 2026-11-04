@@ -17,6 +17,14 @@ import type {
   WhatsAppLineKind,
 } from "../types";
 import { pickLeastLoadedStaffId } from "./assign";
+import {
+  appendInboundMessage,
+  commenterKey,
+  findOpenThread,
+  isOpenCommenterConflict,
+  keySafeToStore,
+  replayFoldedMessage,
+} from "./commenter-thread";
 import { findStaffById, getComment } from "./comments";
 import { notifyNewComment } from "./push";
 
@@ -67,6 +75,10 @@ export interface RouteWhatsAppInboundSuccess {
   assigneeStaffId: number | null;
   comment: CommentWithAssignee;
   created: boolean;
+  /** 新訊息併入未完成對話，冇開新 ID。 */
+  appended: boolean;
+  /** 併入嘅客戶再留言。新開或更新原帖時係 null。 */
+  inboundReplyId: number | null;
 }
 
 export interface RouteWhatsAppInboundFailure {
@@ -504,7 +516,9 @@ function resolveAssignment(
  *
  * 有 externalId 時以佢做冪等鍵。冇則用 wa:{to}:{from} 合成一條對話，新內容會附加，
  * 公司總機唔會因為後續訊息而改派。同事線路每次都會對齊綁定同事。
- * 另外把寄件 wa_id 同收件線路寫入 wa_from_phone／wa_to_phone，畀公司線出站用。派單規則唔變。
+ * 另外把寄件 wa_id 同收件線路寫入 wa_from_phone／wa_to_phone，畀公司線出站用。
+ * 同一個客戶電話如果已經有未完成對話，新嘅 wamid 會併入嗰個 ID，唔會改派。
+ * 狀態係已完成先至開新 ID。
  */
 export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWhatsAppInboundResult {
   const to = normalizePhone(input.toPhone);
@@ -539,6 +553,14 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
     originSite = "28car";
   }
 
+  const identityKey = commenterKey({
+    source: "whatsapp",
+    authorName,
+    externalId,
+    waFromPhone: from,
+    waToPhone: to,
+  });
+
   const run = db.transaction((): RouteWhatsAppInboundResult => {
     const existing = db
       .prepare(
@@ -548,23 +570,98 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
       )
       .get(externalId) as ExistingCommentRow | undefined;
 
+    if (!existing) {
+      const folded = replayFoldedMessage("whatsapp", externalId, body);
+      if (folded) {
+        const comment = getComment(folded.commentId);
+        if (!comment) return { ok: false, error: "更新後讀唔返留言" };
+        const routed = resolveAssignment(to, from, externalId, {
+          id: comment.id,
+          body: comment.body,
+          assignee_staff_id: comment.assignee_staff_id,
+          status: comment.status,
+          author_name: comment.author_name,
+        });
+        return {
+          ok: true,
+          outcome: routed.outcome,
+          line: routed.line,
+          assigneeStaffId: comment.assignee_staff_id,
+          comment,
+          created: false,
+          appended: false,
+          inboundReplyId: folded.replyId,
+        };
+      }
+
+      const open = findOpenThread({ source: "whatsapp", key: identityKey, authorName });
+      if (open) {
+        const appended = appendInboundMessage({
+          commentId: open.id,
+          source: "whatsapp",
+          externalId,
+          body,
+          authorName,
+          commenterKey: identityKey,
+          fills: { waFromPhone: from, waToPhone: to, originSite, entryPath },
+        });
+        const comment = getComment(open.id);
+        if (!comment) return { ok: false, error: "更新後讀唔返留言" };
+        const routed = resolveAssignment(to, from, externalId, {
+          id: open.id,
+          body: open.author_name,
+          assignee_staff_id: open.assignee_staff_id,
+          status: open.status,
+          author_name: open.author_name,
+        });
+        return {
+          ok: true,
+          outcome: routed.outcome,
+          line: routed.line,
+          assigneeStaffId: comment.assignee_staff_id,
+          comment,
+          created: false,
+          appended: !appended.duplicate,
+          inboundReplyId: appended.replyId,
+        };
+      }
+    }
+
     const { outcome, assigneeStaffId, line } = resolveAssignment(to, from, externalId, existing);
     const nextBody = existing ? mergeBody(existing.body, body, explicitExternalId == null) : body;
     let status: CommentStatus = existing?.status ?? "open";
-    if (existing && nextBody !== existing.body && status === "done") status = "open";
+    if (existing && nextBody !== existing.body && status === "done") {
+      const otherOpen = findOpenThread({
+        source: "whatsapp",
+        key: identityKey,
+        authorName,
+        excludeId: existing.id,
+      });
+      if (!otherOpen) status = "open";
+    }
+    const keyToStore = existing ? keySafeToStore("whatsapp", existing.id, identityKey, status) : identityKey;
 
     if (!existing) {
       const info = db
         .prepare(
           `INSERT INTO comments (
              source, external_id, author_name, body, vehicle_ref, status, assignee_staff_id,
-             intake_kind, origin_site, wa_from_phone, wa_to_phone, entry_path
-           ) VALUES ('whatsapp', ?, ?, ?, NULL, 'open', ?, 'whatsapp_click', ?, ?, ?, ?)`
+             intake_kind, origin_site, wa_from_phone, wa_to_phone, entry_path, commenter_key
+           ) VALUES ('whatsapp', ?, ?, ?, NULL, 'open', ?, 'whatsapp_click', ?, ?, ?, ?, ?)`
         )
-        .run(externalId, authorName, nextBody, assigneeStaffId, originSite, from, to, entryPath);
+        .run(externalId, authorName, nextBody, assigneeStaffId, originSite, from, to, entryPath, keyToStore);
       const comment = getComment(Number(info.lastInsertRowid));
       if (!comment) return { ok: false, error: "入庫後讀唔返留言" };
-      return { ok: true, outcome, line, assigneeStaffId, comment, created: true };
+      return {
+        ok: true,
+        outcome,
+        line,
+        assigneeStaffId,
+        comment,
+        created: true,
+        appended: false,
+        inboundReplyId: null,
+      };
     }
 
     db.prepare(
@@ -575,15 +672,42 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
            wa_from_phone = ?,
            wa_to_phone = ?,
            entry_path = COALESCE(?, entry_path),
+           commenter_key = COALESCE(commenter_key, ?),
            updated_at = datetime('now')
        WHERE id = ?`
-    ).run(authorName, nextBody, status, assigneeStaffId, originSite, from, to, entryPath, existing.id);
+    ).run(
+      authorName,
+      nextBody,
+      status,
+      assigneeStaffId,
+      originSite,
+      from,
+      to,
+      entryPath,
+      keyToStore,
+      existing.id
+    );
     const comment = getComment(existing.id);
     if (!comment) return { ok: false, error: "更新後讀唔返留言" };
-    return { ok: true, outcome, line, assigneeStaffId, comment, created: false };
+    return {
+      ok: true,
+      outcome,
+      line,
+      assigneeStaffId,
+      comment,
+      created: false,
+      appended: false,
+      inboundReplyId: null,
+    };
   });
 
-  const result = run();
+  let result: RouteWhatsAppInboundResult;
+  try {
+    result = run();
+  } catch (err) {
+    if (!isOpenCommenterConflict(err)) throw err;
+    result = run();
+  }
   if (result.ok && result.created) {
     try {
       notifyNewComment({

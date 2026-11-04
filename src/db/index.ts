@@ -238,3 +238,15 @@ export function shutdownDatabase(): void {
   shutdownPg = null;
   close();
 }
+
+function ensureCommenterKeyColumn(sqlite: DatabaseType): void {
+  const cols = columnNames(sqlite, "comments");
+  if (!cols.has("commenter_key")) sqlite.exec(`ALTER TABLE comments ADD COLUMN commenter_key TEXT`);
+}
+
+if (!usingPostgres) ensureCommenterKeyColumn(database as DatabaseType);
+
+// 表同欄先齊，先至合併未完成嘅同一留言者。循環引用：呢度先 require。
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const commenterThreads = require("../services/commenter-thread") as typeof import("../services/commenter-thread");
+commenterThreads.unifyOpenCommenterThreads();

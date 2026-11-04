@@ -23,6 +23,7 @@ import {
   isMetaSurface,
   isOriginSite,
 } from "../types";
+import { blockingOpenThreadId, isOpenCommenterConflict } from "./commenter-thread";
 
 /** 已登入嘅人。管理員見全部（包括未派）；在職同事只見 assignee 係自己嘅留言。 */
 export interface CommentViewer {
@@ -78,12 +79,18 @@ export interface CommentUpdateItem {
   created_at: string;
   assignee_staff_id: number | null;
   assignee_name: string | null;
+  /** 併入既有對話嘅客戶再留言。新開嘅留言冇呢個欄。 */
+  reply_id?: number;
 }
 
 export interface CommentUpdates {
   latest_id: number;
+  latest_reply_id: number;
   has_more: boolean;
   comments: CommentUpdateItem[];
+  /** 已有 ID 上嘅新客戶訊息。已完成先至會另開 ID，所以跟進唔會變成新 comment id。 */
+  follow_ups: CommentUpdateItem[];
+  follow_ups_has_more: boolean;
 }
 
 interface CommentRow extends Omit<CommentWithAssignee, "reply_count"> {
@@ -154,6 +161,12 @@ export function latestCommentId(): number {
   return Number(row.id) || 0;
 }
 
+/** 最新回覆 id。客戶再留言係 inbound reply，唔會增加 comment id。 */
+export function latestReplyId(): number {
+  const row = db.prepare(`SELECT COALESCE(MAX(id), 0) AS id FROM comment_replies`).get() as { id: number };
+  return Number(row.id) || 0;
+}
+
 /**
  * 新留言游標。sinceId 為 null 時只回最新 id，唔把舊留言當成新訊息。
  * MAX(id) 同新留言列表放喺同一個 transaction，避免兩次讀取之間有插入而跳過。
@@ -161,13 +174,22 @@ export function latestCommentId(): number {
 export function listCommentUpdates(
   sinceId: number | null,
   limit = 30,
-  viewer?: CommentViewer
+  viewer?: CommentViewer,
+  sinceReplyId?: number | null
 ): CommentUpdates {
   const cap = Math.min(Math.max(Math.floor(limit) || 30, 1), 50);
   const read = db.transaction((): CommentUpdates => {
     const latest_id = latestCommentId();
+    const latest_reply_id = latestReplyId();
     if (sinceId == null) {
-      return { latest_id, comments: [], has_more: false };
+      return {
+        latest_id,
+        latest_reply_id,
+        comments: [],
+        has_more: false,
+        follow_ups: [],
+        follow_ups_has_more: false,
+      };
     }
     const where = ["c.id > ?"];
     const params: unknown[] = [sinceId];
@@ -203,35 +225,100 @@ export function listCommentUpdates(
     }>;
     const has_more = rows.length > cap;
     const slice = has_more ? rows.slice(0, cap) : rows;
+    const comments = slice.map((row) => mapUpdateRow(row));
+    const known = new Set(comments.map((row) => row.id));
+    let follow_ups: CommentUpdateItem[] = [];
+    let follow_ups_has_more = false;
+    if (sinceReplyId != null) {
+      const followWhere = ["r.direction = 'inbound'", "r.id > ?"];
+      const followParams: unknown[] = [sinceReplyId];
+      if (viewer && !viewer.isAdmin) {
+        followWhere.push("c.assignee_staff_id = ?");
+        followParams.push(viewer.staffId);
+      }
+      followParams.push(cap + 1);
+      const followRows = db
+        .prepare(
+          `
+          SELECT c.id, r.id AS reply_id, c.source, c.intake_kind, c.origin_site, c.entry_path, c.author_name,
+                 r.body, c.vehicle_ref, c.created_at, c.assignee_staff_id, s.display_name AS assignee_name
+          FROM comment_replies r
+          JOIN comments c ON c.id = r.comment_id
+          LEFT JOIN staff s ON s.id = c.assignee_staff_id
+          WHERE ${followWhere.join(" AND ")}
+          ORDER BY r.id ASC
+          LIMIT ?
+        `
+        )
+        .all(...followParams) as Array<{
+        id: number;
+        reply_id: number;
+        source: CommentSource;
+        intake_kind: string;
+        origin_site: string | null;
+        entry_path: string | null;
+        author_name: string;
+        body: string;
+        vehicle_ref: string | null;
+        created_at: string;
+        assignee_staff_id: number | null;
+        assignee_name: string | null;
+      }>;
+      follow_ups_has_more = followRows.length > cap;
+      follow_ups = (follow_ups_has_more ? followRows.slice(0, cap) : followRows)
+        .filter((row) => !known.has(row.id))
+        .map((row) => ({ ...mapUpdateRow(row), reply_id: Number(row.reply_id) }));
+    }
     return {
       latest_id,
+      latest_reply_id,
       has_more,
-      comments: slice.map((row) => ({
-        id: row.id,
-        source: row.source,
-        intake_kind: isIntakeKind(row.intake_kind) ? row.intake_kind : "site_comment",
-        origin_site: isOriginSite(row.origin_site) ? row.origin_site : null,
-        entry_path: isEntryPath(row.entry_path) ? row.entry_path : null,
-        author_name: row.author_name,
-        preview: previewText(row.body),
-        vehicle_ref: row.vehicle_ref,
-        created_at: row.created_at,
-        assignee_staff_id: row.assignee_staff_id,
-        assignee_name: row.assignee_name,
-      })),
+      comments,
+      follow_ups,
+      follow_ups_has_more,
     };
   });
   return read();
+}
+
+function mapUpdateRow(row: {
+  id: number;
+  source: CommentSource;
+  intake_kind: string;
+  origin_site: string | null;
+  entry_path: string | null;
+  author_name: string;
+  body: string;
+  vehicle_ref: string | null;
+  created_at: string;
+  assignee_staff_id: number | null;
+  assignee_name: string | null;
+}): CommentUpdateItem {
+  return {
+    id: row.id,
+    source: row.source,
+    intake_kind: isIntakeKind(row.intake_kind) ? row.intake_kind : "site_comment",
+    origin_site: isOriginSite(row.origin_site) ? row.origin_site : null,
+    entry_path: isEntryPath(row.entry_path) ? row.entry_path : null,
+    author_name: row.author_name,
+    preview: previewText(row.body),
+    vehicle_ref: row.vehicle_ref,
+    created_at: row.created_at,
+    assignee_staff_id: row.assignee_staff_id,
+    assignee_name: row.assignee_name,
+  };
 }
 
 /** 列表頁用：留言同最新 id 同一個 snapshot，頁面游標先至對得準。 */
 export function listCommentsWithCursor(filters: CommentFilters = {}): {
   comments: CommentWithAssignee[];
   latestId: number;
+  latestReplyId: number;
 } {
   const read = db.transaction(() => ({
     comments: listComments(filters),
     latestId: latestCommentId(),
+    latestReplyId: latestReplyId(),
   }));
   return read();
 }
@@ -239,10 +326,12 @@ export function listCommentsWithCursor(filters: CommentFilters = {}): {
 export function getCommentWithCursor(id: number): {
   comment: CommentWithAssignee | null;
   latestId: number;
+  latestReplyId: number;
 } {
   const read = db.transaction(() => ({
     comment: getComment(id),
     latestId: latestCommentId(),
+    latestReplyId: latestReplyId(),
   }));
   return read();
 }
@@ -454,7 +543,13 @@ export function getComment(id: number): CommentWithAssignee | null {
 }
 
 export function updateStatus(id: number, status: CommentStatus): CommentWithAssignee | null {
-  db.prepare(`UPDATE comments SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(status, id);
+  if (blockingOpenThreadId(id, status)) return getComment(id);
+  try {
+    db.prepare(`UPDATE comments SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(status, id);
+  } catch (err) {
+    if (!isOpenCommenterConflict(err)) throw err;
+    return getComment(id);
+  }
   return getComment(id);
 }
 

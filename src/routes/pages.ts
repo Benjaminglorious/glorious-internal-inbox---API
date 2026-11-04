@@ -27,6 +27,7 @@ import {
   updateStatus,
   reassign,
 } from "../services/comments";
+import { blockingOpenThreadId } from "../services/commenter-thread";
 import { isPlaceholderBody, listMediaForComment, type MediaRecord } from "../services/media";
 import { createStaffReply, listReplies } from "../services/replies";
 import {
@@ -262,12 +263,15 @@ function replyPreview(c: CommentWithAssignee): string {
   if (!c.reply_count || !c.last_reply_body) {
     return `<div class="reply-preview none">未有同事回覆</div>`;
   }
-  const who = c.last_reply_staff_name || "同事";
-  const delivery = c.last_reply_delivery_status ? DELIVERY_LABEL[c.last_reply_delivery_status] : "";
   const flat = c.last_reply_body.replace(/\s+/g, " ").trim();
   const text = flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
   const count = c.reply_count > 1 ? `（${c.reply_count}）` : "";
   const when = c.last_reply_at ? ` · ${showTime(c.last_reply_at)}` : "";
+  if (c.last_reply_direction === "inbound") {
+    return `<div class="reply-preview">客戶再留言${count}${when}：${escapeHtml(text)}</div>`;
+  }
+  const who = c.last_reply_staff_name || "同事";
+  const delivery = c.last_reply_delivery_status ? DELIVERY_LABEL[c.last_reply_delivery_status] : "";
   return `<div class="reply-preview">最新回覆${count} · ${escapeHtml(who)}${when} · ${escapeHtml(delivery)}：${escapeHtml(text)}</div>`;
 }
 
@@ -278,6 +282,7 @@ function layout(opts: {
   active?: string;
   /** 有呢個數字先至喺留言箱／詳情輪詢新留言。0 代表暫時未有留言。 */
   liveCursor?: number;
+  liveReplyCursor?: number;
 }): string {
   const nav = opts.user
     ? `
@@ -308,7 +313,7 @@ function layout(opts: {
 
   const live =
     typeof opts.liveCursor === "number"
-      ? `<div id="inbox-live" data-latest-id="${opts.liveCursor}" hidden></div>`
+      ? `<div id="inbox-live" data-latest-id="${opts.liveCursor}" data-latest-reply-id="${opts.liveReplyCursor ?? 0}" hidden></div>`
       : "";
 
   const authenticated = opts.user ? ` data-authenticated="1"` : "";
@@ -470,7 +475,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
   const entry = entryRaw && isEntryPath(entryRaw) ? entryRaw : undefined;
 
   const viewer = sessionViewer(req);
-  const { comments, latestId } = listCommentsWithCursor({
+  const { comments, latestId, latestReplyId } = listCommentsWithCursor({
     source: src,
     status: st,
     intake,
@@ -610,6 +615,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       </table>
     </div>
     <p class="muted small">搜尋會搵你睇到嘅留言同回覆：留言者、電話、內容、車輛、來源，以及 Facebook／Instagram 帖文編號、連結同內容。可以同上面嘅篩選一齊用。</p>
+    <p class="muted small">同一個留言者未完成（未處理或處理中）嘅新訊息會併入最早嗰個 ID。狀態係已完成之後，下一則先至開新 ID。</p>
     <p class="muted small">時間欄同留言詳情嘅建立、更新、回覆時間都係香港時間（HKT，UTC+8）。「剛剛」「分鐘前」「昨天」按香港日曆計。資料庫仍然儲存 UTC。</p>
     <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。回覆請入去留言。「回覆客戶」會打開你而家登入嘅 WhatsApp 發畀客戶。公司「WhatsApp」同「同事 WhatsApp」係聯絡總機或負責人，唔係發畀客戶。</p>
     <p class="muted small">快捷：${
@@ -626,6 +632,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       user: sessionUser(req),
       active: "inbox",
       liveCursor: latestId,
+      liveReplyCursor: latestReplyId,
     })
   );
 });
@@ -642,7 +649,7 @@ function commentNotFound(req: Request, res: Response, id: string): void {
 
 pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  const { comment: c, latestId } = getCommentWithCursor(id);
+  const { comment: c, latestId, latestReplyId } = getCommentWithCursor(id);
   if (!c || !canViewComment(c, sessionViewer(req))) {
     commentNotFound(req, res, String(req.params.id));
     return;
@@ -688,14 +695,15 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       : "—";
   const thread = replies
     .map((reply) => {
-      const who = reply.staff_name || "同事";
-      const errorLine = reply.delivery_error
-        ? `<p class="error small">${escapeHtml(reply.delivery_error)}</p>`
-        : "";
+      const inbound = reply.direction === "inbound";
+      const who = inbound ? `客戶 · ${c.author_name}` : `同事 · ${reply.staff_name || "同事"}`;
+      const errorLine =
+        !inbound && reply.delivery_error ? `<p class="error small">${escapeHtml(reply.delivery_error)}</p>` : "";
       const replyMedia = mediaByReply.get(reply.id) ?? [];
       const showBody = reply.body && !(replyMedia.length && isPlaceholderBody(reply.body));
-      return `<article class="bubble staff">
-        <div class="who">同事 · ${escapeHtml(who)} · ${showTime(reply.created_at)} · ${escapeHtml(deliveryDetail(reply.delivery_status, c.source))}</div>
+      const delivery = inbound ? "" : ` · ${escapeHtml(deliveryDetail(reply.delivery_status, c.source))}`;
+      return `<article class="bubble ${inbound ? "customer" : "staff"}">
+        <div class="who">${escapeHtml(who)} · ${showTime(reply.created_at)}${delivery}</div>
         ${errorLine}
         ${showBody ? `<div class="bubble-body">${escapeHtml(reply.body)}</div>` : ""}
         ${renderMediaBlocks(replyMedia)}
@@ -826,6 +834,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       user: sessionUser(req),
       active: "inbox",
       liveCursor: latestId,
+      liveReplyCursor: latestReplyId,
     })
   );
 });
@@ -874,6 +883,12 @@ pagesRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Respon
   }
   const status = req.body?.status;
   if (isCommentStatus(status)) {
+    const conflict = blockingOpenThreadId(id, status);
+    if (conflict) {
+      const message = `呢位留言者已有未完成對話 #${conflict}。狀態係已完成先至可以再開一條。`;
+      res.redirect(`/comments/${id}?error=${encodeURIComponent(message)}`);
+      return;
+    }
     updateStatus(id, status);
   }
   res.redirect(`/comments/${id}`);

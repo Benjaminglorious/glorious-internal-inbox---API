@@ -54,7 +54,7 @@ export function listReplies(commentId: number): CommentReply[] {
       FROM comment_replies r
       LEFT JOIN staff s ON s.id = r.staff_id
       WHERE r.comment_id = ?
-      ORDER BY r.id ASC
+      ORDER BY r.created_at ASC, r.id ASC
     `
     )
     .all(commentId) as ReplyRow[];

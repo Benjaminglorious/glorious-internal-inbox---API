@@ -20,6 +20,7 @@ export const COMMENTS_CREATE_COLUMNS = `
   meta_post_id TEXT,
   meta_post_permalink TEXT,
   meta_post_caption TEXT,
+  commenter_key TEXT,
   UNIQUE (source, external_id),
   CHECK (
     (
@@ -206,4 +207,14 @@ CREATE INDEX IF NOT EXISTS idx_message_media_reply ON message_media(reply_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_message_media_inbound_external
   ON message_media(comment_id, external_id)
   WHERE external_id IS NOT NULL AND reply_id IS NULL;
+
+CREATE TABLE IF NOT EXISTS comment_message_keys (
+  source TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+  reply_id INTEGER REFERENCES comment_replies(id) ON DELETE SET NULL,
+  PRIMARY KEY (source, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_comment_message_keys_comment ON comment_message_keys(comment_id);
 `;
