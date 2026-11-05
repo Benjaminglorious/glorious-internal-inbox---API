@@ -5,7 +5,13 @@ import { queueWhatsAppMedia } from "../adapters/whatsapp";
 import { db } from "../db";
 import type { CommentReply, CommentWithAssignee, DeliveryStatus } from "../types";
 import { isDeliveryStatus } from "../types";
-import { canViewComment, findStaffById, getComment, type CommentViewer } from "./comments";
+import {
+  REASSIGNED_MESSAGE,
+  canSendReply,
+  findStaffById,
+  getComment,
+  type CommentViewer,
+} from "./comments";
 import { decodeMediaBase64, inspectMediaBytes, placeholderFor, storeOutboundMedia } from "./media";
 import { prepareChannelAudio } from "./ogg-opus";
 import { normalizePhone } from "./whatsapp";
@@ -61,6 +67,30 @@ export function listReplies(commentId: number): CommentReply[] {
   return rows.map(mapReply);
 }
 
+/**
+ * 發送前再讀一次負責人。舊負責人頁面未刷新時回 403，而且呼叫方唔可以再打去 WhatsApp／Meta／28car。
+ * 留言本身唔存在先至 404。冇 viewer 唔擋（seed／示範內部寫入）。
+ */
+function denyOutboundReply(
+  comment: { assignee_staff_id: number | null } | null,
+  viewer: CommentViewer | undefined
+): ReplyMutation | null {
+  if (!comment) return { ok: false, status: 404, error: "找不到留言" };
+  if (!canSendReply(comment, viewer)) {
+    return { ok: false, status: 403, error: REASSIGNED_MESSAGE };
+  }
+  return null;
+}
+
+function discardUnsentReply(replyId: number, commentId: number, restoreOpen: boolean): void {
+  db.prepare(`DELETE FROM comment_replies WHERE id = ?`).run(replyId);
+  if (!restoreOpen) return;
+  db.prepare(
+    `UPDATE comments SET status = 'open', updated_at = datetime('now')
+     WHERE id = ? AND status = 'in_progress'`
+  ).run(commentId);
+}
+
 function getReply(id: number): CommentReply | null {
   const row = db
     .prepare(
@@ -82,12 +112,13 @@ function getReply(id: number): CommentReply | null {
  * Facebook／Instagram 有 Page token 就打 Graph。
  * 成功 sent，失敗 failed 並寫低原因。同事個人線路同官網仍然係 stub。
  * 原本係未處理（open）會改做處理中，唔會標已完成，所以仍然出現喺擱置／未處理。
+ * 有 viewer 時，打去渠道之前會再讀 assignee。唔係管理員又唔係而家負責人就 403，唔發送。
  */
 export async function createStaffReply(input: {
   commentId: number;
   staffId: number;
   body: string;
-  /** 有傳就按可見範圍拒絕。Seed 等內部寫入唔傳，所以示範回覆可以跨負責人。 */
+  /** 有傳就按而家負責人拒絕。Seed 等內部寫入唔傳，所以示範回覆可以跨負責人。 */
   viewer?: CommentViewer;
 }): Promise<ReplyMutation> {
   if (!Number.isInteger(input.commentId)) return { ok: false, status: 400, error: "無效留言 id" };
@@ -97,13 +128,12 @@ export async function createStaffReply(input: {
   if (!body) return { ok: false, status: 400, error: "請填寫回覆內容" };
   if (body.length > MAX_BODY) return { ok: false, status: 400, error: `回覆不可長過 ${MAX_BODY} 字` };
 
-  const comment = getComment(input.commentId);
-  if (!comment || (input.viewer && !canViewComment(comment, input.viewer))) {
-    return { ok: false, status: 404, error: "找不到留言" };
-  }
-
   const staff = findStaffById(input.staffId);
   if (!staff || !staff.active) return { ok: false, status: 403, error: "找不到這位在職同事" };
+
+  const comment = getComment(input.commentId);
+  const denied = denyOutboundReply(comment, input.viewer);
+  if (denied || !comment) return denied ?? { ok: false, status: 404, error: "找不到留言" };
 
   const queued = await queueOutboundReply({
     commentId: comment.id,
@@ -164,15 +194,15 @@ export async function createStaffMediaReply(input: {
   const caption = (input.caption ?? "").replace(/\u0000/g, "").trim();
   if (caption.length > 1000) return { ok: false, status: 400, error: "說明不可長過 1000 字" };
 
+  const comment = getComment(input.commentId);
+  const denied = denyOutboundReply(comment, input.viewer);
+  if (denied || !comment) return denied ?? { ok: false, status: 404, error: "找不到留言" };
+
   const bytes = decodeMediaBase64(input.dataBase64 || "");
   if (!bytes) return { ok: false, status: 400, error: "媒體內容不正確" };
   const inspected = inspectMediaBytes(bytes, input.mimeType || "", input.isVoice === true);
   if (!inspected.ok) return { ok: false, status: 400, error: inspected.error };
 
-  const comment = getComment(input.commentId);
-  if (!comment || (input.viewer && !canViewComment(comment, input.viewer))) {
-    return { ok: false, status: 404, error: "找不到留言" };
-  }
   const staff = findStaffById(input.staffId);
   if (!staff || !staff.active) return { ok: false, status: 403, error: "找不到這位在職同事" };
 
@@ -230,6 +260,13 @@ export async function createStaffMediaReply(input: {
     }
     outboundBytes = prepared.bytes;
     outboundMime = prepared.mime;
+  }
+
+  const fresh = getComment(comment.id);
+  const deniedAtSend = denyOutboundReply(fresh, input.viewer);
+  if (deniedAtSend || !fresh) {
+    discardUnsentReply(replyId, comment.id, comment.status === "open");
+    return deniedAtSend ?? { ok: false, status: 404, error: "找不到留言" };
   }
 
   let queued: { delivery_status: DeliveryStatus; error?: string | null };

@@ -17,6 +17,7 @@ import { registerTwentyeightcarPages } from "./twentyeightcar-pages";
 import { listingIndex, stockIdFromText } from "../services/twentyeightcar";
 import { formatHktIso, formatStaffTimestamp, parseStoredTimestamp, type StoredClock } from "../time";
 import {
+  REASSIGNED_MESSAGE,
   canViewComment,
   getComment,
   getCommentWithCursor,
@@ -656,6 +657,16 @@ function commentNotFound(req: Request, res: Response, id: string): void {
   );
 }
 
+function reassignedNotice(req: Request, res: Response): void {
+  res.status(403).send(
+    layout({
+      title: "未能發送",
+      body: `<p class="error">${escapeHtml(REASSIGNED_MESSAGE)}</p><p><a href="/">返回留言箱</a></p>`,
+      user: sessionUser(req),
+    })
+  );
+}
+
 pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const { comment: c, latestId, latestReplyId } = getCommentWithCursor(id);
@@ -850,8 +861,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
 pagesRouter.post("/comments/:id/replies", requireAuth, async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const viewer = sessionViewer(req);
-  const existing = getComment(id);
-  if (!existing || !canViewComment(existing, viewer)) {
+  if (!Number.isInteger(id)) {
     commentNotFound(req, res, String(req.params.id));
     return;
   }
@@ -865,6 +875,10 @@ pagesRouter.post("/comments/:id/replies", requireAuth, async (req: Request, res:
     if (!result.ok) {
       if (result.status === 404) {
         commentNotFound(req, res, String(req.params.id));
+        return;
+      }
+      if (result.status === 403 && result.error === REASSIGNED_MESSAGE) {
+        reassignedNotice(req, res);
         return;
       }
       res.redirect(`/comments/${id}?error=${encodeURIComponent(result.error)}#reply`);
@@ -897,7 +911,15 @@ pagesRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Respon
       res.redirect(`/comments/${id}?error=${encodeURIComponent(message)}`);
       return;
     }
-    updateStatus(id, status);
+    const updated = updateStatus(id, status, sessionViewer(req));
+    if (!updated) {
+      if (!getComment(id)) {
+        commentNotFound(req, res, String(req.params.id));
+        return;
+      }
+      reassignedNotice(req, res);
+      return;
+    }
   }
   res.redirect(`/comments/${id}`);
 });
@@ -1021,7 +1043,7 @@ pagesRouter.get("/whatsapp-lines", requireAuth, (req: Request, res: Response) =>
 
   const body = `
     <div class="page-head"><h1>WhatsApp 線路</h1></div>
-    <p class="muted">客戶打去<strong>同事個人號</strong>會自動派畀該同事。打去<strong>公司總機 85221740001</strong>就用現有規則：未完成（open + in_progress）最少嘅在職同事，同數則 Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）。Tony、Benjamin、Vivian 唔參與自動派單。未知號碼會入庫但未派。真實 Meta／Glorious 連接尚未啟用。</p>
+    <p class="muted">客戶打去<strong>同事個人號</strong>會自動派畀該同事。打去<strong>公司總機 85221740001</strong>就按固定輪流：Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）。每次新對話派畀上一位之後嗰位，唔會計未完成（open + in_progress）幾多。Tony、Benjamin、Vivian 唔參與自動派單。未知號碼會入庫但未派。真實 Meta／Glorious 連接尚未啟用。</p>
     ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
     ${ok ? `<p class="notice">${escapeHtml(ok)}</p>` : ""}
     <h2>綁定同事個人號碼</h2>

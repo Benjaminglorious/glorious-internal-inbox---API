@@ -132,7 +132,7 @@ async function main(): Promise<number> {
     const jason = byName.get("jason")!;
     const kaixin = byName.get("kaixin")!;
 
-    const picked = assignApi.pickLeastLoadedStaffId();
+    const picked = assignApi.pickNextAutoAssignStaffId();
     const pickedRow = staff.find((row) => row.id === picked);
     check(
       "自動派單只計 active=1，而且唔會揀 Tony、Benjamin 或 Vivian",
@@ -328,10 +328,17 @@ async function main(): Promise<number> {
       headers: { ...wingHeaders, "content-type": "application/json" },
       body: JSON.stringify({ body: "唔應該寫到" }),
     });
+    const wingReplyJson = (await wingReply.json()) as { error?: string };
     const replyCount = appDb.prepare(`SELECT COUNT(*) AS n FROM comment_replies WHERE comment_id = ?`).get(jasonId) as {
       n: number;
     };
-    check("API：Wing 回覆唔到其他人", wingReply.status === 404 && replyCount.n === 0);
+    check(
+      "API：Wing 回覆唔到其他人",
+      wingReply.status === 403 &&
+        replyCount.n === 0 &&
+        wingReplyJson.error === "呢則留言已改派畀其他同事，請刷新頁面",
+      `status=${wingReply.status} ${wingReplyJson.error || ""}`
+    );
 
     const ownReply = await fetch(`${base}/api/comments/${wingComment.id}/replies`, {
       method: "POST",
@@ -339,6 +346,84 @@ async function main(): Promise<number> {
       body: JSON.stringify({ body: "Wing 回覆自己負責嘅留言" }),
     });
     check("API：Wing 可以回覆自己嘅留言", ownReply.status === 201);
+
+    const repliesBeforeMove = (
+      appDb.prepare(`SELECT COUNT(*) AS n FROM comment_replies WHERE comment_id = ?`).get(wingComment.id) as { n: number }
+    ).n;
+    const moved = await fetch(`${base}/api/comments/${wingComment.id}/assign`, {
+      method: "POST",
+      headers: { ...tonyHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ staff_id: jason.id }),
+    });
+    check("管理員可以改派 Wing 嘅留言", moved.status === 200);
+    const staleReply = await fetch(`${base}/api/comments/${wingComment.id}/replies`, {
+      method: "POST",
+      headers: { ...wingHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ body: "舊頁面唔應該送出" }),
+    });
+    const staleJson = (await staleReply.json()) as { error?: string };
+    const afterStaleReply = (
+      appDb.prepare(`SELECT COUNT(*) AS n FROM comment_replies WHERE comment_id = ?`).get(wingComment.id) as { n: number }
+    ).n;
+    check(
+      "改派之後舊負責人 API 回覆被拒，而且冇寫入",
+      staleReply.status === 403 &&
+        staleJson.error === "呢則留言已改派畀其他同事，請刷新頁面" &&
+        afterStaleReply === repliesBeforeMove,
+      `status=${staleReply.status} n=${afterStaleReply} err=${staleJson.error || ""}`
+    );
+    const stalePage = await fetch(`${base}/comments/${wingComment.id}/replies`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { cookie: wingLogin.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ body: "舊頁面表格唔應該送出" }),
+    });
+    const stalePageHtml = await stalePage.text();
+    const afterStalePage = (
+      appDb.prepare(`SELECT COUNT(*) AS n FROM comment_replies WHERE comment_id = ?`).get(wingComment.id) as { n: number }
+    ).n;
+    check(
+      "改派之後舊負責人網頁回覆被拒",
+      stalePage.status === 403 &&
+        stalePageHtml.includes("呢則留言已改派畀其他同事，請刷新頁面") &&
+        afterStalePage === repliesBeforeMove,
+      `status=${stalePage.status}`
+    );
+    const staleMedia = await fetch(`${base}/api/comments/${wingComment.id}/media-replies`, {
+      method: "POST",
+      headers: { ...wingHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ data_base64: "", mime_type: "image/png", is_voice: false }),
+    });
+    const staleMediaJson = (await staleMedia.json()) as { error?: string };
+    const afterStaleMedia = (
+      appDb.prepare(`SELECT COUNT(*) AS n FROM comment_replies WHERE comment_id = ?`).get(wingComment.id) as { n: number }
+    ).n;
+    check(
+      "改派之後舊負責人媒體回覆被拒，而且冇寫入",
+      staleMedia.status === 403 &&
+        staleMediaJson.error === "呢則留言已改派畀其他同事，請刷新頁面" &&
+        afterStaleMedia === repliesBeforeMove,
+      `status=${staleMedia.status} err=${staleMediaJson.error || ""}`
+    );
+    const jasonHeaders = { cookie: jasonLogin.cookie, accept: "application/json", "content-type": "application/json" };
+    const newAssigneeReply = await fetch(`${base}/api/comments/${wingComment.id}/replies`, {
+      method: "POST",
+      headers: jasonHeaders,
+      body: JSON.stringify({ body: "新負責人可以即刻回覆" }),
+    });
+    check("新負責人可以即刻回覆", newAssigneeReply.status === 201, String(newAssigneeReply.status));
+    const adminReply = await fetch(`${base}/api/comments/${wingComment.id}/replies`, {
+      method: "POST",
+      headers: { ...tonyHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ body: "管理員改派後仍然可以回覆" }),
+    });
+    check("管理員改派後仍然可以回覆", adminReply.status === 201, String(adminReply.status));
+    const restored = await fetch(`${base}/api/comments/${wingComment.id}/assign`, {
+      method: "POST",
+      headers: { ...tonyHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ staff_id: wing.id }),
+    });
+    check("改派測試後交還 Wing", restored.status === 200);
 
     const assigneeBefore = appDb.prepare(`SELECT assignee_staff_id AS id FROM comments WHERE id = ?`).get(jasonId) as {
       id: number;

@@ -187,6 +187,15 @@ CREATE TABLE IF NOT EXISTS car_egress_state (
   updated_at TEXT
 );
 
+-- 公司自動派單輪流游標。只得一行。唔計未完成數。
+CREATE TABLE IF NOT EXISTS auto_assign_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  last_staff_id INTEGER,
+  last_username TEXT,
+  version INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS message_media (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,

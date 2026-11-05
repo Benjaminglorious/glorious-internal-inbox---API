@@ -2,7 +2,7 @@ import { db } from "../db";
 import type { CommentSource, CommentStatus, CommentWithAssignee, MetaSurface } from "../types";
 import { isCommentSource, isMetaSurface, type EntryPath } from "../types";
 import { resolveEntryPath } from "../intake";
-import { pickLeastLoadedStaffId } from "./assign";
+import { pickNextAutoAssignStaffId } from "./assign";
 import {
   appendInboundMessage,
   commenterKey,
@@ -157,7 +157,7 @@ export function cleanMetaPostCaption(value: unknown): string | null {
 
 /**
  * 入庫網站／FB／IG 留言（intake_kind=site_comment，origin_site=NULL）。
- * 以 (source, external_id) 冪等：已存在則更新內容，保留負責人；新留言用最少未完成同事派單。
+ * 以 (source, external_id) 冪等：已存在則更新內容，保留負責人；新留言用輪流次序派單（唔計未完成數）。
  */
 export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteCommentResult {
   const sourceNorm = normalizeSiteCommentSource(input.source);
@@ -274,7 +274,7 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
         };
       }
 
-      const assigneeStaffId = pickLeastLoadedStaffId();
+      const assigneeStaffId = pickNextAutoAssignStaffId();
       const info = db
         .prepare(
           `INSERT INTO comments (

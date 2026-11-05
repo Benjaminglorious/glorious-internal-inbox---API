@@ -16,8 +16,9 @@ export const DEMO_PASSWORD = "Glorious2026!";
 /**
  * 可登入：四位管理員（eddie、tony、benjamin、vivian）+ 兩位在職同事。其餘種子同事收藏（active=0），保留列但登入唔到。
  * 全新資料庫插入次序係 eddie → wing → jason → tony → benjamin → vivian，只影響 staff.id。
- * 自動派單唔包括 tony、benjamin、vivian（見 assign.ts 用戶名名單，唔係因為 is_admin）：
- * Eddie → Wing → Jason → 其餘在職同事。Eddie 都係管理員，但仍然參與自動派單。
+ * 自動派單唔包括 tony、benjamin、vivian（見 assign.ts 用戶名名單，唔係因為 is_admin）。
+ * 輪流次序：Eddie → Wing → Jason → 其餘在職同事（按 staff.id）。唔計未完成數。
+ * Eddie 都係管理員，但仍然參與自動派單。
  */
 export const SEED_STAFF: Array<{
   username: string;
@@ -555,8 +556,9 @@ export async function seed(): Promise<void> {
   const listingCount = upsertObservedDealerListings();
   console.log(`已寫入 ${listingCount} 個 28car 觀察車盤（未含未確認 vid）`);
 
-  // Clear assignees then rebalance so seed is deterministic-ish with least-open
+  // 清走負責人同輪流游標，再由 Eddie 開始逐條派，示範資料每次 seed 都一樣。
   db.prepare(`UPDATE comments SET assignee_staff_id = NULL`).run();
+  db.prepare(`DELETE FROM auto_assign_state`).run();
   const n = autoAssignUnassigned();
   console.log(`已自動派單 ${n} 條`);
 

@@ -2,7 +2,7 @@
  * WhatsApp 適配器。
  *
  * 入站派單唔係靠呢度 poll：POST /api/webhooks/whatsapp 會呼叫 routeWhatsAppInbound
- * （同事個人號 → 綁定同事；公司總機 85221740001 → 最少未完成）。收件路徑唔改。
+ * （同事個人號 → 綁定同事；公司總機 85221740001 → 輪流次序，唔計未完成數）。收件路徑唔改。
  * fetchInboundChats 仍然唔會打網絡。
  *
  * 同事喺收件箱回覆公司總機（有入站儲存嘅客戶 wa_id）會 POST Graph

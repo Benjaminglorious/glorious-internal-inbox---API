@@ -1,6 +1,6 @@
 /**
  * 示範 routeWhatsAppInbound：
- * 公司總機用最少未完成、同數則 Eddie → Wing → Jason → 其餘（按 staff id，Tony 除外）；
+ * 公司總機按輪流次序 Eddie → Wing → Jason → 其餘（按 staff id，Tony、Benjamin、Vivian 除外），唔計未完成數；
  * 同事個人線路派畀綁定同事；未知線路入庫但未派。
  *
  * 先整一個舊 schema（source 冇 whatsapp）再載入 app，順便確認遷移。
@@ -414,20 +414,22 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
 }
 
 /**
- * 同數時必須係 Eddie → Wing → Jason → 其餘（按 id），Tony、Benjamin、Vivian 唔會被派，即使 Eddie 嘅 id 最大。
- * 三人即使 id 最小、未完成數係 0，都唔可以被揀。只剩佢哋時回 null。
+ * 輪流次序係 Eddie → Wing → Jason → 其餘（按 id），唔計未完成數。
+ * Tony、Benjamin、Vivian 唔會被派，即使 id 最小而且未完成數係 0。只剩佢哋時回 null。
+ * Eddie 即使 id 最大、而且已經有未完成，第一輪仍然由佢開始。
  * 用 transaction 回滾，唔影響後面嘅線路示範。
  */
-function checkEqualLoadPriority(appDb: Database.Database): void {
+function checkSequentialRotation(appDb: Database.Database): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { pickLeastLoadedStaffId } = require("../services/assign") as typeof import("../services/assign");
+  const { pickNextAutoAssignStaffId } = require("../services/assign") as typeof import("../services/assign");
   const probe = appDb.transaction(() => {
     appDb.prepare(`UPDATE staff SET active = 0`).run();
+    appDb.prepare(`DELETE FROM auto_assign_state`).run();
     const insertStaff = appDb.prepare(
       `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
        VALUES (?, ?, 'x', ?, 1)`
     );
-    // Tony、Benjamin、Vivian 先插入，staff.id 較小。Eddie 最後插入而且係管理員，同數時仍然排第一。
+    // Tony、Benjamin、Vivian 先插入，staff.id 較小。Eddie 最後插入而且係管理員，輪流仍然由佢開始。
     const tonyId = Number(insertStaff.run("tony", "Tony Chan", 1).lastInsertRowid);
     const benjaminId = Number(insertStaff.run("benjamin", "Benjamin", 1).lastInsertRowid);
     const vivianId = Number(insertStaff.run("vivian", "Vivian", 1).lastInsertRowid);
@@ -441,53 +443,81 @@ function checkEqualLoadPriority(appDb: Database.Database): void {
          source, external_id, author_name, body, status, assignee_staff_id, intake_kind, origin_site
        ) VALUES ('28car', ?, '客', 'priority', 'open', ?, 'site_comment', NULL)`
     );
-
     insertOpen.run("prio-preload-eddie", eddieId);
-    const whileEddieBusy = pickLeastLoadedStaffId();
-    if (whileEddieBusy !== wingId) {
-      throw new Error(`Eddie 已有未完成時應派 Wing，實際 ${whileEddieBusy}`);
-    }
-    appDb.prepare(`UPDATE comments SET status = 'done' WHERE external_id = 'prio-preload-eddie'`).run();
 
     const picked: number[] = [];
-    for (let i = 0; i < 4; i += 1) {
-      const id = pickLeastLoadedStaffId();
+    for (let i = 0; i < 5; i += 1) {
+      const id = pickNextAutoAssignStaffId();
       if (id == null) throw new Error("沒有在職同事");
       if (id === tonyId || id === benjaminId || id === vivianId) {
         throw new Error("自動派單唔可以派畀 Tony、Benjamin 或 Vivian");
       }
       picked.push(id);
-      insertOpen.run(`prio-eq-${i}`, id);
     }
-    const expected = [eddieId, wingId, jasonId, futureId];
-    if (picked.includes(tonyId) || picked.includes(benjaminId) || picked.includes(vivianId)) {
-      throw new Error(`Tony／Benjamin／Vivian 唔應被自動派單，實際 ${picked.join(",")}`);
-    }
+    const expected = [eddieId, wingId, jasonId, futureId, eddieId];
     if (picked.join(",") !== expected.join(",")) {
       throw new Error(
-        `次序 ${picked.join(",")}，期望 Eddie → Wing → Jason → 新同事（唔包括 Tony ${tonyId}、Benjamin ${benjaminId}、Vivian ${vivianId}）（${expected.join(",")}）`
+        `次序 ${picked.join(",")}，期望 Eddie → Wing → Jason → 新同事 → Eddie（Eddie 有未完成、其餘係 0 都唔改次序；唔包括 Tony ${tonyId}、Benjamin ${benjaminId}、Vivian ${vivianId}）（${expected.join(",")}）`
       );
     }
 
-    const fifth = pickLeastLoadedStaffId();
-    if (fifth !== eddieId) {
-      throw new Error(`四位各有一張之後應再派 Eddie，實際 ${fifth}（Tony ${tonyId}）`);
+    appDb.prepare(`UPDATE staff SET active = 0 WHERE id = ?`).run(eddieId);
+    const afterEddieOff = pickNextAutoAssignStaffId();
+    if (afterEddieOff !== wingId) {
+      throw new Error(`上一位 Eddie 停用後應由 Wing 接，實際 ${afterEddieOff}`);
+    }
+    appDb.prepare(`UPDATE staff SET active = 1 WHERE id = ?`).run(eddieId);
+
+    appDb
+      .prepare(
+        `UPDATE auto_assign_state
+         SET last_staff_id = ?, last_username = 'tony', version = version + 1
+         WHERE id = 1`
+      )
+      .run(tonyId);
+    const afterExcludedCursor = pickNextAutoAssignStaffId();
+    if (
+      afterExcludedCursor === tonyId ||
+      afterExcludedCursor === benjaminId ||
+      afterExcludedCursor === vivianId ||
+      afterExcludedCursor !== futureId
+    ) {
+      throw new Error(
+        `游標停喺 Tony 時應跳去下一位新同事 ${futureId}，實際 ${afterExcludedCursor}（Tony ${tonyId}）`
+      );
     }
 
-    appDb.prepare(`UPDATE comments SET status = 'done'`).run();
-    insertOpen.run("prio-tony-idle-e", eddieId);
-    insertOpen.run("prio-tony-idle-w", wingId);
-    insertOpen.run("prio-tony-idle-j", jasonId);
-    insertOpen.run("prio-tony-idle-n", futureId);
-    const despiteTonyIdle = pickLeastLoadedStaffId();
-    if (despiteTonyIdle !== eddieId) {
-      throw new Error(`Tony／Benjamin／Vivian 零負荷時仍應派 Eddie，實際 ${despiteTonyIdle}`);
+    appDb
+      .prepare(
+        `UPDATE auto_assign_state
+         SET last_staff_id = 999999, last_username = 'wing', version = version + 1
+         WHERE id = 1`
+      )
+      .run();
+    const afterMissingWing = pickNextAutoAssignStaffId();
+    if (afterMissingWing !== jasonId) {
+      throw new Error(`上一位 Wing 嘅帳號已經唔存在時應由 Jason 接，實際 ${afterMissingWing}`);
     }
 
+    const cursorBeforeGap = appDb
+      .prepare(`SELECT last_staff_id, last_username FROM auto_assign_state WHERE id = 1`)
+      .get() as { last_staff_id: number; last_username: string };
     appDb.prepare(`UPDATE staff SET active = 0 WHERE username NOT IN ('tony', 'benjamin', 'vivian')`).run();
-    const onlyExcluded = pickLeastLoadedStaffId();
+    const onlyExcluded = pickNextAutoAssignStaffId();
+    const cursorAfterGap = appDb
+      .prepare(`SELECT last_staff_id, last_username FROM auto_assign_state WHERE id = 1`)
+      .get() as { last_staff_id: number; last_username: string };
     if (onlyExcluded != null) {
       throw new Error(`只剩 Tony、Benjamin 同 Vivian 時唔應派單，實際 ${onlyExcluded}`);
+    }
+    if (
+      cursorAfterGap.last_staff_id !== cursorBeforeGap.last_staff_id ||
+      cursorAfterGap.last_username !== cursorBeforeGap.last_username ||
+      cursorAfterGap.last_staff_id === tonyId
+    ) {
+      throw new Error(
+        `冇人可派時唔好改游標，之前 ${cursorBeforeGap.last_staff_id}/${cursorBeforeGap.last_username}，之後 ${cursorAfterGap.last_staff_id}/${cursorAfterGap.last_username}`
+      );
     }
 
     throw new Error("__rollback_priority__");
@@ -495,11 +525,11 @@ function checkEqualLoadPriority(appDb: Database.Database): void {
 
   try {
     probe();
-    check("同數次序 Eddie → Wing → Jason → 新同事，跳過 Tony、Benjamin 同 Vivian", false, "transaction 冇回滾");
+    check("輪流次序 Eddie → Wing → Jason → 新同事，跳過 Tony、Benjamin 同 Vivian", false, "transaction 冇回滾");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     check(
-      "同數次序 Eddie → Wing → Jason → 新同事，跳過 Tony、Benjamin 同 Vivian（即使 Eddie id 最大）",
+      "輪流次序 Eddie → Wing → Jason → 新同事，跳過 Tony、Benjamin 同 Vivian（即使 Eddie 有未完成而且 id 最大）",
       message === "__rollback_priority__",
       message === "__rollback_priority__" ? undefined : message
     );
@@ -620,8 +650,8 @@ async function main(): Promise<number> {
       externalId: "m-company-1",
     });
     check(
-      "總機第一則派畀未完成較少嘅同事乙",
-      company1.ok && company1.outcome === "company" && company1.assigneeStaffId === staffBId,
+      "總機第一則派畀輪流第一位同事甲（即使未完成較多）",
+      company1.ok && company1.outcome === "company" && company1.assigneeStaffId === staffAId,
       company1.ok ? `assignee=${company1.assigneeStaffId} outcome=${company1.outcome}` : company1.error
     );
 
@@ -637,6 +667,14 @@ async function main(): Promise<number> {
       staffMsg.ok && staffMsg.outcome === "staff" && staffMsg.assigneeStaffId === staffAId && staffMsg.comment.author_name === "陳生",
       staffMsg.ok ? `assignee=${staffMsg.assigneeStaffId}` : staffMsg.error
     );
+    const cursorAfterPersonal = appDb
+      .prepare(`SELECT last_staff_id FROM auto_assign_state WHERE id = 1`)
+      .get() as { last_staff_id: number } | undefined;
+    check(
+      "個人線路唔推進總機輪流",
+      cursorAfterPersonal?.last_staff_id === staffAId,
+      `cursor=${cursorAfterPersonal?.last_staff_id}`
+    );
 
     const company2 = wa.routeWhatsAppInbound({
       toPhone: COMPANY_WHATSAPP_PHONE,
@@ -645,7 +683,7 @@ async function main(): Promise<number> {
       externalId: "m-company-2",
     });
     check(
-      "總機第二則仍派同事乙（甲已有舊單加個人線路）",
+      "總機第二則派畀下一位同事乙（唔再睇未完成數）",
       company2.ok && company2.assigneeStaffId === staffBId,
       company2.ok ? `assignee=${company2.assigneeStaffId}` : company2.error
     );
@@ -653,15 +691,23 @@ async function main(): Promise<number> {
     const company3 = wa.routeWhatsAppInbound({
       toPhone: "0085221740001",
       fromPhone: "85290000004",
-      body: "總機第三則（同數、都唔係優先名單，取較細 id）",
+      body: "總機第三則（輪返 id 較細嘅同事甲）",
       externalId: "m-company-3",
     });
     check(
-      "未完成同數、而且都唔喺 Eddie／Wing／Jason 時派 staff id 較細嘅同事甲",
+      "總機第三則輪返同事甲",
       company3.ok && company3.outcome === "company" && company3.assigneeStaffId === staffAId,
       company3.ok ? `assignee=${company3.assigneeStaffId} A=${staffAId} B=${staffBId}` : company3.error
     );
-    checkEqualLoadPriority(appDb);
+    checkSequentialRotation(appDb);
+    const cursorAfterProbe = appDb
+      .prepare(`SELECT last_staff_id FROM auto_assign_state WHERE id = 1`)
+      .get() as { last_staff_id: number } | undefined;
+    check(
+      "輪流探測回滾後總機游標仍然係同事甲",
+      cursorAfterProbe?.last_staff_id === staffAId,
+      `cursor=${cursorAfterProbe?.last_staff_id}`
+    );
 
     const retry = wa.routeWhatsAppInbound({
       toPhone: COMPANY_WHATSAPP_PHONE,
@@ -675,7 +721,7 @@ async function main(): Promise<number> {
         company1.ok &&
         retry.created === false &&
         retry.comment.id === company1.comment.id &&
-        retry.assigneeStaffId === staffBId &&
+        retry.assigneeStaffId === staffAId &&
         retry.comment.body === "總機第一則",
       retry.ok ? `id=${retry.comment.id} created=${retry.created}` : retry.error
     );
