@@ -17,6 +17,7 @@ import { registerTwentyeightcarPages } from "./twentyeightcar-pages";
 import { listingIndex, stockIdFromText } from "../services/twentyeightcar";
 import { formatHktIso, formatStaffTimestamp, parseStoredTimestamp, type StoredClock } from "../time";
 import {
+  REASSIGNED_MESSAGE,
   canViewComment,
   getComment,
   getCommentWithCursor,
@@ -656,6 +657,16 @@ function commentNotFound(req: Request, res: Response, id: string): void {
   );
 }
 
+function reassignedNotice(req: Request, res: Response): void {
+  res.status(403).send(
+    layout({
+      title: "未能發送",
+      body: `<p class="error">${escapeHtml(REASSIGNED_MESSAGE)}</p><p><a href="/">返回留言箱</a></p>`,
+      user: sessionUser(req),
+    })
+  );
+}
+
 pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const { comment: c, latestId, latestReplyId } = getCommentWithCursor(id);
@@ -850,8 +861,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
 pagesRouter.post("/comments/:id/replies", requireAuth, async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const viewer = sessionViewer(req);
-  const existing = getComment(id);
-  if (!existing || !canViewComment(existing, viewer)) {
+  if (!Number.isInteger(id)) {
     commentNotFound(req, res, String(req.params.id));
     return;
   }
@@ -865,6 +875,10 @@ pagesRouter.post("/comments/:id/replies", requireAuth, async (req: Request, res:
     if (!result.ok) {
       if (result.status === 404) {
         commentNotFound(req, res, String(req.params.id));
+        return;
+      }
+      if (result.status === 403 && result.error === REASSIGNED_MESSAGE) {
+        reassignedNotice(req, res);
         return;
       }
       res.redirect(`/comments/${id}?error=${encodeURIComponent(result.error)}#reply`);
@@ -897,7 +911,15 @@ pagesRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Respon
       res.redirect(`/comments/${id}?error=${encodeURIComponent(message)}`);
       return;
     }
-    updateStatus(id, status);
+    const updated = updateStatus(id, status, sessionViewer(req));
+    if (!updated) {
+      if (!getComment(id)) {
+        commentNotFound(req, res, String(req.params.id));
+        return;
+      }
+      reassignedNotice(req, res);
+      return;
+    }
   }
   res.redirect(`/comments/${id}`);
 });

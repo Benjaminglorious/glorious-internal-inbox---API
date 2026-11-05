@@ -5,6 +5,7 @@ import { usingPostgres } from "../db";
 import { companyWhatsAppUrl } from "../config";
 import { isPushConfigured, removePushSubscription, savePushSubscription, vapidPublicKey } from "../services/push";
 import {
+  REASSIGNED_MESSAGE,
   canViewComment,
   getComment,
   listCommentUpdates,
@@ -261,6 +262,7 @@ apiRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Response
     res.status(400).json({ error: "狀態必須係 open / in_progress / done" });
     return;
   }
+  const viewer = sessionViewer(req);
   if (!visibleComment(req, id)) {
     res.status(404).json({ error: "找不到留言" });
     return;
@@ -273,8 +275,13 @@ apiRouter.post("/comments/:id/status", requireAuth, (req: Request, res: Response
     });
     return;
   }
-  const updated = updateStatus(id, status);
-  res.json({ time_zone: STAFF_TIME_ZONE, comment: updated ? presentStaffTimes(updated) : updated });
+  const updated = updateStatus(id, status, viewer);
+  if (!updated) {
+    const still = getComment(id);
+    res.status(still ? 403 : 404).json({ error: still ? REASSIGNED_MESSAGE : "找不到留言" });
+    return;
+  }
+  res.json({ time_zone: STAFF_TIME_ZONE, comment: presentStaffTimes(updated) });
 });
 
 apiRouter.post("/comments/:id/assign", requireAdmin, (req: Request, res: Response) => {

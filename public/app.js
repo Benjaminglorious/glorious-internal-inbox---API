@@ -663,6 +663,11 @@
         .then(function (result) {
           if (!result.ok) {
             var message = result.data && result.data.error ? result.data.error : "未能發送媒體";
+            if (result.status === 403) {
+              sendBtn.disabled = false;
+              setStatus(message);
+              return;
+            }
             window.location.assign(
               "/comments/" + encodeURIComponent(commentId) + "?error=" + encodeURIComponent(message) + "#staff-media"
             );

@@ -31,12 +31,24 @@ export interface CommentViewer {
   isAdmin: boolean;
 }
 
+/** 舊負責人頁面未刷新就再發送時用。唔好改字，示範同 API 都對呢句。 */
+export const REASSIGNED_MESSAGE = "呢則留言已改派畀其他同事，請刷新頁面";
+
 export function canViewComment(
   comment: { assignee_staff_id: number | null },
   viewer: CommentViewer
 ): boolean {
   if (viewer.isAdmin) return true;
   return comment.assignee_staff_id != null && comment.assignee_staff_id === viewer.staffId;
+}
+
+/** 發送當下：管理員或者而家嘅負責人先可以代發。冇 viewer 係內部寫入（seed）。 */
+export function canSendReply(
+  comment: { assignee_staff_id: number | null },
+  viewer: CommentViewer | undefined
+): boolean {
+  if (!viewer) return true;
+  return canViewComment(comment, viewer);
 }
 
 export interface CommentFilters {
@@ -570,10 +582,23 @@ export function getComment(id: number): CommentWithAssignee | null {
   return row ? mapComment(row) : null;
 }
 
-export function updateStatus(id: number, status: CommentStatus): CommentWithAssignee | null {
+export function updateStatus(
+  id: number,
+  status: CommentStatus,
+  viewer?: CommentViewer
+): CommentWithAssignee | null {
   if (blockingOpenThreadId(id, status)) return getComment(id);
   try {
-    db.prepare(`UPDATE comments SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(status, id);
+    const result =
+      viewer && !viewer.isAdmin
+        ? db
+            .prepare(
+              `UPDATE comments SET status = ?, updated_at = datetime('now')
+               WHERE id = ? AND assignee_staff_id = ?`
+            )
+            .run(status, id, viewer.staffId)
+        : db.prepare(`UPDATE comments SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(status, id);
+    if (viewer && !viewer.isAdmin && result.changes < 1) return null;
   } catch (err) {
     if (!isOpenCommenterConflict(err)) throw err;
     return getComment(id);
