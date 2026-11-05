@@ -132,7 +132,7 @@ async function main(): Promise<number> {
     const jason = byName.get("jason")!;
     const kaixin = byName.get("kaixin")!;
 
-    const picked = assignApi.pickLeastLoadedStaffId();
+    const picked = assignApi.pickNextAutoAssignStaffId();
     const pickedRow = staff.find((row) => row.id === picked);
     check(
       "自動派單只計 active=1，而且唔會揀 Tony、Benjamin 或 Vivian",

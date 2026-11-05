@@ -16,7 +16,7 @@ import type {
   WhatsAppLine,
   WhatsAppLineKind,
 } from "../types";
-import { pickLeastLoadedStaffId } from "./assign";
+import { hasEligibleAutoAssignStaff, pickNextAutoAssignStaffId } from "./assign";
 import {
   appendInboundMessage,
   commenterKey,
@@ -460,7 +460,8 @@ function resolveAssignment(
   to: string,
   from: string,
   externalId: string,
-  existing: ExistingCommentRow | undefined
+  existing: ExistingCommentRow | undefined,
+  claimAutoAssign = true
 ): { outcome: WhatsAppRouteOutcome; assigneeStaffId: number | null; line: WhatsAppLine | null } {
   const row = findLineByPhone(to, true);
   const line = row ? mapLine(row) : null;
@@ -499,7 +500,15 @@ function resolveAssignment(
     return { outcome: "company", assigneeStaffId: existing.assignee_staff_id, line };
   }
 
-  const staffId = pickLeastLoadedStaffId();
+  // 跟進併入已有對話時唔好推進輪流，即使舊對話未派。
+  if (!claimAutoAssign) {
+    if (!hasEligibleAutoAssignStaff()) {
+      return { outcome: "unassigned_no_staff", assigneeStaffId: null, line };
+    }
+    return { outcome: "company", assigneeStaffId: null, line };
+  }
+
+  const staffId = pickNextAutoAssignStaffId();
   if (staffId == null) {
     console.warn(`[whatsapp] 公司總機 ${line.phone_e164} 沒有在職同事可派 external_id=${externalId}`);
     return { outcome: "unassigned_no_staff", assigneeStaffId: null, line };
@@ -511,7 +520,7 @@ function resolveAssignment(
  * 將一則打去某條 WhatsApp 線路嘅訊息入庫並派單。
  *
  * - 同事個人線路 → 派畀綁定同事
- * - 公司總機 → pickLeastLoadedStaffId（未完成最少，同數則 Eddie → Wing → Jason → 其餘按 staff id；Tony、Benjamin、Vivian 唔參與）
+ * - 公司總機 → pickNextAutoAssignStaffId（輪流：Eddie → Wing → Jason → 其餘按 staff id；唔計未完成數。Tony、Benjamin、Vivian 唔參與）
  * - 未知／已停用線路 → 入庫為未派，並寫 log
  *
  * 有 externalId 時以佢做冪等鍵。冇則用 wa:{to}:{from} 合成一條對話，新內容會附加，
@@ -575,13 +584,19 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
       if (folded) {
         const comment = getComment(folded.commentId);
         if (!comment) return { ok: false, error: "更新後讀唔返留言" };
-        const routed = resolveAssignment(to, from, externalId, {
-          id: comment.id,
-          body: comment.body,
-          assignee_staff_id: comment.assignee_staff_id,
-          status: comment.status,
-          author_name: comment.author_name,
-        });
+        const routed = resolveAssignment(
+          to,
+          from,
+          externalId,
+          {
+            id: comment.id,
+            body: comment.body,
+            assignee_staff_id: comment.assignee_staff_id,
+            status: comment.status,
+            author_name: comment.author_name,
+          },
+          false
+        );
         return {
           ok: true,
           outcome: routed.outcome,
@@ -607,13 +622,19 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
         });
         const comment = getComment(open.id);
         if (!comment) return { ok: false, error: "更新後讀唔返留言" };
-        const routed = resolveAssignment(to, from, externalId, {
-          id: open.id,
-          body: open.author_name,
-          assignee_staff_id: open.assignee_staff_id,
-          status: open.status,
-          author_name: open.author_name,
-        });
+        const routed = resolveAssignment(
+          to,
+          from,
+          externalId,
+          {
+            id: open.id,
+            body: open.author_name,
+            assignee_staff_id: open.assignee_staff_id,
+            status: open.status,
+            author_name: open.author_name,
+          },
+          false
+        );
         return {
           ok: true,
           outcome: routed.outcome,

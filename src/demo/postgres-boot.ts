@@ -178,7 +178,7 @@ async function main(): Promise<number> {
     const tony = appDb.prepare(`SELECT id FROM staff WHERE username = 'tony'`).get() as { id: number };
     const benjaminStaff = appDb.prepare(`SELECT id FROM staff WHERE username = 'benjamin'`).get() as { id: number };
     const vivianStaff = appDb.prepare(`SELECT id FROM staff WHERE username = 'vivian'`).get() as { id: number };
-    const picked = assignMod.pickLeastLoadedStaffId();
+    const picked = assignMod.pickNextAutoAssignStaffId();
     check(
       "自動派單跳過 Tony、Benjamin 同 Vivian",
       picked != null && picked !== tony.id && picked !== benjaminStaff.id && picked !== vivianStaff.id,

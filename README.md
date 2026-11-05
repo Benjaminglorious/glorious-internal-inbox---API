@@ -420,7 +420,7 @@ Seed 會寫入公司總機：
 `routeWhatsAppInbound({ toPhone, fromPhone, body, externalId })`（`src/services/whatsapp.ts`）：
 
 1. **同事個人號**（`kind = staff` 而且啟用）→ 該對話／留言自動派畀綁定嘅同事。
-2. **公司總機 `85221740001`** → 用現有自動派單：**未完成（open + in_progress）最少嘅在職同事優先，同數則 Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）。Tony、Benjamin、Vivian 唔參與自動派單**（管理員仍然可以人手改派畀佢哋）。Eddie 都係管理員，但仍然參與。
+2. **公司總機 `85221740001`** → 按固定輪流派畀下一位在職同事：**Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）**。唔會計未完成（open + in_progress）數量。游標存在 `auto_assign_state`，重啟同多個 instance 都沿用上一位。**Tony、Benjamin、Vivian 唔參與自動派單**（管理員仍然可以人手改派畀佢哋）。Eddie 都係管理員，但仍然參與。如果上一位已停用、被排除或不存在，就由次序入面下一位仍然符合資格嘅同事接。未有游標時由 Eddie（或第一位符合資格嘅同事）開始。
 3. **未知或已停用號碼** → 仍然入庫（來源 `whatsapp`、狀態未處理），但**未派單**，並喺伺服器 log 記一筆。綁定同事已停用時同樣未派。
 
 有 `external_id` 時用佢做冪等鍵（webhook 重試唔會開新留言，亦唔會改走公司總機已派嘅同事）。冇 `external_id` 時，同一對「收件線路 + 寄件人」合成一條對話，新內容會附加。
@@ -531,7 +531,7 @@ Header：`X-Webhook-Token: <WEBHOOK_VERIFY_TOKEN>`（或 `Authorization: Bearer 
 }
 ```
 
-`source`：`28car`、`glorious_web`、`facebook`、`instagram`（別名 `fb`／`ig`／`gw`／`web`／`glorious`）。會入庫為 `intake_kind=site_comment`、`origin_site` 空，並用最少未完成同事派單。同一 `(source, external_id)` 再打會更新內容，唔會開新列。
+`source`：`28car`、`glorious_web`、`facebook`、`instagram`（別名 `fb`／`ig`／`gw`／`web`／`glorious`）。會入庫為 `intake_kind=site_comment`、`origin_site` 空，並用同一套輪流次序派單（唔計未完成數）。同一 `(source, external_id)` 再打會更新內容，唔會開新列。
 
 路徑別名（body 可以唔傳 `source`）：
 
@@ -562,7 +562,7 @@ Verify token = `WEBHOOK_VERIFY_TOKEN`。
 
 本地預設 SQLite（`better-sqlite3`），檔案喺 `data/inbox.db`（已加入 `.gitignore`）。設定 `DATABASE_URL` 或 `POSTGRES_URL` 就改用 PostgreSQL（`pg`，參數化查詢）。正式環境用 Render Postgres，見上面「Render」。兩種庫都係開機時對齊 schema。
 
-派單規則（seed／未指派留言／公司 WhatsApp 總機）：**未完成（open + in_progress）最少、而且 `active=1` 嘅同事優先，同數則 Eddie → Wing → Jason → 其餘（按 staff id，排喺 Jason 後面）**。**Tony（`username=tony`）、Benjamin（`username=benjamin`）同 Vivian（`username=vivian`）唔參與自動派單**，即使在職。排除係用戶名名單，唔係所有管理員（Eddie 仍然參與）。收藏（`active=0`）唔會被派單，亦登入唔到。優先名單係 `eddie`、`wing`、`jason`；其他在職同事排喺 Jason 後面。管理員可以人手改派，包括派畀 Tony、Benjamin 同 Vivian。
+派單規則（seed／未指派留言／公司 WhatsApp 總機／網站留言）：**固定輪流，唔計未完成數**。次序係 **Eddie → Wing → Jason → 其餘 `active=1` 同事（按 staff id，排喺 Jason 後面）**。上一位寫入 `auto_assign_state`（`last_staff_id`、`last_username`）。**Tony（`username=tony`）、Benjamin（`username=benjamin`）同 Vivian（`username=vivian`）唔參與自動派單**，即使在職。排除係用戶名名單，唔係所有管理員（Eddie 仍然參與）。收藏（`active=0`）唔會被派單，亦登入唔到。優先名單係 `eddie`、`wing`、`jason`；其他在職同事排喺 Jason 後面。管理員可以人手改派，包括派畀 Tony、Benjamin 同 Vivian。`npm run seed` 會清走輪流游標，再由 Eddie 開始派示範留言。
 
 如果資料庫係舊版本（未有 `whatsapp`、未有 `instagram`，或者未有 `intake_kind`／`origin_site`），啟動時會自動重建 `comments` 表。原有留言 id、內容同負責人都保留。舊嘅網站留言會標成 `site_comment`；舊嘅 WhatsApp 會標成 `whatsapp_click`，`origin_site` 留空（直接 WhatsApp）。
 
@@ -714,7 +714,7 @@ npm run demo:meta-outbound
 
 `gmld28013` 觀察到四個車盤（麥拿倫 720S、寶馬 I8、勞斯萊斯 PHANTOM EWB、豐田 ALPHARD）。`npm run seed`（本地示範）會寫低呢四個，**vid 留空**，因為讀頁先至知道。`npm start` 同 `npm run seed:staff` **唔會**寫呢啲觀察車盤。現場每個車盤只有一則賣家帖（WhatsApp `21740001` 附註），賣家帖放喺車盤頁，唔會變成客戶工單。Seed 另有一則示範買家留言（李先生問 720S），用來顯示「28car 留言板」標籤。`npm run clear:demo` 會刪呢則示範買家同 `sync_origin=observed` 嘅車盤。
 
-買家一旦寫喺留言板，同步會寫入 `comments`，`source=28car`、`entry_path=28car_board`，畫面係「28car 留言板」，並且用最少未完成同事派單。
+買家一旦寫喺留言板，同步會寫入 `comments`，`source=28car`、`entry_path=28car_board`，畫面係「28car 留言板」，並且用同一套輪流次序派單（唔計未完成數）。
 
 另一條路：客戶撳留言區入面嘅 WhatsApp 連結（`https://api.whatsapp.com/send?phone=85221740001`）入公司 WhatsApp。如果 Meta referral 係車輛頁（`sell_dsp.php`、`h_vid`、`h_vw`、`msgbox`），入庫係 `source=whatsapp`、`origin_site=28car`、`entry_path=28car_wa_link`，畫面係「28car 留言區 WhatsApp」。同一條 click-to-chat 官網同 Facebook 都用，所以**淨係**呢條 URL、又冇車輛頁 referral，唔會標成 28car。可以喺 webhook 明確傳 `entry_path: "28car_wa_link"`。
 
