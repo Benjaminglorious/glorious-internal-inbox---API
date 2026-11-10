@@ -3,6 +3,7 @@ import { requireAdmin, requireAuth, sessionViewer } from "../auth/middleware";
 import { clearDemoFixtures } from "../db/clear-demo";
 import { usingPostgres } from "../db";
 import { companyWhatsAppUrl } from "../config";
+import { emailIngestStatus } from "../services/email-config";
 import { isPushConfigured, removePushSubscription, savePushSubscription, vapidPublicKey } from "../services/push";
 import {
   REASSIGNED_MESSAGE,
@@ -45,6 +46,7 @@ apiRouter.get("/health", (_req, res) => {
     time_zone: STAFF_TIME_ZONE,
     company_whatsapp_url: companyWhatsAppUrl(),
     push_enabled: isPushConfigured(),
+    email: emailIngestStatus(),
     database: usingPostgres ? "postgres" : "sqlite",
     twentyeightcar: (() => {
       const status = twentyeightcarStatus(false);

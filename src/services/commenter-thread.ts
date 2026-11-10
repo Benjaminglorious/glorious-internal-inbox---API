@@ -1,14 +1,15 @@
 import { COMPANY_WHATSAPP_PHONE } from "../config";
 import { db } from "../db";
 import type { CommentStatus } from "../types";
+import { normalizeEmailAddress } from "./email-address";
 
 /**
  * 未完成（未處理／處理中）嘅同一留言者只用一個收件箱 ID。
  * 狀態係已完成先至可以再開新 ID。
  *
- * 身份：WhatsApp 用客戶電話；Facebook／Instagram 用 PSID／IGSID；
+ * 身份：WhatsApp 用客戶電話；電郵用客戶電郵地址；Facebook／Instagram 用 PSID／IGSID；
  * 冇穩定 id（28car、官網、Meta 冇 sender）先至用正規化姓名。
- * 唔會把 WhatsApp 同 FB／IG 當同一個人。
+ * 唔會把 WhatsApp、電郵同 FB／IG 當同一個人。電郵唔會因為顯示名相同而合併。
  */
 
 const GENERIC_NAMES = new Set([
@@ -40,6 +41,8 @@ export interface CommenterKeyInput {
   waFromPhone?: string | null;
   waToPhone?: string | null;
   metaSenderId?: string | null;
+  /** 公司電郵客戶地址。只用於 source=email。 */
+  emailAddress?: string | null;
 }
 
 export interface OpenThreadHit {
@@ -161,6 +164,10 @@ export function commenterKey(input: CommenterKeyInput): string | null {
     if (phone) return `wa:${phone}`;
     return null;
   }
+  if (input.source === "email") {
+    const address = normalizeEmailAddress(input.emailAddress);
+    return address ? `email:${address}` : null;
+  }
   const sender = (input.metaSenderId ?? "").trim();
   if (
     (input.source === "facebook" || input.source === "instagram") &&
@@ -207,7 +214,7 @@ export function findOpenThread(input: {
   }
 
   const name = usefulName(input.authorName);
-  if (!name || input.source === "whatsapp") return undefined;
+  if (!name || input.source === "whatsapp" || input.source === "email") return undefined;
 
   const rows = db
     .prepare(
@@ -402,19 +409,24 @@ interface FullRow {
   meta_post_id: string | null;
   meta_post_permalink: string | null;
   meta_post_caption: string | null;
+  email_from: string | null;
+  email_subject: string | null;
+  email_message_id: string | null;
+  email_references: string | null;
 }
 
 const FULL_SELECT = `
   SELECT id, source, external_id, author_name, body, vehicle_ref, status, assignee_staff_id,
          commenter_key, created_at, wa_from_phone, wa_to_phone, origin_site, entry_path,
-         meta_sender_id, meta_surface, meta_post_id, meta_post_permalink, meta_post_caption
+         meta_sender_id, meta_surface, meta_post_id, meta_post_permalink, meta_post_caption,
+         email_from, email_subject, email_message_id, email_references
   FROM comments
 `;
 
 function backfillCommenterKeys(): void {
   const rows = db
     .prepare(
-      `SELECT id, source, external_id, author_name, wa_from_phone, wa_to_phone, meta_sender_id
+      `SELECT id, source, external_id, author_name, wa_from_phone, wa_to_phone, meta_sender_id, email_from
        FROM comments
        WHERE commenter_key IS NULL`
     )
@@ -426,6 +438,7 @@ function backfillCommenterKeys(): void {
     wa_from_phone: string | null;
     wa_to_phone: string | null;
     meta_sender_id: string | null;
+    email_from: string | null;
   }>;
   if (!rows.length) return;
   const update = db.prepare(`UPDATE comments SET commenter_key = ? WHERE id = ? AND commenter_key IS NULL`);
@@ -437,6 +450,7 @@ function backfillCommenterKeys(): void {
       waFromPhone: row.wa_from_phone,
       waToPhone: row.wa_to_phone,
       metaSenderId: row.meta_sender_id,
+      emailAddress: row.email_from,
     });
     if (!key) continue;
     const apply = db.transaction(() => {
@@ -498,6 +512,10 @@ function foldInto(canonical: FullRow, extra: FullRow): void {
        meta_post_id = COALESCE(meta_post_id, ?),
        meta_post_permalink = COALESCE(meta_post_permalink, ?),
        meta_post_caption = COALESCE(meta_post_caption, ?),
+       email_from = COALESCE(email_from, ?),
+       email_subject = COALESCE(email_subject, ?),
+       email_message_id = COALESCE(email_message_id, ?),
+       email_references = COALESCE(email_references, ?),
        updated_at = datetime('now')
      WHERE id = ?`
   ).run(
@@ -515,6 +533,10 @@ function foldInto(canonical: FullRow, extra: FullRow): void {
     extra.meta_post_id,
     extra.meta_post_permalink,
     extra.meta_post_caption,
+    extra.email_from,
+    extra.email_subject,
+    extra.email_message_id,
+    extra.email_references,
     canonical.id
   );
   canonical.author_name = author;
@@ -569,7 +591,7 @@ function foldOpenDuplicates(): number {
     const byName = new Map<string, FullRow[]>();
     for (const row of list) {
       const name = usefulName(row.author_name);
-      if (!name || row.source === "whatsapp") continue;
+      if (!name || row.source === "whatsapp" || row.source === "email") continue;
       const named = byName.get(name) ?? [];
       named.push(row);
       byName.set(name, named);

@@ -17,6 +17,7 @@ import {
   siteCommentWebhookRouter,
   whatsappWebhookRouter,
 } from "./routes/webhooks";
+import { startCompanyEmailPoller } from "./services/email-poll";
 import { isPushConfigured } from "./services/push";
 
 syncStaffOnBoot();
@@ -132,4 +133,5 @@ app.listen(PORT, "0.0.0.0", () => {
       ? "Web Push：已設定 VAPID"
       : "Web Push：未設定 VAPID（PWA 仍可安裝，關閉頁面後唔會推送）"
   );
+  startCompanyEmailPoller();
 });

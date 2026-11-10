@@ -4,6 +4,7 @@ import * as gloriousWeb from "./glorious-web";
 import * as facebook from "./facebook";
 import * as instagram from "./instagram";
 import * as whatsapp from "./whatsapp";
+import * as email from "./email";
 
 export const adapters = {
   "28car": twentyeightcar,
@@ -42,6 +43,7 @@ export async function queueOutboundReply(input: OutboundReplyRequest): Promise<O
   if (input.source === "28car") return twentyeightcar.queueOutboundReply(input);
   if (input.source === "glorious_web") return gloriousWeb.queueOutboundReply(input);
   if (input.source === "facebook") return facebook.queueOutboundReply(input);
+  if (input.source === "email") return email.queueOutboundReply(input);
   return {
     delivery_status: "stub",
     provider: "unconfigured",

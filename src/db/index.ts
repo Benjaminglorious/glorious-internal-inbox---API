@@ -67,16 +67,35 @@ function migrateCommentsTable(sqlite: DatabaseType): void {
     .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'comments'`)
     .get() as { sql: string | null } | undefined;
   const ddl = row?.sql ?? "";
-  const current = cols.has("intake_kind") && cols.has("origin_site") && ddl.includes("'instagram'");
+  const current =
+    cols.has("intake_kind") &&
+    cols.has("origin_site") &&
+    cols.has("email_from") &&
+    ddl.includes("'instagram'") &&
+    ddl.includes("'email'");
   if (current) {
     sqlite.exec(COMMENT_INDEX_SQL);
     return;
   }
 
+  const col = (name: string, fallback: string) => (cols.has(name) ? name : fallback);
+  const intakeExpr = cols.has("intake_kind")
+    ? `CASE
+         WHEN source = 'whatsapp' THEN 'whatsapp_click'
+         WHEN source = 'email' THEN 'email'
+         WHEN intake_kind IN ('site_comment', 'whatsapp_click', 'email') THEN intake_kind
+         ELSE 'site_comment'
+       END`
+    : `CASE WHEN source = 'whatsapp' THEN 'whatsapp_click' WHEN source = 'email' THEN 'email' ELSE 'site_comment' END`;
   const originExpr = cols.has("origin_site")
     ? `CASE WHEN source = 'whatsapp' AND origin_site IN ('28car', 'glorious_web', 'facebook', 'instagram') THEN origin_site ELSE NULL END`
     : `NULL`;
-  const intakeExpr = `CASE WHEN source = 'whatsapp' THEN 'whatsapp_click' ELSE 'site_comment' END`;
+  const entryExpr = cols.has("entry_path")
+    ? `CASE WHEN entry_path IN ('28car_board', '28car_wa_link') THEN entry_path ELSE NULL END`
+    : `NULL`;
+  const surfaceExpr = cols.has("meta_surface")
+    ? `CASE WHEN meta_surface IN ('comment', 'message') THEN meta_surface ELSE NULL END`
+    : `NULL`;
 
   sqlite.pragma("foreign_keys = OFF");
   try {
@@ -86,13 +105,29 @@ function migrateCommentsTable(sqlite: DatabaseType): void {
       sqlite.exec(`
         INSERT INTO comments_new (
           id, source, external_id, author_name, body, vehicle_ref, status,
-          assignee_staff_id, created_at, updated_at, intake_kind, origin_site
+          assignee_staff_id, created_at, updated_at, intake_kind, origin_site,
+          wa_from_phone, wa_to_phone, entry_path, meta_sender_id, meta_surface,
+          meta_post_id, meta_post_permalink, meta_post_caption, commenter_key,
+          email_from, email_subject, email_message_id, email_references
         )
         SELECT
           id, source, external_id, author_name, body, vehicle_ref, status,
           assignee_staff_id, created_at, updated_at,
           ${intakeExpr},
-          ${originExpr}
+          ${originExpr},
+          ${col("wa_from_phone", "NULL")},
+          ${col("wa_to_phone", "NULL")},
+          ${entryExpr},
+          ${col("meta_sender_id", "NULL")},
+          ${surfaceExpr},
+          ${col("meta_post_id", "NULL")},
+          ${col("meta_post_permalink", "NULL")},
+          ${col("meta_post_caption", "NULL")},
+          ${col("commenter_key", "NULL")},
+          ${col("email_from", "NULL")},
+          ${col("email_subject", "NULL")},
+          ${col("email_message_id", "NULL")},
+          ${col("email_references", "NULL")}
         FROM comments;
       `);
       sqlite.exec(`DROP TABLE comments;`);
@@ -100,7 +135,7 @@ function migrateCommentsTable(sqlite: DatabaseType): void {
       sqlite.exec(COMMENT_INDEX_SQL);
     });
     tx();
-    console.log("[db] 已遷移 comments（來源加入 instagram；intake_kind／origin_site）");
+    console.log("[db] 已遷移 comments（來源加入 email；原有留言、電話同負責人保留）");
   } finally {
     sqlite.pragma("foreign_keys = ON");
   }

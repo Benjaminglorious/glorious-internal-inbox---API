@@ -1,7 +1,7 @@
 /** comments 表欄位。新庫同啟動遷移共用，避免 CHECK 漂移。 */
 export const COMMENTS_CREATE_COLUMNS = `
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  source TEXT NOT NULL CHECK (source IN ('28car', 'glorious_web', 'facebook', 'instagram', 'whatsapp')),
+  source TEXT NOT NULL CHECK (source IN ('28car', 'glorious_web', 'facebook', 'instagram', 'whatsapp', 'email')),
   external_id TEXT NOT NULL,
   author_name TEXT NOT NULL,
   body TEXT NOT NULL,
@@ -10,7 +10,7 @@ export const COMMENTS_CREATE_COLUMNS = `
   assignee_staff_id INTEGER REFERENCES staff(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  intake_kind TEXT NOT NULL DEFAULT 'site_comment' CHECK (intake_kind IN ('site_comment', 'whatsapp_click')),
+  intake_kind TEXT NOT NULL DEFAULT 'site_comment' CHECK (intake_kind IN ('site_comment', 'whatsapp_click', 'email')),
   origin_site TEXT CHECK (origin_site IS NULL OR origin_site IN ('28car', 'glorious_web', 'facebook', 'instagram')),
   wa_from_phone TEXT,
   wa_to_phone TEXT,
@@ -21,6 +21,10 @@ export const COMMENTS_CREATE_COLUMNS = `
   meta_post_permalink TEXT,
   meta_post_caption TEXT,
   commenter_key TEXT,
+  email_from TEXT,
+  email_subject TEXT,
+  email_message_id TEXT,
+  email_references TEXT,
   UNIQUE (source, external_id),
   CHECK (
     (
@@ -31,6 +35,11 @@ export const COMMENTS_CREATE_COLUMNS = `
     OR (
       source = 'whatsapp'
       AND intake_kind = 'whatsapp_click'
+    )
+    OR (
+      source = 'email'
+      AND intake_kind = 'email'
+      AND origin_site IS NULL
     )
   )
 `;
@@ -188,6 +197,13 @@ CREATE TABLE IF NOT EXISTS car_egress_state (
 );
 
 -- 公司自動派單輪流游標。只得一行。唔計未完成數。
+CREATE TABLE IF NOT EXISTS email_sync_state (
+  mailbox TEXT PRIMARY KEY,
+  uid_validity TEXT,
+  last_uid INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS auto_assign_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   last_staff_id INTEGER,

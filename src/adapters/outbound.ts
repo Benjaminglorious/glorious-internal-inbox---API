@@ -18,6 +18,11 @@ export interface OutboundReplyRequest {
   metaSenderId?: string | null;
   /** comment＝公開留言；message＝Messenger／IG 私訊。舊列可以係 null。 */
   metaSurface?: MetaSurface | null;
+  /** 公司電郵客戶地址。其他來源留空。 */
+  emailFrom?: string | null;
+  emailSubject?: string | null;
+  emailMessageId?: string | null;
+  emailReferences?: string | null;
 }
 
 export interface OutboundReplyResult {
