@@ -137,10 +137,11 @@ async function main(): Promise<number> {
     const tony = appDb.prepare(`SELECT id FROM staff WHERE username = 'tony'`).get() as { id: number };
     const benjamin = appDb.prepare(`SELECT id FROM staff WHERE username = 'benjamin'`).get() as { id: number };
     const vivian = appDb.prepare(`SELECT id FROM staff WHERE username = 'vivian'`).get() as { id: number };
+    const ken = appDb.prepare(`SELECT id FROM staff WHERE username = 'ken'`).get() as { id: number };
     const picked = assignMod.pickNextAutoAssignStaffId();
     check(
-      "自動派單唔係 Tony、Benjamin 或 Vivian",
-      picked != null && picked !== tony.id && picked !== benjamin.id && picked !== vivian.id,
+      "自動派單唔係 Tony、Benjamin、Vivian 或 Ken",
+      picked != null && picked !== tony.id && picked !== benjamin.id && picked !== vivian.id && picked !== ken.id,
       String(picked)
     );
 

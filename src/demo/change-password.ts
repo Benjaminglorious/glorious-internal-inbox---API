@@ -20,7 +20,7 @@ const DEMO_PASSWORD = "Glorious2026!";
 const WING_PAGE_PASSWORD = "Abcd1234";
 const WING_API_PASSWORD = "WingApi2026!";
 const TONY_PASSWORD = "TonyNew2026!";
-const YUKI_PASSWORD = "YukiOnly2026!";
+const ARCHIVE_PASSWORD = "ArchiveOnly2026!";
 
 function check(name: string, cond: boolean, detail?: string): void {
   if (!cond) {
@@ -123,11 +123,20 @@ async function main(): Promise<number> {
       passwords.verifyPassword(plain, passwordHash(appDb!, username));
 
     check("新 seed：Wing 可以用示範密碼", verify("wing", DEMO_PASSWORD));
-    check("新 seed：收藏 yuki 都係示範密碼", verify("yuki", DEMO_PASSWORD));
+    check("新 seed：Ken 可以用示範密碼", verify("ken", DEMO_PASSWORD));
+    check(
+      "新 seed：舊收藏種子唔喺名單",
+      !appDb.prepare(`SELECT id FROM staff WHERE username IN ('kaixin', 'yuki')`).get()
+    );
 
     const wingRow = appDb.prepare(`SELECT id FROM staff WHERE username = 'wing'`).get() as { id: number };
     const tonyRow = appDb.prepare(`SELECT id FROM staff WHERE username = 'tony'`).get() as { id: number };
-    const yukiRow = appDb.prepare(`SELECT id FROM staff WHERE username = 'yuki'`).get() as { id: number };
+    const kenRow = appDb.prepare(`SELECT id, is_admin, active FROM staff WHERE username = 'ken'`).get() as {
+      id: number;
+      is_admin: number;
+      active: number;
+    };
+    check("新 seed：Ken 係在職管理員", kenRow.is_admin === 1 && kenRow.active === 1);
     const eddieHashAtStart = passwordHash(appDb, "eddie");
     const wingComment = appDb
       .prepare(`SELECT id FROM comments WHERE assignee_staff_id = ? ORDER BY id ASC LIMIT 1`)
@@ -389,18 +398,27 @@ async function main(): Promise<number> {
 
     const wingHashCustom = passwordHash(appDb, "wing");
     const tonyHashCustom = passwordHash(appDb, "tony");
+    const kenHashBefore = passwordHash(appDb, "ken");
     appDb.prepare(`UPDATE staff SET display_name = '已改名', is_admin = 1, active = 0 WHERE username = 'wing'`).run();
-    appDb.prepare(`UPDATE staff SET password_hash = ?, display_name = '已改收藏' WHERE username = 'yuki'`).run(
-      passwords.hashPassword(YUKI_PASSWORD)
-    );
-    const yukiCustomHash = passwordHash(appDb, "yuki");
+    appDb.prepare(`UPDATE staff SET display_name = 'Temp Ken', is_admin = 0, active = 0 WHERE username = 'ken'`).run();
+    const archiveHash = passwords.hashPassword(ARCHIVE_PASSWORD);
+    const archiveInsert = appDb
+      .prepare(
+        `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
+         VALUES ('archive', '收藏測試', ?, 0, 0)`
+      )
+      .run(archiveHash);
+    const archiveId = Number(archiveInsert.lastInsertRowid);
     seedMod.applySeedStaff();
 
     const wingAfterSeed = appDb
       .prepare(`SELECT display_name, is_admin, active, password_hash FROM staff WHERE username = 'wing'`)
       .get() as { display_name: string; is_admin: number; active: number; password_hash: string };
-    const yukiAfterSeed = appDb
-      .prepare(`SELECT display_name, is_admin, active, password_hash FROM staff WHERE username = 'yuki'`)
+    const kenAfterSeed = appDb
+      .prepare(`SELECT display_name, is_admin, active, password_hash FROM staff WHERE username = 'ken'`)
+      .get() as { display_name: string; is_admin: number; active: number; password_hash: string };
+    const archiveAfterSeed = appDb
+      .prepare(`SELECT display_name, is_admin, active, password_hash FROM staff WHERE username = 'archive'`)
       .get() as { display_name: string; is_admin: number; active: number; password_hash: string };
     check(
       "再 seed：Wing 姓名角色在職恢復，密碼唔變",
@@ -412,19 +430,27 @@ async function main(): Promise<number> {
         !verify("wing", DEMO_PASSWORD)
     );
     check(
-      "再 seed：收藏同事密碼唔被重設",
-      yukiAfterSeed.display_name === "趙雪兒" &&
-        yukiAfterSeed.active === 0 &&
-        yukiAfterSeed.is_admin === 0 &&
-        yukiAfterSeed.password_hash === yukiCustomHash &&
-        verify("yuki", YUKI_PASSWORD) &&
-        !verify("yuki", DEMO_PASSWORD)
+      "再 seed：Ken 恢復做在職管理員，已有密碼唔變",
+      kenAfterSeed.display_name === "Ken Kan" &&
+        kenAfterSeed.is_admin === 1 &&
+        kenAfterSeed.active === 1 &&
+        kenAfterSeed.password_hash === kenHashBefore &&
+        verify("ken", DEMO_PASSWORD)
+    );
+    check(
+      "再 seed：唔喺名單嘅收藏同事密碼唔被重設",
+      archiveAfterSeed.display_name === "收藏測試" &&
+        archiveAfterSeed.active === 0 &&
+        archiveAfterSeed.is_admin === 0 &&
+        archiveAfterSeed.password_hash === archiveHash &&
+        verify("archive", ARCHIVE_PASSWORD) &&
+        !verify("archive", DEMO_PASSWORD)
     );
     check("再 seed：Tony 自訂密碼唔變", passwordHash(appDb, "tony") === tonyHashCustom);
     check("再 seed：Eddie 未改過嘅密碼唔變", passwordHash(appDb, "eddie") === eddieHashAtStart);
 
-    const inactiveAttempt = changeApi.changeOwnPassword(yukiRow.id, {
-      current_password: YUKI_PASSWORD,
+    const inactiveAttempt = changeApi.changeOwnPassword(archiveId, {
+      current_password: ARCHIVE_PASSWORD,
       new_password: "ShouldNot1",
       confirm_password: "ShouldNot1",
     });
@@ -432,25 +458,24 @@ async function main(): Promise<number> {
       "收藏同事唔可以改密碼",
       inactiveAttempt.ok === false &&
         inactiveAttempt.status === 401 &&
-        passwordHash(appDb, "yuki") === yukiCustomHash
+        verify("archive", ARCHIVE_PASSWORD)
     );
 
-    appDb.prepare(`UPDATE comments SET assignee_staff_id = NULL WHERE assignee_staff_id = ?`).run(yukiRow.id);
-    appDb.prepare(`DELETE FROM comment_replies WHERE staff_id = ?`).run(yukiRow.id);
-    appDb.prepare(`DELETE FROM push_subscriptions WHERE staff_id = ?`).run(yukiRow.id);
-    appDb.prepare(`DELETE FROM whatsapp_lines WHERE staff_id = ?`).run(yukiRow.id);
-    appDb.prepare(`DELETE FROM staff WHERE username = 'yuki'`).run();
+    appDb.prepare(`UPDATE staff SET password_hash = ? WHERE username = 'ken'`).run(passwords.hashPassword("KenCustom1!"));
+    appDb.prepare(`DELETE FROM staff WHERE username = 'ken'`).run();
     seedMod.applySeedStaff();
-    const yukiReinserted = appDb.prepare(`SELECT id, active FROM staff WHERE username = 'yuki'`).get() as {
+    const kenReinserted = appDb.prepare(`SELECT id, is_admin, active FROM staff WHERE username = 'ken'`).get() as {
       id: number;
+      is_admin: number;
       active: number;
     };
     check(
-      "新插入先至寫示範密碼",
-      yukiReinserted.active === 0 &&
-        yukiReinserted.id !== yukiRow.id &&
-        verify("yuki", DEMO_PASSWORD) &&
-        !verify("yuki", YUKI_PASSWORD)
+      "新插入 Ken 先至寫示範密碼，而且係管理員",
+      kenReinserted.is_admin === 1 &&
+        kenReinserted.active === 1 &&
+        kenReinserted.id !== kenRow.id &&
+        verify("ken", DEMO_PASSWORD) &&
+        !verify("ken", "KenCustom1!")
     );
 
     const wingRestored = changeApi.changeOwnPassword(wingRow.id, {
