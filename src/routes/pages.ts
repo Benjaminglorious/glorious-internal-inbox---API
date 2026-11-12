@@ -3,8 +3,10 @@ import { PASSWORD_CHANGED_MESSAGE, PASSWORD_CHANGE_ERRORS, changeOwnPassword } f
 import { requireAuth, sessionViewer } from "../auth/middleware";
 import { verifyPassword } from "../auth/passwords";
 import { COMPANY_WHATSAPP_PHONE, companyWhatsAppChatUrl, whatsAppSendUrl } from "../config";
+import { companyEmailAddress } from "../services/email-config";
 import {
   DELIVERY_LABEL,
+  EMAIL_LEAVE_NOTE,
   ENTRY_LABEL,
   ORIGIN_LABEL,
   SOURCE_LABEL,
@@ -12,6 +14,7 @@ import {
   deliveryDetail,
   intakeBadgeText,
   intakeSummary,
+  isEmailChannel,
 } from "../labels";
 import { registerTwentyeightcarPages } from "./twentyeightcar-pages";
 import { listingIndex, stockIdFromText } from "../services/twentyeightcar";
@@ -176,6 +179,9 @@ function renderStaffWhatsAppPanel(c: CommentWithAssignee, viewerStaffId: number)
 }
 
 function mediaComposerHint(c: CommentWithAssignee): string {
+  if (isEmailChannel(c)) {
+    return "客戶電郵入面嘅相片同影片會顯示喺對話。呢度上傳只留喺收件箱，唔會寄出。回覆客戶請用上面「發送回覆」。這是email的留言。";
+  }
   if (c.source === "whatsapp") {
     const line = normalizePhone(c.wa_to_phone);
     if (line && line !== COMPANY_WHATSAPP_PHONE) {
@@ -216,9 +222,11 @@ function renderSourceBadges(
   const entry = c.entry_path
     ? `<span class="badge entry-${c.entry_path}">${escapeHtml(ENTRY_LABEL[c.entry_path])}</span>`
     : "";
+  const emailNote = isEmailChannel(c) ? `<span class="badge email-note">${EMAIL_LEAVE_NOTE}</span>` : "";
   return `<div class="badge-stack">
     <span class="badge source-${c.source}">${escapeHtml(SOURCE_LABEL[c.source] || c.source)}</span>
     <span class="badge intake-${c.intake_kind}">${escapeHtml(intakeBadgeText(c.intake_kind, c.source))}</span>
+    ${emailNote}
     ${origin}
     ${entry}
   </div>`;
@@ -568,6 +576,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
           <option value="">全部</option>
           <option value="site_comment" ${intake === "site_comment" ? "selected" : ""}>網站／IG 留言</option>
           <option value="whatsapp_click" ${intake === "whatsapp_click" ? "selected" : ""}>WhatsApp 聯絡</option>
+          <option value="email" ${intake === "email" ? "selected" : ""}>email 留言</option>
         </select>
       </label>
       <label>相關網站
@@ -627,7 +636,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     <p class="muted small">搜尋會搵你睇到嘅留言同回覆：留言者、電話、內容、車輛、來源，以及 Facebook／Instagram 帖文編號、連結同內容。可以同上面嘅篩選一齊用。</p>
     <p class="muted small">同一個留言者未完成（未處理或處理中）嘅新訊息會併入最早嗰個 ID。狀態係已完成之後，下一則先至開新 ID。</p>
     <p class="muted small">時間欄同留言詳情嘅建立、更新、回覆時間都係香港時間（HKT，UTC+8）。「剛剛」「分鐘前」「昨天」按香港日曆計。資料庫仍然儲存 UTC。</p>
-    <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。每條留言只展開「回覆」。回覆客戶、公司 WhatsApp、同事 WhatsApp 收喺「更多」。「回覆客戶」會打開你而家登入嘅 WhatsApp 發畀客戶。公司「WhatsApp」同「同事 WhatsApp」係聯絡總機或負責人，唔係發畀客戶。改狀態同改派喺留言頁嘅「更多」。</p>
+    <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。「email 留言」＝公司郵箱 gloriousinformation@gmail.com 入面、同車有關嘅信，畫面會寫「這是email的留言」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。每條留言只展開「回覆」。回覆客戶、公司 WhatsApp、同事 WhatsApp 收喺「更多」。「回覆客戶」會打開你而家登入嘅 WhatsApp 發畀客戶。公司「WhatsApp」同「同事 WhatsApp」係聯絡總機或負責人，唔係發畀客戶。改狀態同改派喺留言頁嘅「更多」。</p>
     <p class="muted small">快捷：${
       viewer.isAdmin ? `<a href="${qs({ mine: "1" })}">我的留言</a> · ` : ""
     }<a href="${qs({ status: "pending", mine: "" })}">擱置／未處理</a> ·
@@ -722,8 +731,9 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       const replyMedia = mediaByReply.get(reply.id) ?? [];
       const showBody = reply.body && !(replyMedia.length && isPlaceholderBody(reply.body));
       const delivery = inbound ? "" : ` · ${escapeHtml(deliveryDetail(reply.delivery_status, c.source))}`;
+      const emailNote = isEmailChannel(c) ? `${EMAIL_LEAVE_NOTE} · ` : "";
       return `<article class="bubble ${inbound ? "customer" : "staff"}">
-        <div class="who">${escapeHtml(who)} · ${showTime(reply.created_at)}${delivery}</div>
+        <div class="who">${emailNote}${escapeHtml(who)} · ${showTime(reply.created_at)}${delivery}</div>
         ${errorLine}
         ${showBody ? `<div class="bubble-body">${escapeHtml(reply.body)}</div>` : ""}
         ${renderMediaBlocks(replyMedia)}
@@ -740,7 +750,9 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         <span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span>
       </div>
       <p class="muted small">${
-        c.source === "whatsapp"
+        isEmailChannel(c)
+          ? `${EMAIL_LEAVE_NOTE}。下面「發送回覆」會由 ${escapeHtml(companyEmailAddress())} 以電郵回覆 ${escapeHtml(c.email_from || "客戶")}，並且盡量留喺同一封電郵對話。如果原本係未處理，會改做處理中，仍然留喺擱置／未處理。`
+          : c.source === "whatsapp"
           ? `公司 WhatsApp 總機（有客戶號碼）會經 Cloud API 用 ${COMPANY_WHATSAPP_PHONE} 發送：成功標「已經 WhatsApp 發送」，失敗會寫低原因。客人用 WhatsApp 搵同事時，用「用我嘅 WhatsApp 發送畀客戶」打開你已綁定嘅個人 WhatsApp。相片、影片同語音可以喺下面播放同發送。如果原本係未處理，系統內回覆會改做處理中，並且繼續出現喺「擱置／未處理」。`
           : "主要喺下面回覆。公司 WhatsApp 總機（有客戶號碼）會經 Cloud API 發送：成功標「已經 WhatsApp 發送」，失敗會寫低原因。Facebook、Instagram 有 Page token 就經 Graph 發送。如果原本係未處理，會改做處理中，並且繼續出現喺「擱置／未處理」。"
       }</p>
@@ -748,6 +760,13 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         <dt>形式</dt><dd>${escapeHtml(intakeBadgeText(c.intake_kind, c.source))}</dd>
         <dt>相關網站</dt><dd>${escapeHtml(originText)}</dd>
         <dt>留言者</dt><dd>${escapeHtml(c.author_name)}</dd>
+        ${
+          isEmailChannel(c)
+            ? `<dt>客戶電郵</dt><dd>${escapeHtml(c.email_from || "—")}</dd>
+        <dt>電郵主旨</dt><dd>${escapeHtml(c.email_subject || "—")}</dd>
+        <dt>說明</dt><dd>${EMAIL_LEAVE_NOTE}</dd>`
+            : ""
+        }
         <dt>外部 ID</dt><dd><code>${escapeHtml(c.external_id)}</code></dd>
         <dt>路徑</dt><dd>${c.entry_path ? escapeHtml(ENTRY_LABEL[c.entry_path]) : "—"}</dd>
         <dt>車輛</dt><dd>${c.vehicle_ref ? escapeHtml(c.vehicle_ref) : "—"}</dd>
@@ -761,7 +780,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       <section class="thread" id="thread">
         <h2>對話</h2>
         <article class="bubble customer">
-          <div class="who">客戶 · ${escapeHtml(c.author_name)} · ${showTime(c.created_at)}</div>
+          <div class="who">${isEmailChannel(c) ? `${EMAIL_LEAVE_NOTE} · ` : ""}客戶 · ${escapeHtml(c.author_name)} · ${showTime(c.created_at)}</div>
           ${
             customerMedia.length && isPlaceholderBody(c.body)
               ? ""
@@ -778,7 +797,9 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         ${
           sent
             ? `<p class="notice">${escapeHtml(
-                deliveryQuery === "sent" && c.source === "whatsapp"
+                deliveryQuery === "sent" && isEmailChannel(c)
+                  ? `已由 ${companyEmailAddress()} 以電郵回覆客戶。${EMAIL_LEAVE_NOTE}。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。`
+                  : deliveryQuery === "sent" && c.source === "whatsapp"
                   ? "已透過 WhatsApp 發送畀客戶。未處理嘅留言會改做處理中，仍然留喺擱置／未處理。"
                   : deliveryQuery === "stub" && c.source === "whatsapp"
                     ? "已儲存喺收件箱。同事個人 WhatsApp 唔經公司 Cloud API 代發。請用「用我嘅 WhatsApp」打開對話，喺你自己嘅 WhatsApp 發送。"
@@ -797,7 +818,9 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         }
         <form method="POST" action="/comments/${c.id}/replies" class="reply-form">
           <label>回覆內容
-            <textarea name="body" required maxlength="4000" rows="5" placeholder="輸入回覆。客戶唔使你開 WhatsApp 網頁。"></textarea>
+            <textarea name="body" required maxlength="4000" rows="5" placeholder="${
+              isEmailChannel(c) ? "輸入回覆。這是email的留言，會以電郵發送畀客戶。" : "輸入回覆。客戶唔使你開 WhatsApp 網頁。"
+            }"></textarea>
           </label>
           <button type="submit" class="btn primary">發送回覆</button>
         </form>

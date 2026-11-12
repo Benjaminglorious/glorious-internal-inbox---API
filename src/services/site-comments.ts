@@ -104,7 +104,7 @@ export function normalizeSiteCommentSource(value: unknown): SiteCommentSource | 
   const mapped = SOURCE_ALIASES[trimmed.toLowerCase()];
   if (mapped) return mapped;
   if (isSiteCommentSource(trimmed)) return trimmed;
-  if (isCommentSource(trimmed) && trimmed === "whatsapp") return "invalid";
+  if (isCommentSource(trimmed) && (trimmed === "whatsapp" || trimmed === "email")) return "invalid";
   return "invalid";
 }
 

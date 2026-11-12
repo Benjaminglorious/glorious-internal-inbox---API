@@ -1,7 +1,7 @@
-export const COMMENT_SOURCES = ["28car", "glorious_web", "facebook", "instagram", "whatsapp"] as const;
+export const COMMENT_SOURCES = ["28car", "glorious_web", "facebook", "instagram", "whatsapp", "email"] as const;
 export type CommentSource = (typeof COMMENT_SOURCES)[number];
 
-export const INTAKE_KINDS = ["site_comment", "whatsapp_click"] as const;
+export const INTAKE_KINDS = ["site_comment", "whatsapp_click", "email"] as const;
 export type IntakeKind = (typeof INTAKE_KINDS)[number];
 
 /** 客戶撳 WhatsApp（或 IG 簡介連結）時，訊息係由邊個網站帶過嚟。 */
@@ -122,6 +122,14 @@ export interface Comment {
    * 28car_wa_link：客戶撳咗留言區入面嘅 WhatsApp 連結，入公司 WhatsApp。
    */
   entry_path: EntryPath | null;
+  /** 公司電郵客戶地址。其他來源係 null。 */
+  email_from: string | null;
+  /** 電郵主旨，唔帶 Re:。其他來源係 null。 */
+  email_subject: string | null;
+  /** 最新一封客戶信嘅 Message-ID，用來回覆同一串。 */
+  email_message_id: string | null;
+  /** 已見過嘅 Message-ID，空格分隔。 */
+  email_references: string | null;
 }
 
 export interface CommentWithAssignee extends Comment {

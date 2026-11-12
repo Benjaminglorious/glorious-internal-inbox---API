@@ -148,6 +148,10 @@ export async function createStaffReply(input: {
     vehicleRef: comment.vehicle_ref,
     metaSenderId: comment.meta_sender_id,
     metaSurface: comment.meta_surface,
+    emailFrom: comment.email_from,
+    emailSubject: comment.email_subject,
+    emailMessageId: comment.email_message_id,
+    emailReferences: comment.email_references,
   });
   const delivery: DeliveryStatus = isDeliveryStatus(queued.delivery_status) ? queued.delivery_status : "stub";
   const deliveryError =

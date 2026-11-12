@@ -48,7 +48,7 @@ export function translateSql(sql: string): string {
  * boot-time fold into comment_message_keys.
  */
 const INSERT_WITHOUT_ID_COLUMN =
-  /^insert\s+into\s+(?:car_sync_state|comment_message_keys)\b/i;
+  /^insert\s+into\s+(?:car_sync_state|comment_message_keys|email_sync_state)\b/i;
 
 export function insertReturningId(sql: string): string {
   const trimmed = sql.trim();

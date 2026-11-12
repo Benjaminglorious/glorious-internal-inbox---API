@@ -9,6 +9,7 @@
 | Facebook | https://www.facebook.com/GloriousMotors | `facebook` | Facebook |
 | 東榮 Instagram | 簡介連結會去 `glorious.hk/?utm_source=ig` | `instagram` | 東榮 IG |
 | WhatsApp | 公司總機 `85221740001` 同已綁定嘅同事個人號 | `whatsapp` | WhatsApp |
+| 公司電郵 | `gloriousinformation@gmail.com` | `email` | email 留言／這是email的留言 |
 
 而家用**示範資料**。官網抓取同出站仍然係 stub。Facebook／Instagram 入站用 Meta webhook；出站有 Page token 就打 Graph。28car 車盤同留言板可以入庫；即時連去 28car 要可輪換代理而且旗標先至會開，預設唔出網絡。公司 WhatsApp 總機回覆會打 Cloud API（要設定 token）。
 
@@ -171,10 +172,16 @@ Glorious2026!
 - `WHATSAPP_PHONE_NUMBER_ID`（**Render 建議設定**。公司總機 `85221740001` 嘅 phone number id。未設定時代碼用 `241163761376752`）
 - `WHATSAPP_GRAPH_VERSION`（可選。未設定用 `v21.0`）
 - `VAPID_PUBLIC_KEY`、`VAPID_PRIVATE_KEY`、`VAPID_SUBJECT`（Web Push。三項都有效先至 `push_enabled`。未設定時 PWA 仍可安裝，但關閉頁面後唔會推送。私鑰唔好提交 git。見下面）
+- `GLORIOUS_EMAIL_ADDRESS`（公司郵箱。留空等於 `gloriousinformation@gmail.com`。呢個唔係密鑰）
+- `GLORIOUS_EMAIL_APP_PASSWORD`（Gmail 應用程式密碼。有呢個就會收信同用呢個郵箱回信。留空而且未設定下面三項 OAuth，就唔會連接 Gmail。唔好提交 git）
+- `GLORIOUS_EMAIL_OAUTH_CLIENT_ID`、`GLORIOUS_EMAIL_OAUTH_CLIENT_SECRET`、`GLORIOUS_EMAIL_OAUTH_REFRESH_TOKEN`（可選。冇應用程式密碼時先用。三項都要齊。Scope 用 `https://mail.google.com/`。唔好提交 git）
+- `GLORIOUS_EMAIL_POLL_MS`（可選。預設 `120000`，即 2 分鐘。程式會夾喺 60 秒到 15 分鐘）
+- `GLORIOUS_EMAIL_LOOKBACK_DAYS`（可選。預設 `14`，最大 `90`。只係第一次，或者 Gmail 重建 UID 之後，先至用嚟補舊信）
+- `GLORIOUS_EMAIL_IMAP_HOST`、`GLORIOUS_EMAIL_IMAP_PORT`、`GLORIOUS_EMAIL_SMTP_HOST`、`GLORIOUS_EMAIL_SMTP_PORT`（可選。預設 `imap.gmail.com:993` 同 `smtp.gmail.com:465`）
 
 ## 新留言提示
 
-留言箱（`/`）同留言詳情（`/comments/:id`）打開期間，頁面會打 `GET /api/comments/updates`（打開後大約 1.5 秒先查一次，之後每 20 秒）。游標係頁面渲染時嘅最新留言 id；之後先寫入資料庫嘅留言先算新。來源包括 28car、東榮官網、Facebook、東榮 IG、WhatsApp。提示文字會寫明係網站留言、IG 留言，定係來自邊個網站嘅 WhatsApp。範圍跟登入角色：管理員會見到全部新留言（包括未派）；在職同事只會見到派咗畀自己嘅。其他人嘅留言內容唔會出現喺提示。
+留言箱（`/`）同留言詳情（`/comments/:id`）打開期間，頁面會打 `GET /api/comments/updates`（打開後大約 1.5 秒先查一次，之後每 20 秒）。游標係頁面渲染時嘅最新留言 id；之後先寫入資料庫嘅留言先算新。來源包括 28car、東榮官網、Facebook、東榮 IG、WhatsApp、公司電郵。公司電郵會寫「這是email的留言」。提示文字會寫明係網站留言、IG 留言、電郵，定係來自邊個網站嘅 WhatsApp。範圍跟登入角色：管理員會見到全部新留言（包括未派）；在職同事只會見到派咗畀自己嘅。其他人嘅留言內容唔會出現喺提示。
 
 未連接真實 WhatsApp／Meta 入站都唔影響呢個提示。Seed、webhook stub，或者任何已經入咗 `comments` 表嘅留言，都會出提示。
 
@@ -764,6 +771,87 @@ Render 免費服務係共用 IP，唔好在未接代理之前打開旗標。登�
 | 東榮 IG 留言／私訊 | Meta webhook 入庫；有 Page token 就 Graph 發送，否則 `failed` |
 
 click-to-chat 仍然可以人手開 WhatsApp 網頁。
+
+## 公司電郵 gloriousinformation@gmail.com
+
+現有 web 進程用 IMAP 讀呢個郵箱嘅 INBOX，用 SMTP 由同一個郵箱回信。唔會另開 Render 服務、worker、cron 或資料庫。信寫入現有 `comments`（`source=email`、`intake_kind=email`）。畫面來源係 **Email**，形式係 **email 留言**，並且寫明 **這是email的留言**。列表、留言頁、每一句對話同回覆框都會見到呢句，唔會扮成 WhatsApp、Facebook 或 Instagram。
+
+同事仍然只撳現有 **回覆**／**發送回覆**。成功就由 `gloriousinformation@gmail.com` 寄畀客戶，`In-Reply-To` 對住客戶最新一封，主旨 `Re:` 原來主旨。未設定密碼或 OAuth 時，回覆標 `failed`，原因寫喺畫面上，唔會當已經寄出。
+
+同一客戶電郵地址，未完成（未處理或處理中）只得一個收件箱 ID。狀態係已完成之後，下一封先至開新 ID。新對話用公司線輪流派單：**Eddie → Wing → Jason → 其餘在職同事（按 staff id）**。Tony、Benjamin、Vivian 唔參與。呢個次序冇改，只係電郵都用同一條。
+
+列表「內容」仍然係客戶最新一句，唔係同事回覆。時間顯示香港時間。電郵入面嘅相片同 MP4 影片會用現有媒體播放；其他附件（例如 PDF）只會喺正文註明未收入，唔會另做一套媒體庫。
+
+`GET /api/health` 嘅 `email.enabled` 係 `true` 先代表伺服器認到憑證。唔會返回密碼或 token。
+
+煙霧測試：`npm run demo:email`
+
+### 邊啲信會入庫
+
+程式只收 **寄入呢個郵箱**、而且符合下面其中一條嘅信。
+
+**公司主旨。** 主旨有法定英文名就入，正文唔使係車。認呢兩句，大小寫、多餘空白、逗號、句號、連字號都當同一句：
+
+- `Glorious Motors Ltd`
+- `Glorious Motors Limited`
+
+例子：`Re: GLORIOUS MOTORS, LTD.`、`Glorious-Motors Limited`。主旨淨係寫 Glorious Motors、或者個名只出現喺正文，都唔算呢條。
+
+**車務。** 主旨冇公司名時，主旨或者正文新寫嘅部分（唔計 `>` 引用）要**明顯係車**，例如：
+
+- 買車、賣車、查詢、報價、現貨、車盤、試車、以舊換新、供車、車牌
+- 車型或品牌（Alphard、豐田、寶馬、平治等，完整名單喺 `src/services/email-filter.ts`）
+- 28car 庫存編號（例如 `s2806213`）或 28car 車盤連結
+- 「想買一部車」「I want to buy a car」呢類同時有車同查詢意思嘅句子
+
+兩樣都唔係就**唔入**。下面呢啲只擋「唔係公司主旨」嘅信；主旨已經係 Glorious Motors Ltd／Limited 就仍然入庫。就算提到「車」或車型都唔入嘅情況：
+
+- 電子報、`List-Unsubscribe`、大量發送（bulk）、`noreply`／`newsletter` 呢類寄件人
+- Facebook、Instagram、Meta、LinkedIn 等社交通知
+- 驗證碼、一次性密碼、重設密碼
+- 銀行通知
+- 唔係查車嘅收據、發票、訂單確認
+- 廣告（有退訂／限時優惠，又冇客戶自己問）
+- 內部 IT、中獎、停車場、車票、車厘子呢類唔係車行往來嘅「車」
+
+已經有未完成電郵對話嘅同一地址，之後一句唔再提到車嘅短覆（例如「星期六 OK」）會附加到同一個 ID。驗證碼、廣告、銀行、電子報呢類硬性拒絕唔會附加。對話已完成之後，唔係車嘅信唔會再開新 ID。
+
+### 幾耐掃一次，瞓著咗點補
+
+預設每 **2 分鐘** 掃一次，每次最多 50 封。游標（`email_sync_state` 嘅 UID 同 UIDVALIDITY）寫喺現有 Postgres。
+
+Render 免費 Web Service 大約 15 分鐘冇人開會休眠，休眠期間**唔會**輪詢。Gmail 仍然留住封信。下次有請求喚醒進程，啟動大約 5 秒後先掃，再按間隔掃。喚醒或重啟都由上次成功嘅 UID 繼續，所以休眠期間到埗嘅信會補入，唔使重寄。
+
+第一次成功掃描，或者 Gmail 重建過郵箱（UIDVALIDITY 變咗），只會睇返最近 `GLORIOUS_EMAIL_LOOKBACK_DAYS` 日（預設 14，最大 90）。比呢個窗口更舊、又未入過庫嘅信唔會自動入。已經入庫嘅 Message-ID 唔會開第二張單。
+
+### Tony 合併之後要做（呢個 PR 唔會部署）
+
+仍然用現有 web service `glorious-internal-inbox`。唔好新開服務。
+
+**應用程式密碼（建議）**
+
+1. 用 `gloriousinformation@gmail.com` 登入 Google 帳戶，開啟兩步驗證。
+2. 打開 [應用程式密碼](https://myaccount.google.com/apppasswords)，選郵件，產生一組 16 位密碼。
+3. Gmail → 設定 → 轉寄和 POP/IMAP → **啟用 IMAP**。
+4. 喺 Render 嗰個 web service 嘅 Environment 加下面變數。唔好寫入 git，唔好貼去 PR。
+5. 改完環境變數後重新部署**現有** web service。`GET /api/health` 睇 `email.enabled` 係 `true`。
+
+| 變數 | 必須？ | 值 |
+|------|--------|----|
+| `GLORIOUS_EMAIL_ADDRESS` | 建議寫明 | `gloriousinformation@gmail.com` |
+| `GLORIOUS_EMAIL_APP_PASSWORD` | 用密碼就必須 | Google 應用程式密碼（可以有空格，程式會去掉） |
+| `GLORIOUS_EMAIL_POLL_MS` | 可選 | `120000` |
+| `GLORIOUS_EMAIL_LOOKBACK_DAYS` | 可選 | `14` |
+
+**OAuth（冇應用程式密碼先用）**
+
+1. Google Cloud 開一個專案，啟用 Gmail API。
+2. OAuth 同意畫面把 `gloriousinformation@gmail.com` 加做測試用戶。
+3. 建立桌面應用程式用戶端，攞 client id 同 client secret。
+4. 用 [OAuth Playground](https://developers.google.com/oauthplayground/) 或你自己嘅一次過授權，scope 選 `https://mail.google.com/`，換一條 refresh token。
+5. 設 `GLORIOUS_EMAIL_OAUTH_CLIENT_ID`、`GLORIOUS_EMAIL_OAUTH_CLIENT_SECRET`、`GLORIOUS_EMAIL_OAUTH_REFRESH_TOKEN`。三項都要齊。如果同時有應用程式密碼，程式用密碼。
+
+IMAP／SMTP 主機留空就用 Gmail。唔好把密碼、client secret 或 refresh token 提交。
 
 ## 授權
 

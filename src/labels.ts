@@ -1,11 +1,15 @@
 import type { CommentSource, DeliveryStatus, EntryPath, IntakeKind, OriginSite } from "./types";
 
+/** 同事打開或回覆電郵時要見到呢句，唔好當成 WhatsApp 或社交留言。 */
+export const EMAIL_LEAVE_NOTE = "這是email的留言";
+
 export const SOURCE_LABEL: Record<CommentSource, string> = {
   "28car": "28car",
   glorious_web: "東榮官網",
   facebook: "Facebook",
   instagram: "東榮 IG",
   whatsapp: "WhatsApp",
+  email: "Email",
 };
 
 export const ORIGIN_LABEL: Record<OriginSite, string> = {
@@ -34,7 +38,12 @@ export const DELIVERY_LABEL: Record<DeliveryStatus, string> = {
   sent: "已發送",
 };
 
+export function isEmailChannel(input: { source?: string | null; intake_kind?: string | null }): boolean {
+  return input.source === "email" || input.intake_kind === "email";
+}
+
 export function intakeBadgeText(kind: IntakeKind, source: CommentSource): string {
+  if (kind === "email" || source === "email") return "email 留言";
   if (kind === "whatsapp_click") return "WhatsApp 聯絡";
   if (source === "instagram") return "IG 留言";
   return "網站留言";
@@ -47,6 +56,7 @@ export function intakeSummary(input: {
   origin_site?: string | null;
   entry_path?: string | null;
 }): string {
+  if (isEmailChannel(input)) return EMAIL_LEAVE_NOTE;
   if (input.entry_path === "28car_board") return ENTRY_LABEL["28car_board"];
   if (input.entry_path === "28car_wa_link") return ENTRY_LABEL["28car_wa_link"];
   const sourceLabel = SOURCE_LABEL[input.source as CommentSource] || input.source || "留言";
@@ -68,6 +78,7 @@ export function deliveryDetail(status: DeliveryStatus, source: CommentSource): s
   if (status === "sent" && source === "whatsapp") return "已經 WhatsApp 發送";
   if (status === "sent" && source === "facebook") return "已經 Facebook 發送";
   if (status === "sent" && source === "instagram") return "已經 Instagram 發送";
+  if (status === "sent" && source === "email") return "已經以 email 發送";
   if (status === "sent") return "已發送";
   if (status === "stored") return "已儲存（未發送）";
   switch (source) {
@@ -81,6 +92,8 @@ export function deliveryDetail(status: DeliveryStatus, source: CommentSource): s
       return "示範待發送 · 尚未連接 Facebook";
     case "instagram":
       return "示範待發送 · 尚未連接 Instagram";
+    case "email":
+      return "email 尚未發送";
     default:
       return "示範待發送";
   }

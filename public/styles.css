@@ -182,8 +182,11 @@ td.when time, .who time, .meta time, .reply-preview time { color: inherit; }
 .badge.source-facebook { background: #e0e7ff; color: #3730a3; }
 .badge.source-whatsapp { background: #d1fae5; color: #065f46; }
 .badge.source-instagram { background: #fce7f3; color: #9d174d; }
+.badge.source-email { background: #e2e8f0; color: #1e293b; }
 .badge.intake-site_comment { background: #e0f2fe; color: #075985; }
 .badge.intake-whatsapp_click { background: #d1fae5; color: #065f46; }
+.badge.intake-email { background: #ffedd5; color: #9a3412; }
+.badge.email-note { background: #fff7ed; color: #9a3412; border: 1px solid #fdba74; }
 .badge.origin { background: #fef3c7; color: #92400e; }
 .badge.origin.direct { background: #f1f5f9; color: #334155; }
 .badge.entry-28car_board { background: #dbeafe; color: #1e40af; }

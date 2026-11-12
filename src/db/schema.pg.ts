@@ -22,7 +22,63 @@ ALTER TABLE comments ADD COLUMN IF NOT EXISTS meta_post_id TEXT;
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS meta_post_permalink TEXT;
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS meta_post_caption TEXT;
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS commenter_key TEXT;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS email_from TEXT;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS email_subject TEXT;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS email_message_id TEXT;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS email_references TEXT;
 CREATE INDEX IF NOT EXISTS idx_comments_meta_post ON comments(meta_post_id);
+-- Existing Render databases keep the old comments CHECK until this replaces it.
+-- Fresh databases already allow email, so the block does nothing.
+DO $email_channel$
+DECLARE r record;
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'comments'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%whatsapp%'
+      AND strpos(pg_get_constraintdef(oid), 'email') = 0
+  ) THEN
+    FOR r IN
+      SELECT conname
+      FROM pg_constraint
+      WHERE conrelid = 'comments'::regclass
+        AND contype = 'c'
+    LOOP
+      EXECUTE format('ALTER TABLE comments DROP CONSTRAINT %I', r.conname);
+    END LOOP;
+    ALTER TABLE comments ADD CONSTRAINT comments_source_check
+      CHECK (source IN ('28car', 'glorious_web', 'facebook', 'instagram', 'whatsapp', 'email'));
+    ALTER TABLE comments ADD CONSTRAINT comments_status_check
+      CHECK (status IN ('open', 'in_progress', 'done'));
+    ALTER TABLE comments ADD CONSTRAINT comments_intake_kind_check
+      CHECK (intake_kind IN ('site_comment', 'whatsapp_click', 'email'));
+    ALTER TABLE comments ADD CONSTRAINT comments_origin_site_check
+      CHECK (origin_site IS NULL OR origin_site IN ('28car', 'glorious_web', 'facebook', 'instagram'));
+    ALTER TABLE comments ADD CONSTRAINT comments_entry_path_check
+      CHECK (entry_path IS NULL OR entry_path IN ('28car_board', '28car_wa_link'));
+    ALTER TABLE comments ADD CONSTRAINT comments_meta_surface_check
+      CHECK (meta_surface IS NULL OR meta_surface IN ('comment', 'message'));
+    ALTER TABLE comments ADD CONSTRAINT comments_channel_check CHECK (
+      (
+        source IN ('28car', 'glorious_web', 'facebook', 'instagram')
+        AND intake_kind = 'site_comment'
+        AND origin_site IS NULL
+      )
+      OR (
+        source = 'whatsapp'
+        AND intake_kind = 'whatsapp_click'
+      )
+      OR (
+        source = 'email'
+        AND intake_kind = 'email'
+        AND origin_site IS NULL
+      )
+    );
+  END IF;
+END
+$email_channel$;
 -- connect-pg-simple's bundled table.sql uses WITH (OIDS=FALSE), which PostgreSQL 12+ rejects.
 -- Create the session table here so the library finds it and skips that script.
 CREATE TABLE IF NOT EXISTS "session" (

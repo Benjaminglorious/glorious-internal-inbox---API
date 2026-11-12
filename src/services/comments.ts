@@ -169,6 +169,10 @@ function mapComment(row: CommentRow): CommentWithAssignee {
     meta_post_id: asOptionalText(row.meta_post_id),
     meta_post_permalink: asOptionalText(row.meta_post_permalink),
     meta_post_caption: asOptionalText(row.meta_post_caption),
+    email_from: asOptionalText(row.email_from),
+    email_subject: asOptionalText(row.email_subject),
+    email_message_id: asOptionalText(row.email_message_id),
+    email_references: asOptionalText(row.email_references),
   };
 }
 
@@ -523,6 +527,7 @@ function searchLabelClauses(query: string): Array<{ sql: string; params: unknown
     instagram: ["ig"],
     glorious_web: ["官網", "glorious"],
     whatsapp: ["wa"],
+    email: ["電郵", "email留言"],
   };
   for (const source of COMMENT_SOURCES) {
     const aliases = sourceAliases[source] ?? [];
