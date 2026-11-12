@@ -398,6 +398,309 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
       `results=${mixedResults.length} image=${mixedImage?.body || "none"}`
     );
 
+    const originalFetch = globalThis.fetch;
+    const graphHits: string[] = [];
+    let graphMode: "spy" | "fill" | "fail" = "spy";
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const href = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (!href.includes("graph.facebook.com")) return originalFetch(input, init);
+      graphHits.push(href);
+      if (graphMode === "fail") throw new Error("graph down");
+      if (graphMode === "fill") {
+        const body = href.includes("178900000000099")
+          ? { id: "178900000000099", caption: "IG Graph 補回嘅帖文", permalink: "https://www.instagram.com/p/GraphFill/" }
+          : href.includes("1212121212_3434343434")
+            ? {
+                id: "1212121212_3434343434",
+                message: "Graph 由編號補回",
+                permalink_url: "https://www.facebook.com/GloriousMotors/posts/3434343434",
+              }
+            : {
+                id: "3333333333_4444444444",
+                message: "Graph 補回嘅帖文",
+                permalink_url: "https://www.facebook.com/permalink.php?story_fbid=4444444444&id=3333333333",
+              };
+        return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ error: { message: "should not call" } }), { status: 500 });
+    }) as typeof fetch;
+
+    try {
+      const storedReferral = await postWhatsApp(
+        base,
+        metaIncomingSample("wamid.HTTP-FB-AD", [
+          {
+            from: "85295553001",
+            id: "wamid.HTTP-FB-AD",
+            timestamp: "1749416383",
+            type: "text",
+            text: { body: "你好！能否提供更多相關資訊？" },
+            referral: {
+              source_url: "https://fb.me/http-alphard",
+              source_id: "1111111111_2222222222",
+              source_type: "ad",
+              headline: "HTTP 紅色 Alphard",
+              body: "葵涌可以睇車",
+              media_type: "image",
+              image_url: "https://scontent.xx.fbcdn.net/v/t45.1600-4/example.jpg",
+              ctwa_clid: "ARAkLkA8rmlFeiCktEJQ",
+            },
+          },
+        ])
+      );
+      const httpAd = appDb
+        .prepare(
+          `SELECT source, intake_kind, origin_site, body, meta_post_id, meta_post_permalink, meta_post_caption
+           FROM comments WHERE external_id = 'wamid.HTTP-FB-AD'`
+        )
+        .get() as
+        | {
+            source: string;
+            intake_kind: string;
+            origin_site: string | null;
+            body: string;
+            meta_post_id: string | null;
+            meta_post_permalink: string | null;
+            meta_post_caption: string | null;
+          }
+        | undefined;
+      check(
+        "Webhook：Facebook 廣告 click 入庫帖文，冇 token 都唔打 Graph",
+        storedReferral.status === 200 &&
+          storedReferral.json.ok === true &&
+          graphHits.length === 0 &&
+          httpAd?.source === "whatsapp" &&
+          httpAd.intake_kind === "whatsapp_click" &&
+          httpAd.origin_site === "facebook" &&
+          httpAd.body === "你好！能否提供更多相關資訊？" &&
+          httpAd.meta_post_id === "1111111111_2222222222" &&
+          httpAd.meta_post_permalink === "https://fb.me/http-alphard" &&
+          httpAd.meta_post_caption === "HTTP 紅色 Alphard — 葵涌可以睇車",
+        `status=${storedReferral.status} hits=${graphHits.length} row=${JSON.stringify(httpAd)}`
+      );
+
+      process.env.META_PAGE_ACCESS_TOKEN = "page-token";
+      graphMode = "fill";
+      const fill = await postWhatsApp(
+        base,
+        metaIncomingSample("wamid.HTTP-FB-FILL", [
+          {
+            from: "85295553002",
+            id: "wamid.HTTP-FB-FILL",
+            timestamp: "1749416383",
+            type: "text",
+            text: { body: "想睇呢條帖文" },
+            referral: {
+              source_type: "post",
+              source_id: "3333333333_4444444444",
+              source_url: "https://www.facebook.com/GloriousMotors/posts/4444444444",
+            },
+          },
+        ])
+      );
+      const filled = appDb
+        .prepare(
+          `SELECT body, origin_site, meta_post_id, meta_post_permalink, meta_post_caption
+           FROM comments WHERE external_id = 'wamid.HTTP-FB-FILL'`
+        )
+        .get() as
+        | {
+            body: string;
+            origin_site: string | null;
+            meta_post_id: string | null;
+            meta_post_permalink: string | null;
+            meta_post_caption: string | null;
+          }
+        | undefined;
+      const fillUrl = graphHits.find((href) => href.includes("3333333333_4444444444")) ?? "";
+      check(
+        "Webhook：Graph 只補空白 caption，唔覆蓋 permalink，亦唔打回覆",
+        fill.status === 200 &&
+          fill.json.ok === true &&
+          filled?.origin_site === "facebook" &&
+          filled.body === "想睇呢條帖文" &&
+          filled.meta_post_id === "3333333333_4444444444" &&
+          filled.meta_post_permalink === "https://www.facebook.com/GloriousMotors/posts/4444444444" &&
+          filled.meta_post_caption === "Graph 補回嘅帖文" &&
+          fillUrl.includes("/3333333333_4444444444") &&
+          fillUrl.includes("fields=") &&
+          !fillUrl.includes("/comments") &&
+          !fillUrl.includes("/replies"),
+        `status=${fill.status} url=${fillUrl} row=${JSON.stringify(filled)}`
+      );
+
+      const igFill = await postWhatsApp(
+        base,
+        metaIncomingSample("wamid.HTTP-IG-FILL", [
+          {
+            from: "85295553003",
+            id: "wamid.HTTP-IG-FILL",
+            timestamp: "1749416383",
+            type: "text",
+            text: { body: "IG 帖文入嚟" },
+            referral: {
+              source_type: "post",
+              source_id: "178900000000099",
+              source_url: "https://www.instagram.com/p/CxAb12/",
+            },
+          },
+        ])
+      );
+      const igFilled = appDb
+        .prepare(
+          `SELECT origin_site, meta_post_id, meta_post_permalink, meta_post_caption
+           FROM comments WHERE external_id = 'wamid.HTTP-IG-FILL'`
+        )
+        .get() as
+        | {
+            origin_site: string | null;
+            meta_post_id: string | null;
+            meta_post_permalink: string | null;
+            meta_post_caption: string | null;
+          }
+        | undefined;
+      const igUrl = graphHits.find((href) => href.includes("178900000000099")) ?? "";
+      check(
+        "Webhook：Instagram 帖文用 caption／permalink 補空白",
+        igFill.status === 200 &&
+          igFilled?.origin_site === "instagram" &&
+          igFilled.meta_post_permalink === "https://www.instagram.com/p/CxAb12/" &&
+          igFilled.meta_post_caption === "IG Graph 補回嘅帖文" &&
+          igUrl.includes("caption") &&
+          igUrl.includes("permalink") &&
+          !igUrl.includes("permalink_url"),
+        `url=${igUrl} row=${JSON.stringify(igFilled)}`
+      );
+
+      const idOnly = await postWhatsApp(
+        base,
+        metaIncomingSample("wamid.HTTP-FB-ID-ONLY", [
+          {
+            from: "85295553006",
+            id: "wamid.HTTP-FB-ID-ONLY",
+            timestamp: "1749416383",
+            type: "text",
+            text: { body: "只有帖文編號" },
+            referral: {
+              source_type: "post",
+              source_id: "1212121212_3434343434",
+            },
+          },
+        ])
+      );
+      const idOnlyRow = appDb
+        .prepare(
+          `SELECT origin_site, body, meta_post_id, meta_post_permalink, meta_post_caption
+           FROM comments WHERE external_id = 'wamid.HTTP-FB-ID-ONLY'`
+        )
+        .get() as
+        | {
+            origin_site: string | null;
+            body: string;
+            meta_post_id: string | null;
+            meta_post_permalink: string | null;
+            meta_post_caption: string | null;
+          }
+        | undefined;
+      check(
+        "Webhook：只有 Facebook 帖文編號時 Graph 補 permalink 同 caption",
+        idOnly.status === 200 &&
+          idOnly.json.ok === true &&
+          !!idOnlyRow &&
+          idOnlyRow.origin_site == null &&
+          idOnlyRow.body === "只有帖文編號" &&
+          idOnlyRow.meta_post_id === "1212121212_3434343434" &&
+          idOnlyRow.meta_post_permalink === "https://www.facebook.com/GloriousMotors/posts/3434343434" &&
+          idOnlyRow.meta_post_caption === "Graph 由編號補回",
+        `status=${idOnly.status} row=${JSON.stringify(idOnlyRow)}`
+      );
+
+      graphMode = "fail";
+      const broken = await postWhatsApp(
+        base,
+        metaIncomingSample("wamid.HTTP-GRAPH-DOWN", [
+          {
+            from: "85295553004",
+            id: "wamid.HTTP-GRAPH-DOWN",
+            timestamp: "1749416383",
+            type: "text",
+            text: { body: "Graph 壞咗都要入" },
+            referral: {
+              source_type: "post",
+              source_id: "5555555555_6666666666",
+              source_url: "https://www.facebook.com/GloriousMotors/posts/6666666666",
+            },
+          },
+        ])
+      );
+      const brokenRow = appDb
+        .prepare(
+          `SELECT body, origin_site, meta_post_id, meta_post_permalink, meta_post_caption
+           FROM comments WHERE external_id = 'wamid.HTTP-GRAPH-DOWN'`
+        )
+        .get() as
+        | {
+            body: string;
+            origin_site: string | null;
+            meta_post_id: string | null;
+            meta_post_permalink: string | null;
+            meta_post_caption: string | null;
+          }
+        | undefined;
+      check(
+        "Webhook：Graph 失敗仍然入庫，帖文連結留低",
+        broken.status === 200 &&
+          broken.json.ok === true &&
+          brokenRow?.body === "Graph 壞咗都要入" &&
+          brokenRow.origin_site === "facebook" &&
+          brokenRow.meta_post_id === "5555555555_6666666666" &&
+          brokenRow.meta_post_permalink === "https://www.facebook.com/GloriousMotors/posts/6666666666" &&
+          brokenRow.meta_post_caption == null,
+        `status=${broken.status} body=${JSON.stringify(broken.json)} row=${JSON.stringify(brokenRow)}`
+      );
+
+      const directHttp = await postWhatsApp(
+        base,
+        metaIncomingSample("wamid.HTTP-NO-REFERRAL", [
+          {
+            from: "85295553005",
+            id: "wamid.HTTP-NO-REFERRAL",
+            timestamp: "1749416383",
+            type: "text",
+            text: { body: "冇 referral 都要入" },
+          },
+        ])
+      );
+      const directRow = appDb
+        .prepare(
+          `SELECT body, origin_site, meta_post_id, meta_post_permalink, meta_post_caption
+           FROM comments WHERE external_id = 'wamid.HTTP-NO-REFERRAL'`
+        )
+        .get() as
+        | {
+            body: string;
+            origin_site: string | null;
+            meta_post_id: string | null;
+            meta_post_permalink: string | null;
+            meta_post_caption: string | null;
+          }
+        | undefined;
+      check(
+        "Webhook：冇 referral 仍然入庫，帖文欄留空",
+        directHttp.status === 200 &&
+          directHttp.json.ok === true &&
+          directRow?.body === "冇 referral 都要入" &&
+          directRow.origin_site == null &&
+          directRow.meta_post_id == null &&
+          directRow.meta_post_permalink == null &&
+          directRow.meta_post_caption == null,
+        `status=${directHttp.status} row=${JSON.stringify(directRow)}`
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      delete process.env.META_PAGE_ACCESS_TOKEN;
+    }
+
     delete process.env.WEBHOOK_VERIFY_TOKEN;
     const missingEnv = await postWhatsApp(base, sample);
     check(
@@ -533,6 +836,456 @@ function checkSequentialRotation(appDb: Database.Database): void {
       message === "__rollback_priority__",
       message === "__rollback_priority__" ? undefined : message
     );
+  }
+}
+
+interface StoredPost {
+  id: number;
+  source: string;
+  intake_kind: string;
+  origin_site: string | null;
+  body: string;
+  assignee_staff_id: number | null;
+  meta_post_id: string | null;
+  meta_post_permalink: string | null;
+  meta_post_caption: string | null;
+}
+
+function storedPost(appDb: Database.Database, externalId: string): StoredPost | undefined {
+  return appDb
+    .prepare(
+      `SELECT id, source, intake_kind, origin_site, body, assignee_staff_id,
+              meta_post_id, meta_post_permalink, meta_post_caption
+       FROM comments WHERE external_id = ?`
+    )
+    .get(externalId) as StoredPost | undefined;
+}
+
+function cookieHeader(res: Response): string {
+  const raw = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+  return raw
+    .map((item) => item.split(";")[0])
+    .filter((item) => item.startsWith("connect.sid="))
+    .join("; ");
+}
+
+/**
+ * 新嘅 Facebook／Instagram 帖文或廣告 click-to-WhatsApp 要記住帖文。
+ * 冇 referral、個人檔掣、簡介連結唔寫帖文欄，訊息仍然入庫。
+ */
+async function checkReferralPostCapture(
+  wa: typeof import("../services/whatsapp"),
+  appDb: Database.Database
+): Promise<void> {
+  const fbPayload = metaIncomingSample("wamid.FB-POST-CLICK", [
+    {
+      from: "85295551001",
+      id: "wamid.FB-POST-CLICK",
+      timestamp: "1749416383",
+      type: "text",
+      text: { body: "你好！能否提供更多相關資訊？" },
+      referral: {
+        source_url: "https://fb.me/glorious-alphard",
+        source_id: "1111111111_2222222222",
+        source_type: "ad",
+        headline: "CTWA紅色Alphard帖文",
+        body: "葵涌可以睇車",
+        media_type: "image",
+        image_url: "https://scontent.xx.fbcdn.net/v/t45.1600-4/not-the-post.jpg",
+        ctwa_clid: "ARAkLkA8rmlFeiCktEJQ",
+        welcome_message: { text: "歡迎查詢" },
+      },
+    },
+  ]);
+  const parsedFb = wa.parseWhatsAppWebhookPayload(fbPayload);
+  const fbMessage = parsedFb.messages[0];
+  check(
+    "解析 Facebook 廣告 referral 嘅帖文，客戶句子唔係 headline",
+    !parsedFb.error &&
+      fbMessage?.originSite === "facebook" &&
+      fbMessage.body === "你好！能否提供更多相關資訊？" &&
+      fbMessage.metaPostId === "1111111111_2222222222" &&
+      fbMessage.metaPostPermalink === "https://fb.me/glorious-alphard" &&
+      fbMessage.metaPostCaption === "CTWA紅色Alphard帖文 — 葵涌可以睇車" &&
+      !fbMessage.metaPostPermalink?.includes("not-the-post")
+  );
+  const routedFb = fbMessage ? wa.routeWhatsAppInbound(fbMessage) : null;
+  const fbRow = storedPost(appDb, "wamid.FB-POST-CLICK");
+  check(
+    "Facebook click 入庫係 whatsapp，並寫低帖文編號、連結同內容",
+    !!routedFb?.ok &&
+      routedFb.created === true &&
+      routedFb.comment.source === "whatsapp" &&
+      routedFb.comment.intake_kind === "whatsapp_click" &&
+      routedFb.comment.origin_site === "facebook" &&
+      fbRow?.body === "你好！能否提供更多相關資訊？" &&
+      fbRow.meta_post_id === "1111111111_2222222222" &&
+      fbRow.meta_post_permalink === "https://fb.me/glorious-alphard" &&
+      fbRow.meta_post_caption === "CTWA紅色Alphard帖文 — 葵涌可以睇車",
+    routedFb?.ok ? `id=${fbRow?.meta_post_id} link=${fbRow?.meta_post_permalink}` : routedFb?.error
+  );
+
+  const retryBare = wa.routeWhatsAppInbound({
+    toPhone: COMPANY_WHATSAPP_PHONE,
+    fromPhone: "85295551001",
+    body: "你好！能否提供更多相關資訊？",
+    externalId: "wamid.FB-POST-CLICK",
+  });
+  const afterRetry = storedPost(appDb, "wamid.FB-POST-CLICK");
+  check(
+    "冇 referral 嘅重試唔會清走已記住嘅帖文",
+    retryBare.ok &&
+      retryBare.created === false &&
+      afterRetry?.meta_post_id === "1111111111_2222222222" &&
+      afterRetry.meta_post_permalink === "https://fb.me/glorious-alphard" &&
+      afterRetry.meta_post_caption === "CTWA紅色Alphard帖文 — 葵涌可以睇車" &&
+      afterRetry.body === "你好！能否提供更多相關資訊？"
+  );
+
+  const later = wa.routeWhatsAppInbound({
+    toPhone: COMPANY_WHATSAPP_PHONE,
+    fromPhone: "85295551001",
+    body: "再講多句，唔係新帖",
+    externalId: "wamid.FB-POST-FOLLOWUP",
+  });
+  const followStored = storedPost(appDb, "wamid.FB-POST-CLICK");
+  check(
+    "同一客人跟住冇 referral 嘅訊息併入原帖，帖文留低",
+    later.ok &&
+      later.appended === true &&
+      later.comment.id === fbRow?.id &&
+      followStored?.meta_post_permalink === "https://fb.me/glorious-alphard" &&
+      followStored.assignee_staff_id === fbRow?.assignee_staff_id
+  );
+
+  const igPayload = metaIncomingSample("wamid.IG-POST-CLICK", [
+    {
+      from: "85295551002",
+      id: "wamid.IG-POST-CLICK",
+      timestamp: "1749416383",
+      type: "text",
+      text: { body: "想問呢條 IG" },
+      referral: {
+        source_type: "post",
+        source_id: "178900000000099",
+        source_url: "https://www.instagram.com/p/CxAb12/",
+        headline: "白色七人車限量",
+        body: "現貨可以預約",
+      },
+    },
+  ]);
+  const parsedIg = wa.parseWhatsAppWebhookPayload(igPayload);
+  const routedIgPost = parsedIg.messages[0] ? wa.routeWhatsAppInbound(parsedIg.messages[0]) : null;
+  const igRow = storedPost(appDb, "wamid.IG-POST-CLICK");
+  check(
+    "Instagram 帖文 click 記住 permalink 同 caption",
+    !!routedIgPost?.ok &&
+      parsedIg.messages[0]?.originSite === "instagram" &&
+      igRow?.source === "whatsapp" &&
+      igRow.origin_site === "instagram" &&
+      igRow.body === "想問呢條 IG" &&
+      igRow.meta_post_id === "178900000000099" &&
+      igRow.meta_post_permalink === "https://www.instagram.com/p/CxAb12/" &&
+      igRow.meta_post_caption === "白色七人車限量 — 現貨可以預約"
+  );
+
+  const reelOnly = wa.parseWhatsAppWebhookPayload(
+    metaIncomingSample("wamid.IG-REEL-BODY", [
+      {
+        from: "85295551007",
+        id: "wamid.IG-REEL-BODY",
+        timestamp: "1749416383",
+        type: "text",
+        text: { body: "想睇 reel" },
+        referral: {
+          source_type: "ad",
+          source_id: "120210000000111",
+          headline: "Reel",
+          body: "https://www.instagram.com/reel/CxAb12/",
+          media_type: "video",
+        },
+      },
+    ])
+  );
+  const routedReel = reelOnly.messages[0] ? wa.routeWhatsAppInbound(reelOnly.messages[0]) : null;
+  const reelRow = storedPost(appDb, "wamid.IG-REEL-BODY");
+  check(
+    "廣告 body 入面嘅 IG reel 連結可以開，headline 做內容",
+    !!routedReel?.ok &&
+      reelRow?.origin_site === "instagram" &&
+      reelRow.meta_post_id === "120210000000111" &&
+      reelRow.meta_post_permalink === "https://www.instagram.com/reel/CxAb12/" &&
+      reelRow.meta_post_caption === "Reel" &&
+      reelRow.body === "想睇 reel"
+  );
+
+  const noReferral = wa.parseWhatsAppWebhookPayload(
+    metaIncomingSample("wamid.NO-REFERRAL", [
+      {
+        from: "85295551003",
+        id: "wamid.NO-REFERRAL",
+        timestamp: "1749416383",
+        type: "text",
+        text: { body: "直接打嚟問價" },
+      },
+    ])
+  );
+  const routedDirect = noReferral.messages[0] ? wa.routeWhatsAppInbound(noReferral.messages[0]) : null;
+  const directRow = storedPost(appDb, "wamid.NO-REFERRAL");
+  check(
+    "冇 referral 仍然入庫，帖文欄留空",
+    !!routedDirect?.ok &&
+      routedDirect.created === true &&
+      noReferral.messages[0]?.metaPostId == null &&
+      noReferral.messages[0]?.metaPostPermalink == null &&
+      noReferral.messages[0]?.metaPostCaption == null &&
+      !!directRow &&
+      directRow.origin_site == null &&
+      directRow.body === "直接打嚟問價" &&
+      directRow.meta_post_id == null &&
+      directRow.meta_post_permalink == null &&
+      directRow.meta_post_caption == null &&
+      directRow.source === "whatsapp"
+  );
+
+  const emptyReferral = wa.parseWhatsAppWebhookPayload(
+    metaIncomingSample("wamid.EMPTY-REFERRAL-POST", [
+      {
+        from: "85295551006",
+        id: "wamid.EMPTY-REFERRAL-POST",
+        timestamp: "1749416383",
+        type: "text",
+        text: { body: "空 referral" },
+        referral: {},
+      },
+    ])
+  );
+  const routedEmpty = emptyReferral.messages[0] ? wa.routeWhatsAppInbound(emptyReferral.messages[0]) : null;
+  const emptyRow = storedPost(appDb, "wamid.EMPTY-REFERRAL-POST");
+  check(
+    "空 referral 仍然入庫，帖文欄留空",
+    !!routedEmpty?.ok &&
+      !!emptyRow &&
+      emptyRow.origin_site == null &&
+      emptyRow.meta_post_id == null &&
+      emptyRow.meta_post_permalink == null &&
+      emptyRow.meta_post_caption == null
+  );
+
+  const profile = wa.parseWhatsAppWebhookPayload(
+    metaIncomingSample("wamid.IG-PROFILE-NOPOST", [
+      {
+        from: "85295551004",
+        id: "wamid.IG-PROFILE-NOPOST",
+        timestamp: "1749416383",
+        type: "text",
+        text: { body: "主頁掣" },
+        referral: {
+          source_type: "instagram",
+          source_id: "17841405822304914",
+          headline: "Glorious Motors",
+          body: "WhatsApp",
+          media_type: "image",
+        },
+      },
+    ])
+  );
+  const routedProfile = profile.messages[0] ? wa.routeWhatsAppInbound(profile.messages[0]) : null;
+  const profileRow = storedPost(appDb, "wamid.IG-PROFILE-NOPOST");
+  check(
+    "IG 主頁掣有 referral 但冇帖文，來源係 IG，帖文欄留空",
+    !!routedProfile?.ok &&
+      profile.messages[0]?.originSite === "instagram" &&
+      profileRow?.origin_site === "instagram" &&
+      profileRow.body === "主頁掣" &&
+      profileRow.meta_post_id == null &&
+      profileRow.meta_post_permalink == null &&
+      profileRow.meta_post_caption == null
+  );
+
+  const bio = wa.parseWhatsAppWebhookPayload({
+    to: COMPANY_WHATSAPP_PHONE,
+    from: "85295551005",
+    body: "簡介連結",
+    external_id: "wamid.IG-BIO-NOPOST",
+    referral: { source_url: "http://glorious.hk/?utm_source=ig&utm_medium=social&utm_content=link_in_bio" },
+  });
+  const routedBio = bio.messages[0] ? wa.routeWhatsAppInbound(bio.messages[0]) : null;
+  const bioRow = storedPost(appDb, "wamid.IG-BIO-NOPOST");
+  check(
+    "IG 簡介連結唔當帖文 permalink",
+    !!routedBio?.ok &&
+      bioRow?.origin_site === "instagram" &&
+      bioRow.meta_post_id == null &&
+      bioRow.meta_post_permalink == null &&
+      bioRow.meta_post_caption == null
+  );
+
+  const bareAd = wa.parseWhatsAppWebhookPayload({
+    to: COMPANY_WHATSAPP_PHONE,
+    from: "85295551008",
+    body: "廣告冇平台",
+    external_id: "wamid.AD-ID-ONLY",
+    referral: {
+      source_type: "ad",
+      source_id: "52540693396957",
+      media_type: "image",
+      ctwa_clid: "AfhN-JKvx8HeFTmfB",
+    },
+  });
+  const routedAd = bareAd.messages[0] ? wa.routeWhatsAppInbound(bareAd.messages[0]) : null;
+  const adRow = storedPost(appDb, "wamid.AD-ID-ONLY");
+  check(
+    "只有廣告編號仍然記住 source_id，來源維持直接 WhatsApp",
+    !!routedAd?.ok &&
+      bareAd.messages[0]?.originSite == null &&
+      !!adRow &&
+      adRow.origin_site == null &&
+      adRow.meta_post_id === "52540693396957" &&
+      adRow.meta_post_permalink == null &&
+      adRow.meta_post_caption == null &&
+      adRow.body === "廣告冇平台"
+  );
+
+  const firstPlain = wa.routeWhatsAppInbound({
+    toPhone: COMPANY_WHATSAPP_PHONE,
+    fromPhone: "85295551009",
+    body: "先問價錢",
+    externalId: "wamid.PLAIN-THEN-POST",
+  });
+  const thenPost = wa.parseWhatsAppWebhookPayload(
+    metaIncomingSample("wamid.THEN-POST", [
+      {
+        from: "85295551009",
+        id: "wamid.THEN-POST",
+        timestamp: "1749416384",
+        type: "text",
+        text: { body: "跟住撳咗帖文" },
+        referral: {
+          source_type: "post",
+          source_id: "7777777777_8888888888",
+          source_url: "https://www.facebook.com/GloriousMotors/posts/8888888888",
+          body: "跟帖內容",
+        },
+      },
+    ])
+  );
+  const routedThen = thenPost.messages[0] ? wa.routeWhatsAppInbound(thenPost.messages[0]) : null;
+  const plainRow = storedPost(appDb, "wamid.PLAIN-THEN-POST");
+  check(
+    "未完成對話之後先撳帖文，帖文補上同一條，唔開新 ID",
+    firstPlain.ok &&
+      !!routedThen?.ok &&
+      routedThen.appended === true &&
+      routedThen.comment.id === firstPlain.comment.id &&
+      plainRow?.body === "先問價錢" &&
+      plainRow.origin_site === "facebook" &&
+      plainRow.meta_post_id === "7777777777_8888888888" &&
+      plainRow.meta_post_permalink === "https://www.facebook.com/GloriousMotors/posts/8888888888" &&
+      plainRow.meta_post_caption === "跟帖內容"
+  );
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const site = require("../services/site-comments") as typeof import("../services/site-comments");
+  if (directRow) {
+    const untouched = site.fillMetaPostIfMissing(directRow.id, {
+      id: "999_999",
+      permalink: "https://www.facebook.com/GloriousMotors/posts/999",
+      caption: "唔應該寫入直接 WhatsApp",
+    });
+    const stillDirect = storedPost(appDb, "wamid.NO-REFERRAL");
+    check(
+      "直接 WhatsApp 唔會被 Graph 補料寫入帖文",
+      untouched?.meta_post_id == null &&
+        stillDirect?.meta_post_id == null &&
+        stillDirect?.meta_post_caption == null
+    );
+  } else {
+    check("有直接 WhatsApp 先至測唔寫帖文", false);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const passwords = require("../auth/passwords") as typeof import("../auth/passwords");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const express = require("express") as typeof import("express");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const session = require("express-session") as typeof import("express-session");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const pageRoutes = require("../routes/pages") as typeof import("../routes/pages");
+  appDb
+    .prepare(
+      `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
+       VALUES ('referral-admin', 'Referral Admin', ?, 1, 1)`
+    )
+    .run(passwords.hashPassword("ReferralDemo1!"));
+
+  const app = express();
+  app.use(express.urlencoded({ extended: false }));
+  app.use(express.json());
+  app.use(session({ secret: "referral-demo", resave: false, saveUninitialized: false }));
+  app.use(pageRoutes.pagesRouter);
+  const server = await new Promise<Server>((resolve) => {
+    const started = app.listen(0, "127.0.0.1", () => resolve(started));
+  });
+  try {
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const login = await fetch(`${base}/login`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ username: "referral-admin", password: "ReferralDemo1!" }),
+    });
+    const cookie = cookieHeader(login);
+    check("同事可以登入睇帖文", login.status === 302 && cookie.includes("connect.sid="));
+
+    const fbPage = fbRow ? await fetch(`${base}/comments/${fbRow.id}`, { headers: { cookie } }) : null;
+    const fbHtml = fbPage ? await fbPage.text() : "";
+    check(
+      "留言頁顯示 Facebook 廣告帖文、連結同客戶句子",
+      fbPage?.status === 200 &&
+        fbHtml.includes("所屬Facebook帖文") &&
+        fbHtml.includes("CTWA紅色Alphard帖文 — 葵涌可以睇車") &&
+        fbHtml.includes("1111111111_2222222222") &&
+        fbHtml.includes("開啟Facebook原帖") &&
+        fbHtml.includes("https://fb.me/glorious-alphard") &&
+        fbHtml.includes("你好！能否提供更多相關資訊？") &&
+        fbHtml.includes("來自Facebook"),
+      `status=${fbPage?.status}`
+    );
+
+    const list = await fetch(`${base}/?q=` + encodeURIComponent("CTWA紅色Alphard帖文"), { headers: { cookie } });
+    const listHtml = await list.text();
+    check(
+      "留言箱列表顯示帖文摘要",
+      list.status === 200 && listHtml.includes("帖文：CTWA紅色Alphard帖文 — 葵涌可以睇車") && listHtml.includes("搵到 1 條")
+    );
+
+    const igPage = igRow ? await fetch(`${base}/comments/${igRow.id}`, { headers: { cookie } }) : null;
+    const igHtml = igPage ? await igPage.text() : "";
+    check(
+      "留言頁顯示 Instagram 原帖連結",
+      igPage?.status === 200 &&
+        igHtml.includes("所屬Instagram帖文") &&
+        igHtml.includes("白色七人車限量 — 現貨可以預約") &&
+        igHtml.includes("開啟Instagram原帖") &&
+        igHtml.includes("https://www.instagram.com/p/CxAb12/") &&
+        igHtml.includes("來自東榮 IG")
+    );
+
+    const directPage = directRow ? await fetch(`${base}/comments/${directRow.id}`, { headers: { cookie } }) : null;
+    const directHtml = directPage ? await directPage.text() : "";
+    check(
+      "冇 referral 嘅 WhatsApp 唔顯示所屬帖文",
+      directPage?.status === 200 &&
+        directHtml.includes("直接打嚟問價") &&
+        directHtml.includes("直接 WhatsApp") &&
+        !directHtml.includes("所屬") &&
+        !directHtml.includes("parent-post")
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
   }
 }
 
@@ -1274,6 +2027,7 @@ async function main(): Promise<number> {
       .all();
     console.log("未完成分佈：", openCounts);
 
+    await checkReferralPostCapture(wa, appDb);
     await checkLiveWhatsAppWebhook(appDb);
 
     if (failures.length) {

@@ -27,6 +27,7 @@ import {
 } from "./commenter-thread";
 import { findStaffById, getComment } from "./comments";
 import { notifyNewComment } from "./push";
+import { cleanMetaPostCaption, cleanMetaPostId, cleanMetaPostPermalink } from "./site-comments";
 
 const MIN_PHONE_DIGITS = 8;
 const MAX_PHONE_DIGITS = 15;
@@ -58,6 +59,13 @@ export interface RouteWhatsAppInboundInput {
   originSite?: string | null;
   /** 留言區入面嗰條 WhatsApp 連結。網頁留言板唔經呢度。 */
   entryPath?: EntryPath | null;
+  /**
+   * Facebook／Instagram 帖文或廣告 click-to-WhatsApp 嘅 referral。
+   * 冇帖文訊號就留空。入庫之後 Graph 先補缺嘅 permalink／caption。
+   */
+  metaPostId?: string | null;
+  metaPostPermalink?: string | null;
+  metaPostCaption?: string | null;
 }
 
 export type WhatsAppRouteOutcome =
@@ -516,6 +524,23 @@ function resolveAssignment(
   return { outcome: "company", assigneeStaffId: staffId, line };
 }
 
+/** 只填空白帖文欄。重試已經併入嘅訊息時用，唔改派、唔改正文。 */
+function rememberReferralPost(
+  commentId: number,
+  metaPostId: string | null,
+  metaPostPermalink: string | null,
+  metaPostCaption: string | null
+): void {
+  if (!metaPostId && !metaPostPermalink && !metaPostCaption) return;
+  db.prepare(
+    `UPDATE comments SET
+       meta_post_id = COALESCE(meta_post_id, ?),
+       meta_post_permalink = COALESCE(meta_post_permalink, ?),
+       meta_post_caption = COALESCE(meta_post_caption, ?)
+     WHERE id = ?`
+  ).run(metaPostId, metaPostPermalink, metaPostCaption, commentId);
+}
+
 /**
  * 將一則打去某條 WhatsApp 線路嘅訊息入庫並派單。
  *
@@ -528,6 +553,7 @@ function resolveAssignment(
  * 另外把寄件 wa_id 同收件線路寫入 wa_from_phone／wa_to_phone，畀公司線出站用。
  * 同一個客戶電話如果已經有未完成對話，新嘅 wamid 會併入嗰個 ID，唔會改派。
  * 狀態係已完成先至開新 ID。
+ * 帖文或廣告 referral 會寫入 meta_post_*（只填空白）。冇 referral 就留空，訊息仍然入庫。
  */
 export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWhatsAppInboundResult {
   const to = normalizePhone(input.toPhone);
@@ -569,6 +595,9 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
     waFromPhone: from,
     waToPhone: to,
   });
+  const metaPostId = cleanMetaPostId(input.metaPostId);
+  const metaPostPermalink = cleanMetaPostPermalink(input.metaPostPermalink);
+  const metaPostCaption = cleanMetaPostCaption(input.metaPostCaption);
 
   const run = db.transaction((): RouteWhatsAppInboundResult => {
     const existing = db
@@ -582,6 +611,7 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
     if (!existing) {
       const folded = replayFoldedMessage("whatsapp", externalId, body);
       if (folded) {
+        rememberReferralPost(folded.commentId, metaPostId, metaPostPermalink, metaPostCaption);
         const comment = getComment(folded.commentId);
         if (!comment) return { ok: false, error: "更新後讀唔返留言" };
         const routed = resolveAssignment(
@@ -618,7 +648,15 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
           body,
           authorName,
           commenterKey: identityKey,
-          fills: { waFromPhone: from, waToPhone: to, originSite, entryPath },
+          fills: {
+            waFromPhone: from,
+            waToPhone: to,
+            originSite,
+            entryPath,
+            metaPostId,
+            metaPostPermalink,
+            metaPostCaption,
+          },
         });
         const comment = getComment(open.id);
         if (!comment) return { ok: false, error: "更新後讀唔返留言" };
@@ -667,10 +705,24 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
         .prepare(
           `INSERT INTO comments (
              source, external_id, author_name, body, vehicle_ref, status, assignee_staff_id,
-             intake_kind, origin_site, wa_from_phone, wa_to_phone, entry_path, commenter_key
-           ) VALUES ('whatsapp', ?, ?, ?, NULL, 'open', ?, 'whatsapp_click', ?, ?, ?, ?, ?)`
+             intake_kind, origin_site, wa_from_phone, wa_to_phone, entry_path, commenter_key,
+             meta_post_id, meta_post_permalink, meta_post_caption
+           ) VALUES ('whatsapp', ?, ?, ?, NULL, 'open', ?, 'whatsapp_click', ?, ?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(externalId, authorName, nextBody, assigneeStaffId, originSite, from, to, entryPath, keyToStore);
+        .run(
+          externalId,
+          authorName,
+          nextBody,
+          assigneeStaffId,
+          originSite,
+          from,
+          to,
+          entryPath,
+          keyToStore,
+          metaPostId,
+          metaPostPermalink,
+          metaPostCaption
+        );
       const comment = getComment(Number(info.lastInsertRowid));
       if (!comment) return { ok: false, error: "入庫後讀唔返留言" };
       return {
@@ -694,6 +746,9 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
            wa_to_phone = ?,
            entry_path = COALESCE(?, entry_path),
            commenter_key = COALESCE(commenter_key, ?),
+           meta_post_id = COALESCE(meta_post_id, ?),
+           meta_post_permalink = COALESCE(meta_post_permalink, ?),
+           meta_post_caption = COALESCE(meta_post_caption, ?),
            updated_at = datetime('now')
        WHERE id = ?`
     ).run(
@@ -706,6 +761,9 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
       to,
       entryPath,
       keyToStore,
+      metaPostId,
+      metaPostPermalink,
+      metaPostCaption,
       existing.id
     );
     const comment = getComment(existing.id);
@@ -840,6 +898,152 @@ function referralUrlFrom(record: Record<string, unknown>): string | null {
   return direct || null;
 }
 
+interface ReferralPost {
+  id: string | null;
+  permalink: string | null;
+  caption: string | null;
+}
+
+/** Cloud API 文件：source_type 係 ad 或 post。`ig_post`、`facebook_ad` 同樣當帖文／廣告。 */
+function isAdOrPostType(value: string): boolean {
+  const s = value.trim().toLowerCase();
+  if (!s) return false;
+  return /(?:^|[^a-z0-9])(?:ad|post)(?:[^a-z0-9]|$)/.test(s);
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function isWhatsAppLink(url: string): boolean {
+  const host = hostOf(url);
+  return host === "whatsapp.com" || host === "api.whatsapp.com" || host === "wa.me" || host.endsWith(".whatsapp.com");
+}
+
+/** Instagram /p /reel，或 Facebook 帖文／影片／相簿 permalink。個人檔首頁唔算。 */
+function looksLikeMetaContentUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+  const path = parsed.pathname.toLowerCase();
+  if (host === "instagram.com" || host === "instagr.am") {
+    return /^\/(?:p|reel|reels|tv|share)\//.test(path);
+  }
+  if (
+    host === "facebook.com" ||
+    host.endsWith(".facebook.com") ||
+    host === "fb.com" ||
+    host.endsWith(".fb.com") ||
+    host === "m.facebook.com" ||
+    host === "mbasic.facebook.com"
+  ) {
+    if (
+      path.includes("/posts/") ||
+      path.includes("/permalink") ||
+      path.includes("/reel") ||
+      path.includes("/videos/") ||
+      path.includes("/photos/") ||
+      path.includes("/share/")
+    ) {
+      return true;
+    }
+    return parsed.searchParams.has("story_fbid") || parsed.searchParams.has("fbid");
+  }
+  return false;
+}
+
+function isFbMeShortLink(url: string): boolean {
+  if (hostOf(url) !== "fb.me") return false;
+  try {
+    return new URL(url).pathname.length > 1;
+  } catch {
+    return false;
+  }
+}
+
+function openableReferralUrl(url: string, adOrPost: boolean): string | null {
+  const cleaned = cleanMetaPostPermalink(url);
+  if (!cleaned || isWhatsAppLink(cleaned)) return null;
+  if (adOrPost || looksLikeMetaContentUrl(cleaned) || isFbMeShortLink(cleaned)) return cleaned;
+  return null;
+}
+
+function firstContentUrl(text: string): string | null {
+  const matches = text.match(/https?:\/\/[^\s<>"')\]]+/gi) ?? [];
+  for (const raw of matches) {
+    const cleaned = openableReferralUrl(raw.replace(/[),.;]+$/g, ""), false);
+    if (cleaned && looksLikeMetaContentUrl(cleaned)) return cleaned;
+  }
+  return null;
+}
+
+function sameLink(a: string, b: string): boolean {
+  return a.replace(/\/+$/, "") === b.replace(/\/+$/, "");
+}
+
+function referralCaption(headline: string, body: string, permalink: string | null): string | null {
+  let text = body.trim();
+  const title = headline.trim();
+  if (permalink && text && sameLink(text, permalink)) text = "";
+  if (title && text && title !== text) {
+    if (text.includes(title)) return cleanMetaPostCaption(text);
+    if (title.includes(text)) return cleanMetaPostCaption(title);
+    return cleanMetaPostCaption(`${title} — ${text}`);
+  }
+  return cleanMetaPostCaption(text || title);
+}
+
+/**
+ * 由一則 referral 抽出帖文／廣告身份。
+ * `source_type` 係 ad／post（或 fb.me、帖文 permalink）先至寫。
+ * 個人檔掣、簡介連結、ig.me、空 referral 回 null。唔讀客戶訊息正文。
+ */
+function referralPostFrom(referral: unknown): ReferralPost | null {
+  if (typeof referral === "string") {
+    const permalink = openableReferralUrl(referral, false);
+    if (!permalink) return null;
+    return { id: null, permalink, caption: null };
+  }
+  const record = asRecord(referral);
+  if (!record) return null;
+  const adOrPost = isAdOrPostType(asString(record.source_type ?? record.sourceType));
+  const sourceUrl = asString(record.source_url ?? record.sourceUrl ?? record.url).trim();
+  let permalink = sourceUrl ? openableReferralUrl(sourceUrl, adOrPost) : null;
+  const headline = asString(record.headline).trim();
+  const referralBody = asString(record.body).trim();
+  if (!permalink && adOrPost) permalink = firstContentUrl(`${headline}\n${referralBody}`);
+  const id =
+    adOrPost || (permalink && (looksLikeMetaContentUrl(permalink) || isFbMeShortLink(permalink)))
+      ? cleanMetaPostId(record.source_id ?? record.sourceId)
+      : null;
+  const caption = adOrPost || permalink ? referralCaption(headline, referralBody, permalink) : null;
+  if (!id && !permalink && !caption) return null;
+  if (!adOrPost && !permalink) return null;
+  return { id, permalink, caption };
+}
+
+function referralPostFields(record: Record<string, unknown>): {
+  metaPostId: string | null;
+  metaPostPermalink: string | null;
+  metaPostCaption: string | null;
+} {
+  const context = asRecord(record.context);
+  const post = referralPostFrom(record.referral) ?? (context ? referralPostFrom(context.referral) : null);
+  return {
+    metaPostId: post?.id ?? null,
+    metaPostPermalink: post?.permalink ?? null,
+    metaPostCaption: post?.caption ?? null,
+  };
+}
+
 /**
  * 明確 origin 優先，跟住 referral.source_url（現有 utm／網域規則）。
  * 仍然係空先至睇 referral／context 其餘欄（source_type、permalink、welcome_message 等）。
@@ -892,6 +1096,7 @@ function parseMetaEntries(entries: unknown[]): { messages: RouteWhatsAppInboundI
           referral
         );
         if (!entry.ok) return { messages: [], error: entry.error };
+        const post = referralPostFields(messageRecord);
         out.push({
           toPhone,
           fromPhone,
@@ -901,6 +1106,9 @@ function parseMetaEntries(entries: unknown[]): { messages: RouteWhatsAppInboundI
           originSite: entry.originSite,
           entryPath: entry.entryPath,
           media: content.media,
+          metaPostId: post.metaPostId,
+          metaPostPermalink: post.metaPostPermalink,
+          metaPostCaption: post.metaPostCaption,
         });
       }
     }
@@ -936,6 +1144,7 @@ export function parseWhatsAppWebhookPayload(payload: unknown): ParsedWhatsAppWeb
   if (!origin.ok) return { messages: [], ignored: false, error: origin.error };
   const entry = classifyWhatsAppEntry(root.entry_path ?? root.entryPath, origin.originSite, referral);
   if (!entry.ok) return { messages: [], ignored: false, error: entry.error };
+  const post = referralPostFields(root);
 
   if (!toPhone && !fromPhone && !body) {
     return {
@@ -955,6 +1164,9 @@ export function parseWhatsAppWebhookPayload(payload: unknown): ParsedWhatsAppWeb
         authorName,
         originSite: entry.originSite,
         entryPath: entry.entryPath,
+        metaPostId: post.metaPostId,
+        metaPostPermalink: post.metaPostPermalink,
+        metaPostCaption: post.metaPostCaption,
       },
     ],
     ignored: false,

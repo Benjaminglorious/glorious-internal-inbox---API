@@ -313,6 +313,7 @@ function collectReferralSignals(value: unknown, bag: ReferralSignalBag, depth: n
  * 空 referral、或者完全冇 Instagram／Facebook 訊號，回 null（直接 WhatsApp）。
  * 唔好傳入客戶訊息正文：有機對話提到 IG 都唔可以標來源。
  * Instagram 主頁掣有時 Meta 根本唔附 referral，嗰陣亦會回 null。
+ * 帖文／廣告身份（source_id、可開啟連結、headline）唔喺呢度留低，見 whatsapp.ts。
  */
 export function originSiteFromReferralSignals(
   referral: unknown,

@@ -84,6 +84,11 @@ whatsappWebhookRouter.post("/", async (req: Request, res: Response) => {
       results.push({ ok: false as const, error: routed.error });
       continue;
     }
+    try {
+      await attachWhatsAppReferralPost(message, routed.comment.id);
+    } catch (err) {
+      console.error("[whatsapp] 帖文資料未補上", err);
+    }
     if (message.media) {
       try {
         await ingestWhatsAppGraphMedia(routed.comment.id, message.media, routed.inboundReplyId);
@@ -202,6 +207,63 @@ metaWebhookRouter.get("/", hubVerify);
  * - 認得嘅留言／私訊會 upsert 為 site_comment（facebook 或 instagram）。
  * - Meta 推送唔帶 X-Webhook-Token；若同時帶咗 token 就必須啱。
  */
+function graphChannelForWhatsAppPost(
+  origin: string | null | undefined,
+  permalink: string | null | undefined,
+  postId: string
+): "facebook" | "instagram" | null {
+  if (origin === "facebook" || origin === "instagram") return origin;
+  const href = permalink?.trim();
+  if (href) {
+    try {
+      const host = new URL(href).hostname.toLowerCase().replace(/^www\./, "");
+      if (host === "instagram.com" || host.endsWith(".instagram.com") || host === "instagr.am") return "instagram";
+      if (
+        host === "facebook.com" ||
+        host.endsWith(".facebook.com") ||
+        host === "fb.com" ||
+        host.endsWith(".fb.com") ||
+        host === "fb.me" ||
+        host === "m.facebook.com" ||
+        host === "mbasic.facebook.com"
+      ) {
+        return "facebook";
+      }
+    } catch {
+      /* 連結唔合法就再睇帖文編號形狀 */
+    }
+  }
+  // Facebook 帖文 id 係 pageId_postId。冇來源站同連結時仍然可以試 Graph；失敗就當冇。
+  if (/^\d{5,20}_\d{5,20}$/.test(postId)) return "facebook";
+  return null;
+}
+
+/**
+ * WhatsApp 由帖文或廣告撳入嚟、有 source_id 但缺 permalink 或 caption 時先補。
+ * Graph 失敗、冇 token、或者分唔到 Facebook／Instagram，都唔影響入庫。
+ */
+async function attachWhatsAppReferralPost(
+  message: { originSite?: string | null; metaPostId?: string | null; metaPostPermalink?: string | null; metaPostCaption?: string | null },
+  commentId: number
+): Promise<void> {
+  const postId = message.metaPostId?.trim() ?? "";
+  if (!postId) return;
+  if (message.metaPostPermalink && message.metaPostCaption) return;
+  const channel = graphChannelForWhatsAppPost(message.originSite, message.metaPostPermalink, postId);
+  if (!channel) return;
+  try {
+    const looked = await lookupMetaParentPost({ channel, postId });
+    if (!looked) return;
+    fillMetaPostIfMissing(commentId, {
+      id: postId,
+      permalink: looked.permalink,
+      caption: looked.caption,
+    });
+  } catch (err) {
+    console.error("[whatsapp] 帖文資料未補上", err);
+  }
+}
+
 /** Webhook 已入庫之後先補帖文。Graph 失敗唔影響入庫，亦唔改回覆路徑。 */
 async function attachParentPost(item: UpsertSiteCommentInput, commentId: number): Promise<void> {
   if (item.meta_surface === "message") return;
