@@ -2,13 +2,13 @@ import { db, usingPostgres } from "../db";
 
 /**
  * 公司自動派單輪流次序：Eddie → Wing → Jason → 其餘在職同事（staff.id 升序）。
- * 其餘唔包括 Tony、Benjamin、Vivian。三人即使 active=1 都唔會被自動派單；管理員可以人手改派畀佢哋。
+ * 其餘唔包括 Tony、Benjamin、Vivian、Ken。四人即使 active=1 都唔會被自動派單；管理員可以人手改派畀佢哋。
  * 排除係用戶名名單，唔係所有管理員。Eddie（is_admin）仍然喺優先名單。
  * 新同事（唔喺優先名單、亦唔喺排除名單）排喺 Jason 後面，以 staff.id 升序。只計 active = 1。
  * 唔計 open／in_progress 幾多。上一位記喺 auto_assign_state，重啟同多個 instance 共用。
  */
 export const AUTO_ASSIGN_PRIORITY_USERNAMES = ["eddie", "wing", "jason"] as const;
-export const AUTO_ASSIGN_EXCLUDED_USERNAMES = ["tony", "benjamin", "vivian"] as const;
+export const AUTO_ASSIGN_EXCLUDED_USERNAMES = ["tony", "benjamin", "vivian", "ken"] as const;
 
 const PRIORITY_RANK = new Map<string, number>(
   AUTO_ASSIGN_PRIORITY_USERNAMES.map((name, index) => [name, index])
@@ -124,7 +124,7 @@ function chooseNextStaffId(): number | null {
 /**
  * 下一位自動派單同事。唔睇 open／in_progress。
  * 次序：Eddie → Wing → Jason → 其他 active 同事（staff.id 升序）。
- * Tony、Benjamin、Vivian 同 active = 0 唔參與。Eddie 雖然係管理員都參與。
+ * Tony、Benjamin、Vivian、Ken 同 active = 0 唔參與。Eddie 雖然係管理員都參與。
  * 公司 WhatsApp 總機入站、網站留言 ingest、同未派留言補派都用呢條。
  * 同事個人 WhatsApp 唔經呢度。
  * 游標同今次選擇一齊提交；呼叫方如果包住 transaction，失敗會一齊回滾。

@@ -1066,7 +1066,7 @@ pagesRouter.get("/whatsapp-lines", requireAuth, (req: Request, res: Response) =>
 
   const body = `
     <div class="page-head"><h1>WhatsApp 線路</h1></div>
-    <p class="muted">客戶打去<strong>同事個人號</strong>會自動派畀該同事。打去<strong>公司總機 85221740001</strong>就按固定輪流：Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）。每次新對話派畀上一位之後嗰位，唔會計未完成（open + in_progress）幾多。Tony、Benjamin、Vivian 唔參與自動派單。未知號碼會入庫但未派。真實 Meta／Glorious 連接尚未啟用。</p>
+    <p class="muted">客戶打去<strong>同事個人號</strong>會自動派畀該同事。打去<strong>公司總機 85221740001</strong>就按固定輪流：Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）。每次新對話派畀上一位之後嗰位，唔會計未完成（open + in_progress）幾多。Tony、Benjamin、Vivian、Ken 唔參與自動派單。未知號碼會入庫但未派。真實 Meta／Glorious 連接尚未啟用。</p>
     ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
     ${ok ? `<p class="notice">${escapeHtml(ok)}</p>` : ""}
     <h2>綁定同事個人號碼</h2>

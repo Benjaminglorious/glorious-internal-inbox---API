@@ -25,7 +25,7 @@
 ```bash
 cp .env.example .env   # 改 SESSION_SECRET，以及 WEBHOOK_VERIFY_TOKEN（要用 webhook 先至需要）
 npm install
-npm run seed           # 本地：15 位同事 + 示範留言 + 公司 WhatsApp 總機
+npm run seed           # 本地：7 位同事 + 示範留言 + 公司 WhatsApp 總機
 npm start              # http://localhost:3001
 ```
 
@@ -58,14 +58,15 @@ npm run dev
 5. **Start command：** `npm start`  
    唔好再用 `npm run seed && npm start`。`NODE_ENV=production`（Render 預設）或者連住 Render Postgres 時，`npm run seed` 會直接退出，**唔會**寫示範留言。舊 start command 會令 deploy 失敗，直到改成 `npm start`。
 
-`npm start` 會做三件事：
+`npm start` 會做呢幾件事：
 
 - 建立／對齊 schema（comments、replies、staff、whatsapp_lines、push、28car）
 - **staff 表係空**先至寫入全部同事名單同公司總機 `85221740001`（新帳號先用示範密碼；已有 `password_hash` 唔覆寫）
-- **已有同事**（包括 Render Postgres）啟動時確保 Benjamin（`benjamin`）同 Vivian（`vivian`）係在職管理員：未有就新增並用示範密碼；用戶名不分大小寫，或者顯示名係 Benjamin／Vivian（或 Vivian …），就升級同一列而唔另開帳號，唔改已有密碼。唔會降 Tony、Benjamin、Eddie，亦唔會改其他同事嘅角色
+- **已有同事**（包括 Render Postgres）啟動時確保 Benjamin（`benjamin`）、Vivian（`vivian`）同 Ken Kan（`ken`）係在職管理員：未有就新增並用示範密碼；用戶名不分大小寫，或者顯示名係 Benjamin／Vivian（或 Vivian …）／Ken Kan（或 Ken Kan …），就升級同一列而唔另開帳號，唔改已有密碼。唔會降 Tony、Benjamin、Vivian、Eddie，亦唔會改其他同事嘅角色
+- **已有庫**如果 `staff.id` 5–13 冇 Eddie、Wing、Jason、Tony、Benjamin、Vivian、Ken，啟動時會刪走呢個範圍（正式庫係舊收藏種子：張嘉欣、王明軒、陳美玲、何志豪、林雅雯、黃俊傑、鄭詩敏、吳家傑、趙雪兒）。留言留低，負責人改做未派。如果範圍入面有上述受保護同事，成個範圍唔刪
 - **唔會**寫示範 Facebook／IG／WhatsApp／28car 留言或觀察車盤
 
-本地想要示範資料先至 `npm run seed`（或 `npm run seed:demo`）。正式環境要一次過對齊成份名單（姓名／角色／在職，唔改密碼，唔加留言）先至用 Render Shell：`npm run seed:staff`。只係補 Benjamin 同 Vivian 嘅話，下次 `npm start` 已經會做。
+本地想要示範資料先至 `npm run seed`（或 `npm run seed:demo`）。正式環境要一次過對齊成份名單（姓名／角色／在職，唔改密碼，唔加留言）先至用 Render Shell：`npm run seed:staff`。只係補 Benjamin、Vivian 同 Ken 嘅話，下次 `npm start` 已經會做。
 
 如果舊 deploy 已經把示範留言寫入而家呢個 Postgres：Shell 跑 `npm run clear:demo`，或者管理員登入之後喺網站網域執行：
 
@@ -99,18 +100,19 @@ Glorious2026!
 | Eddie Lau | `eddie` | 管理員 |
 | Benjamin | `benjamin` | 管理員（同 Tony：唔參與公司線自動派單） |
 | Vivian | `vivian` | 管理員（同 Tony、Benjamin：唔參與公司線自動派單） |
+| Ken Kan | `ken` | 管理員（同 Vivian：唔參與公司線自動派單） |
 | Wing Cheng | `wing` | 同事 |
 | Jason Cheng | `jason` | 同事 |
 
-收藏、而家登入唔到（`active=0`，列仍然保留）：`kaixin` `ming` `mei` `ho` `yan` `chun` `sze` `kit` `yuki`。
+舊收藏種子（`kaixin` `ming` `mei` `ho` `yan` `chun` `sze` `kit` `yuki`）唔再寫入。正式庫如果佢哋仲喺 `staff.id` 5–13，下次啟動會刪走，同事名單唔再顯示。
 
-登入之後可以喺頁頂「改密碼」改自己嘅密碼。重新跑 `npm run seed` 會更新同事姓名、角色同在職狀態，但唔會覆寫已經存在嘅 `password_hash`（新插入嘅帳號先至用示範密碼）。收藏同事都唔會被強制改密碼。
+登入之後可以喺頁頂「改密碼」改自己嘅密碼。重新跑 `npm run seed` 會更新同事姓名、角色同在職狀態，但唔會覆寫已經存在嘅 `password_hash`（新插入嘅帳號先至用示範密碼 `Glorious2026!`）。
 
 ## 權限
 
 | 角色 | 登入 | 睇留言 | 回覆／改狀態 | 改派 |
 |------|------|--------|----------------|------|
-| 管理員（`tony`、`eddie`、`benjamin`、`vivian`） | 可以 | 全部，包括未派 | 任何一則 | 可以 |
+| 管理員（`tony`、`eddie`、`benjamin`、`vivian`、`ken`） | 可以 | 全部，包括未派 | 任何一則 | 可以 |
 | 在職同事（`wing`、`jason`） | 可以 | 只係 `assignee_staff_id` 等於自己 | 只係自己負責嗰啲 | 唔可以（403） |
 | 收藏（`active=0`） | 唔可以 | — | — | — |
 
@@ -427,7 +429,7 @@ Seed 會寫入公司總機：
 `routeWhatsAppInbound({ toPhone, fromPhone, body, externalId })`（`src/services/whatsapp.ts`）：
 
 1. **同事個人號**（`kind = staff` 而且啟用）→ 該對話／留言自動派畀綁定嘅同事。
-2. **公司總機 `85221740001`** → 按固定輪流派畀下一位在職同事：**Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）**。唔會計未完成（open + in_progress）數量。游標存在 `auto_assign_state`，重啟同多個 instance 都沿用上一位。**Tony、Benjamin、Vivian 唔參與自動派單**（管理員仍然可以人手改派畀佢哋）。Eddie 都係管理員，但仍然參與。如果上一位已停用、被排除或不存在，就由次序入面下一位仍然符合資格嘅同事接。未有游標時由 Eddie（或第一位符合資格嘅同事）開始。
+2. **公司總機 `85221740001`** → 按固定輪流派畀下一位在職同事：**Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）**。唔會計未完成（open + in_progress）數量。游標存在 `auto_assign_state`，重啟同多個 instance 都沿用上一位。**Tony、Benjamin、Vivian、Ken 唔參與自動派單**（管理員仍然可以人手改派畀佢哋）。Eddie 都係管理員，但仍然參與。如果上一位已停用、被排除或不存在，就由次序入面下一位仍然符合資格嘅同事接。未有游標時由 Eddie（或第一位符合資格嘅同事）開始。
 3. **未知或已停用號碼** → 仍然入庫（來源 `whatsapp`、狀態未處理），但**未派單**，並喺伺服器 log 記一筆。綁定同事已停用時同樣未派。
 
 有 `external_id` 時用佢做冪等鍵（webhook 重試唔會開新留言，亦唔會改走公司總機已派嘅同事）。冇 `external_id` 時，同一對「收件線路 + 寄件人」合成一條對話，新內容會附加。
@@ -569,7 +571,7 @@ Verify token = `WEBHOOK_VERIFY_TOKEN`。
 
 本地預設 SQLite（`better-sqlite3`），檔案喺 `data/inbox.db`（已加入 `.gitignore`）。設定 `DATABASE_URL` 或 `POSTGRES_URL` 就改用 PostgreSQL（`pg`，參數化查詢）。正式環境用 Render Postgres，見上面「Render」。兩種庫都係開機時對齊 schema。
 
-派單規則（seed／未指派留言／公司 WhatsApp 總機／網站留言）：**固定輪流，唔計未完成數**。次序係 **Eddie → Wing → Jason → 其餘 `active=1` 同事（按 staff id，排喺 Jason 後面）**。上一位寫入 `auto_assign_state`（`last_staff_id`、`last_username`）。**Tony（`username=tony`）、Benjamin（`username=benjamin`）同 Vivian（`username=vivian`）唔參與自動派單**，即使在職。排除係用戶名名單，唔係所有管理員（Eddie 仍然參與）。收藏（`active=0`）唔會被派單，亦登入唔到。優先名單係 `eddie`、`wing`、`jason`；其他在職同事排喺 Jason 後面。管理員可以人手改派，包括派畀 Tony、Benjamin 同 Vivian。`npm run seed` 會清走輪流游標，再由 Eddie 開始派示範留言。
+派單規則（seed／未指派留言／公司 WhatsApp 總機／網站留言）：**固定輪流，唔計未完成數**。次序係 **Eddie → Wing → Jason → 其餘 `active=1` 同事（按 staff id，排喺 Jason 後面）**。上一位寫入 `auto_assign_state`（`last_staff_id`、`last_username`）。**Tony（`username=tony`）、Benjamin（`username=benjamin`）、Vivian（`username=vivian`）同 Ken Kan（`username=ken`）唔參與自動派單**，即使在職。排除係用戶名名單，唔係所有管理員（Eddie 仍然參與）。收藏（`active=0`）唔會被派單，亦登入唔到。優先名單係 `eddie`、`wing`、`jason`；其他在職同事排喺 Jason 後面。管理員可以人手改派，包括派畀 Tony、Benjamin、Vivian 同 Ken。`npm run seed` 會清走輪流游標，再由 Eddie 開始派示範留言。
 
 如果資料庫係舊版本（未有 `whatsapp`、未有 `instagram`，或者未有 `intake_kind`／`origin_site`），啟動時會自動重建 `comments` 表。原有留言 id、內容同負責人都保留。舊嘅網站留言會標成 `site_comment`；舊嘅 WhatsApp 會標成 `whatsapp_click`，`origin_site` 留空（直接 WhatsApp）。
 

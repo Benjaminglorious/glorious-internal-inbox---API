@@ -2,7 +2,9 @@
  * 同事角色同留言可見範圍煙霧測試。
  * 用臨時 SQLite，唔會郁到正式 data/inbox.db。
  *
- * 覆蓋：seed 姓名／角色／收藏、自動派單只計 active=1、
+ * 覆蓋：seed 姓名／角色、Ken 同 Vivian 一樣係管理員而且唔自動派單、
+ * 正式庫形狀嘅 staff.id 5–13 會刪、受保護同事喺呢個範圍就唔刪、
+ * 自動派單只計 active=1、
  * 在職同事唔可以經 API 或網頁睇／回覆／改狀態其他人或未派留言、
  * 管理員可以、改派只限管理員、新留言輪詢唔會漏出其他人內容。
  */
@@ -85,7 +87,7 @@ async function main(): Promise<number> {
     if (staffCount.n === 0) await seedMod.seed();
 
     appDb.prepare(`UPDATE staff SET display_name = '陳東榮', is_admin = 0, active = 0 WHERE username = 'tony'`).run();
-    appDb.prepare(`UPDATE staff SET display_name = 'Temp', is_admin = 1, active = 1 WHERE username = 'kaixin'`).run();
+    appDb.prepare(`UPDATE staff SET display_name = 'Temp Ken', is_admin = 0, active = 0 WHERE username = 'ken'`).run();
     appDb.prepare(`UPDATE staff SET display_name = 'Temp Ben', is_admin = 0, active = 0 WHERE username = 'benjamin'`).run();
     appDb.prepare(`UPDATE staff SET display_name = 'Temp Viv', is_admin = 0, active = 0 WHERE username = 'vivian'`).run();
     seedMod.applySeedStaff();
@@ -116,36 +118,61 @@ async function main(): Promise<number> {
     expectRow("tony", "Tony Chan", 1, 1);
     expectRow("benjamin", "Benjamin", 1, 1);
     expectRow("vivian", "Vivian", 1, 1);
+    expectRow("ken", "Ken Kan", 1, 1);
     expectRow("eddie", "Eddie Lau", 1, 1);
     expectRow("wing", "Wing Cheng", 0, 1);
     expectRow("jason", "Jason Cheng", 0, 1);
     for (const username of ["kaixin", "ming", "mei", "ho", "yan", "chun", "sze", "kit", "yuki"]) {
-      const row = byName.get(username);
-      check(`${username} 收藏 active=0`, !!row && row.active === 0 && row.is_admin === 0);
+      check(`${username} 唔再喺同事名單`, !byName.has(username));
     }
+    const freshGuard = seedMod.removeRetiredStaffById();
+    const protectedIds = appDb
+      .prepare(`SELECT username FROM staff WHERE id BETWEEN 5 AND 13 ORDER BY id ASC`)
+      .all() as Array<{ username: string }>;
+    check(
+      "全新 seed 嘅 id 5–13 係 Benjamin、Vivian、Ken，所以唔刪",
+      freshGuard.skipped === true &&
+        freshGuard.removed.length === 0 &&
+        freshGuard.withheld.length === 0 &&
+        protectedIds.map((row) => row.username).join(",") === "benjamin,vivian,ken"
+    );
 
     const tony = byName.get("tony")!;
     const benjamin = byName.get("benjamin")!;
     const vivian = byName.get("vivian")!;
+    const ken = byName.get("ken")!;
     const eddie = byName.get("eddie")!;
     const wing = byName.get("wing")!;
     const jason = byName.get("jason")!;
-    const kaixin = byName.get("kaixin")!;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const passwordsEarly = require("../auth/passwords") as typeof import("../auth/passwords");
+    const archiveId = Number(
+      appDb
+        .prepare(
+          `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
+           VALUES ('archive', '收藏測試', ?, 0, 0)`
+        )
+        .run(passwordsEarly.hashPassword("ArchiveOnly1")).lastInsertRowid
+    );
 
     const picked = assignApi.pickNextAutoAssignStaffId();
     const pickedRow = staff.find((row) => row.id === picked);
     check(
-      "自動派單只計 active=1，而且唔會揀 Tony、Benjamin 或 Vivian",
+      "自動派單只計 active=1，而且唔會揀 Tony、Benjamin、Vivian 或 Ken",
       !!pickedRow &&
         pickedRow.active === 1 &&
         pickedRow.username !== "tony" &&
         pickedRow.username !== "benjamin" &&
-        pickedRow.username !== "vivian",
+        pickedRow.username !== "vivian" &&
+        pickedRow.username !== "ken",
       pickedRow ? pickedRow.username : "沒有人選"
     );
     check(
-      "Vivian 同 Benjamin、Tony 一樣係在職管理員",
-      vivian.is_admin === 1 &&
+      "Ken 同 Vivian、Benjamin、Tony 一樣係在職管理員",
+      ken.is_admin === 1 &&
+        ken.active === 1 &&
+        ken.display_name === "Ken Kan" &&
+        vivian.is_admin === 1 &&
         vivian.active === 1 &&
         benjamin.is_admin === 1 &&
         benjamin.active === 1 &&
@@ -170,7 +197,7 @@ async function main(): Promise<number> {
     );
     check(
       "推送：收藏同事收唔到",
-      !pushApi.notificationVisibleTo({ id: kaixin.id, is_admin: 0, active: 0 }, kaixin.id)
+      !pushApi.notificationVisibleTo({ id: archiveId, is_admin: 0, active: 0 }, archiveId)
     );
 
     const before = appDb.prepare(`SELECT COALESCE(MAX(id), 0) AS id FROM comments`).get() as { id: number };
@@ -247,20 +274,22 @@ async function main(): Promise<number> {
     const vivianLogin = await login(base, "vivian");
     const eddieLogin = await login(base, "eddie");
     const jasonLogin = await login(base, "jason");
-    const kaixinLogin = await login(base, "kaixin");
+    const kenLogin = await login(base, "ken");
+    const archiveLogin = await login(base, "archive");
     check("Wing 可以登入", wingLogin.status === 302 && wingLogin.cookie.includes("connect.sid="));
     check("Tony 可以登入", tonyLogin.status === 302 && tonyLogin.cookie.includes("connect.sid="));
     check("Benjamin 可以登入", benjaminLogin.status === 302 && benjaminLogin.cookie.includes("connect.sid="));
     check("Vivian 可以登入", vivianLogin.status === 302 && vivianLogin.cookie.includes("connect.sid="));
+    check("Ken 可以登入", kenLogin.status === 302 && kenLogin.cookie.includes("connect.sid="));
     check("Eddie 可以登入", eddieLogin.status === 302 && eddieLogin.cookie.includes("connect.sid="));
-    check("收藏帳號 kaixin 登入唔到", kaixinLogin.status === 302 && kaixinLogin.location.includes("error") && !kaixinLogin.cookie);
+    check("收藏帳號 archive 登入唔到", archiveLogin.status === 302 && archiveLogin.location.includes("error") && !archiveLogin.cookie);
 
     const linesPage = await fetch(`${base}/whatsapp-lines`, { headers: { cookie: tonyLogin.cookie } });
     const linesHtml = await linesPage.text();
     check(
-      "WhatsApp 線路頁寫明 Tony、Benjamin、Vivian 唔參與自動派單",
+      "WhatsApp 線路頁寫明 Tony、Benjamin、Vivian、Ken 唔參與自動派單",
       linesPage.status === 200 &&
-        linesHtml.includes("Tony、Benjamin、Vivian 唔參與自動派單") &&
+        linesHtml.includes("Tony、Benjamin、Vivian、Ken 唔參與自動派單") &&
         linesHtml.includes("Eddie → Wing → Jason")
     );
 
@@ -592,9 +621,12 @@ async function main(): Promise<number> {
     const staffPage = await fetch(`${base}/staff`, { headers: { cookie: vivianLogin.cookie } });
     const staffHtml = await staffPage.text();
     check(
-      "Vivian 可以開同事名單，而且自己係管理員／啟用",
+      "Vivian 同 Ken 可以開同事名單，而且自己係管理員／啟用；舊收藏種子唔喺表",
       staffPage.status === 200 &&
-        /<code>vivian<\/code><\/td>\s*<td>管理員<\/td>\s*<td>啟用<\/td>/.test(staffHtml)
+        /<code>vivian<\/code><\/td>\s*<td>管理員<\/td>\s*<td>啟用<\/td>/.test(staffHtml) &&
+        /<code>ken<\/code><\/td>\s*<td>管理員<\/td>\s*<td>啟用<\/td>/.test(staffHtml) &&
+        !staffHtml.includes("kaixin") &&
+        !staffHtml.includes("yuki")
     );
     const vivianAssign = await fetch(`${base}/api/comments/${jasonId}/assign`, {
       method: "POST",
@@ -720,6 +752,64 @@ async function main(): Promise<number> {
         adoptedVivianName[0].password_hash === "kept-viv-hash"
     );
 
+    appDb
+      .prepare(
+        `UPDATE staff SET username = 'Ken', display_name = 'Ken Kan', is_admin = 0, active = 0, password_hash = 'kept-ken-hash' WHERE username = 'ken'`
+      )
+      .run();
+    seedMod.applySeedStaff();
+    const adoptedKenCase = appDb
+      .prepare(
+        `SELECT username, display_name, is_admin, active, password_hash
+         FROM staff
+         WHERE lower(username) = 'ken' OR lower(display_name) LIKE 'ken kan%'`
+      )
+      .all() as Array<{
+      username: string;
+      display_name: string;
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    }>;
+    check(
+      "用戶名 Ken 會升級成 ken 管理員，唔會重複",
+      adoptedKenCase.length === 1 &&
+        adoptedKenCase[0].username === "ken" &&
+        adoptedKenCase[0].display_name === "Ken Kan" &&
+        adoptedKenCase[0].is_admin === 1 &&
+        adoptedKenCase[0].active === 1 &&
+        adoptedKenCase[0].password_hash === "kept-ken-hash"
+    );
+
+    appDb
+      .prepare(
+        `UPDATE staff SET username = 'kchan', display_name = 'Ken Kan', is_admin = 0, active = 0, password_hash = 'kept-ken-hash' WHERE username = 'ken'`
+      )
+      .run();
+    seedMod.ensureKenAdmin();
+    const adoptedKenName = appDb
+      .prepare(
+        `SELECT username, display_name, is_admin, active, password_hash
+         FROM staff
+         WHERE lower(username) IN ('ken', 'kchan') OR lower(trim(display_name)) = 'ken kan' OR lower(trim(display_name)) LIKE 'ken kan %'`
+      )
+      .all() as Array<{
+      username: string;
+      display_name: string;
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    }>;
+    check(
+      "顯示名 Ken Kan 會升級同一列，唔會另開帳號",
+      adoptedKenName.length === 1 &&
+        adoptedKenName[0].username === "ken" &&
+        adoptedKenName[0].display_name === "Ken Kan" &&
+        adoptedKenName[0].is_admin === 1 &&
+        adoptedKenName[0].active === 1 &&
+        adoptedKenName[0].password_hash === "kept-ken-hash"
+    );
+
     const tonyStill = appDb.prepare(`SELECT is_admin, active FROM staff WHERE username = 'tony'`).get() as {
       is_admin: number;
       active: number;
@@ -736,11 +826,15 @@ async function main(): Promise<number> {
     };
     appDb.prepare(`UPDATE staff SET is_admin = 0, active = 0 WHERE username = 'benjamin'`).run();
     appDb.prepare(`DELETE FROM staff WHERE username = 'vivian'`).run();
+    appDb.prepare(`DELETE FROM staff WHERE username = 'ken'`).run();
     const commentsBefore = (appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n;
     seedMod.syncStaffOnBoot();
     const commentsAfter = (appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n;
     const inserted = appDb
       .prepare(`SELECT display_name, is_admin, active, password_hash FROM staff WHERE username = 'vivian'`)
+      .get() as { display_name: string; is_admin: number; active: number; password_hash: string };
+    const insertedKen = appDb
+      .prepare(`SELECT display_name, is_admin, active, password_hash FROM staff WHERE username = 'ken'`)
       .get() as { display_name: string; is_admin: number; active: number; password_hash: string };
     const benjaminAfterBoot = appDb
       .prepare(`SELECT is_admin, active, password_hash FROM staff WHERE username = 'benjamin'`)
@@ -758,6 +852,13 @@ async function main(): Promise<number> {
         inserted.is_admin === 1 &&
         inserted.active === 1 &&
         passwords.verifyPassword(DEMO_PASSWORD, inserted.password_hash)
+    );
+    check(
+      "已有同事嘅庫啟動會補 Ken Kan 管理員",
+      insertedKen.display_name === "Ken Kan" &&
+        insertedKen.is_admin === 1 &&
+        insertedKen.active === 1 &&
+        passwords.verifyPassword(DEMO_PASSWORD, insertedKen.password_hash)
     );
     check("啟動對齊唔寫新留言", commentsAfter === commentsBefore);
     check(
@@ -778,6 +879,190 @@ async function main(): Promise<number> {
         eddieAfterBoot.is_admin === 1 &&
         eddieAfterBoot.active === 1 &&
         eddieAfterBoot.password_hash === eddieStill.password_hash
+    );
+
+    const detachIds = (appDb.prepare(`SELECT id FROM staff`).all() as Array<{ id: number }>).map((row) => row.id);
+    if (detachIds.length) {
+      const marks = detachIds.map(() => "?").join(", ");
+      appDb.prepare(`UPDATE comments SET assignee_staff_id = NULL WHERE assignee_staff_id IN (${marks})`).run(...detachIds);
+      appDb
+        .prepare(
+          `DELETE FROM message_media WHERE reply_id IN (SELECT id FROM comment_replies WHERE staff_id IN (${marks}))`
+        )
+        .run(...detachIds);
+      appDb
+        .prepare(
+          `UPDATE comment_message_keys SET reply_id = NULL WHERE reply_id IN (SELECT id FROM comment_replies WHERE staff_id IN (${marks}))`
+        )
+        .run(...detachIds);
+      appDb.prepare(`DELETE FROM comment_replies WHERE staff_id IN (${marks})`).run(...detachIds);
+      appDb.prepare(`DELETE FROM push_subscriptions WHERE staff_id IN (${marks})`).run(...detachIds);
+      appDb.prepare(`DELETE FROM whatsapp_lines WHERE staff_id IN (${marks})`).run(...detachIds);
+      appDb.prepare(`DELETE FROM staff WHERE id IN (${marks})`).run(...detachIds);
+    }
+    const roster: Array<[number, string, string, number, number]> = [
+      [1, "eddie", "Eddie Lau", 1, 1],
+      [2, "wing", "Wing Cheng", 0, 1],
+      [3, "jason", "Jason Cheng", 0, 1],
+      [4, "tony", "Tony Chan", 1, 1],
+      [5, "kaixin", "張嘉欣", 0, 0],
+      [6, "ming", "王明軒", 0, 0],
+      [7, "mei", "陳美玲", 0, 0],
+      [8, "ho", "何志豪", 0, 0],
+      [9, "yan", "林雅雯", 0, 0],
+      [10, "chun", "黃俊傑", 0, 0],
+      [11, "sze", "鄭詩敏", 0, 0],
+      [12, "kit", "吳家傑", 0, 0],
+      [13, "yuki", "趙雪兒", 0, 0],
+      [14, "benjamin", "Benjamin", 1, 1],
+      [23, "vivian", "Vivian", 1, 1],
+    ];
+    const insertRoster = appDb.prepare(
+      `INSERT INTO staff (id, username, display_name, password_hash, is_admin, active) VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    for (const [id, username, displayName, isAdmin, active] of roster) {
+      insertRoster.run(id, username, displayName, "kept-live-hash", isAdmin, active);
+    }
+    const wingCommentId = Number(
+      appDb
+        .prepare(
+          `INSERT INTO comments (
+             source, external_id, author_name, body, status, assignee_staff_id, intake_kind
+           ) VALUES ('28car', 'live-shape-wing', '客人', '留給 Wing', 'open', 2, 'site_comment')`
+        )
+        .run().lastInsertRowid
+    );
+    const retiredCommentId = Number(
+      appDb
+        .prepare(
+          `INSERT INTO comments (
+             source, external_id, author_name, body, status, assignee_staff_id, intake_kind
+           ) VALUES ('28car', 'live-shape-ho', '客人', '舊收藏負責人', 'open', 8, 'site_comment')`
+        )
+        .run().lastInsertRowid
+    );
+    const retiredReplyId = Number(
+      appDb
+        .prepare(
+          `INSERT INTO comment_replies (comment_id, staff_id, direction, body, delivery_status)
+           VALUES (?, 8, 'outbound', '舊回覆', 'stored')`
+        )
+        .run(retiredCommentId).lastInsertRowid
+    );
+    appDb
+      .prepare(`INSERT INTO message_media (comment_id, reply_id, kind, mime_type, byte_size) VALUES (?, ?, 'image', 'image/png', 1)`)
+      .run(retiredCommentId, retiredReplyId);
+    appDb
+      .prepare(
+        `INSERT INTO comment_message_keys (source, external_id, comment_id, reply_id) VALUES ('28car', 'live-shape-ho-key', ?, ?)`
+      )
+      .run(retiredCommentId, retiredReplyId);
+    appDb
+      .prepare(
+        `INSERT INTO push_subscriptions (staff_id, endpoint, p256dh, auth) VALUES (8, 'https://push.example/ho', 'p256', 'auth')`
+      )
+      .run();
+    appDb
+      .prepare(
+        `INSERT INTO whatsapp_lines (phone_e164, display_label, kind, staff_id, is_active)
+         VALUES ('85260000008', '何志豪', 'staff', 8, 0)`
+      )
+      .run();
+    appDb.prepare(`UPDATE sqlite_sequence SET seq = 23 WHERE name = 'staff'`).run();
+
+    seedMod.syncStaffOnBoot();
+    const liveStaff = appDb
+      .prepare(`SELECT id, username, display_name, is_admin, active, password_hash FROM staff ORDER BY id ASC`)
+      .all() as Array<{
+      id: number;
+      username: string;
+      display_name: string;
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    }>;
+    const liveNames = liveStaff.map((row) => `${row.id}:${row.username}`).join(",");
+    const kenLive = liveStaff.find((row) => row.username === "ken");
+    const retiredLeft = liveStaff.filter((row) => row.id >= 5 && row.id <= 13);
+    const wingStill = appDb.prepare(`SELECT assignee_staff_id FROM comments WHERE id = ?`).get(wingCommentId) as {
+      assignee_staff_id: number | null;
+    };
+    const hoNow = appDb.prepare(`SELECT assignee_staff_id FROM comments WHERE id = ?`).get(retiredCommentId) as {
+      assignee_staff_id: number | null;
+    };
+    const replyLeft = appDb.prepare(`SELECT id FROM comment_replies WHERE id = ?`).get(retiredReplyId);
+    const pushLeft = appDb.prepare(`SELECT id FROM push_subscriptions WHERE staff_id = 8`).get();
+    const lineLeft = appDb.prepare(`SELECT id FROM whatsapp_lines WHERE staff_id = 8`).get();
+    const keyNow = appDb
+      .prepare(`SELECT reply_id FROM comment_message_keys WHERE external_id = 'live-shape-ho-key'`)
+      .get() as { reply_id: number | null };
+    check(
+      "正式庫形狀：刪走 id 5–13 收藏種子，Ken 用示範密碼補做管理員，受保護同事留低",
+      retiredLeft.length === 0 &&
+        !!kenLive &&
+        kenLive.id > 13 &&
+        kenLive.display_name === "Ken Kan" &&
+        kenLive.is_admin === 1 &&
+        kenLive.active === 1 &&
+        passwords.verifyPassword(DEMO_PASSWORD, kenLive.password_hash) &&
+        liveStaff.some((row) => row.id === 1 && row.username === "eddie" && row.password_hash === "kept-live-hash") &&
+        liveStaff.some((row) => row.id === 2 && row.username === "wing") &&
+        liveStaff.some((row) => row.id === 3 && row.username === "jason") &&
+        liveStaff.some((row) => row.id === 4 && row.username === "tony" && row.is_admin === 1) &&
+        liveStaff.some((row) => row.id === 14 && row.username === "benjamin" && row.is_admin === 1 && row.password_hash === "kept-live-hash") &&
+        liveStaff.some((row) => row.id === 23 && row.username === "vivian" && row.is_admin === 1 && row.password_hash === "kept-live-hash") &&
+        wingStill.assignee_staff_id === 2 &&
+        hoNow.assignee_staff_id == null &&
+        replyLeft == null &&
+        pushLeft == null &&
+        lineLeft == null &&
+        keyNow.reply_id == null,
+      liveNames
+    );
+    const afterLivePick = assignApi.pickNextAutoAssignStaffId();
+    check(
+      "正式庫形狀：自動派單唔會派 Ken，亦唔會派已刪嘅 id 5–13",
+      afterLivePick != null &&
+        afterLivePick !== kenLive?.id &&
+        (afterLivePick < 5 || afterLivePick > 13) &&
+        ![14, 23].includes(afterLivePick),
+      String(afterLivePick)
+    );
+
+    appDb.prepare(`DELETE FROM staff WHERE username = 'ken'`).run();
+    appDb
+      .prepare(
+        `INSERT INTO staff (id, username, display_name, password_hash, is_admin, active)
+         VALUES (5, 'ken', 'Ken Kan', 'kept-ken', 1, 1)`
+      )
+      .run();
+    appDb
+      .prepare(
+        `INSERT INTO staff (id, username, display_name, password_hash, is_admin, active)
+         VALUES (6, 'kaixin', '張嘉欣', 'kept-kaixin', 0, 0)`
+      )
+      .run();
+    const blocked = seedMod.removeRetiredStaffById();
+    const kenBlocked = appDb.prepare(`SELECT id, username, password_hash FROM staff WHERE username = 'ken'`).get() as {
+      id: number;
+      username: string;
+      password_hash: string;
+    };
+    const kaixinLeft = appDb.prepare(`SELECT id, username FROM staff WHERE username = 'kaixin'`).get() as {
+      id: number;
+      username: string;
+    };
+    check(
+      "id 5 係 Ken 時唔刪範圍內任何人，包括收藏種子",
+      blocked.skipped === true &&
+        blocked.removed.length === 0 &&
+        blocked.blocked.some((row) => row.username === "ken" && row.id === 5) &&
+        blocked.withheld.some((row) => row.username === "kaixin") &&
+        kenBlocked.id === 5 &&
+        kenBlocked.password_hash === "kept-ken" &&
+        kaixinLeft.id === 6 &&
+        kaixinLeft.username === "kaixin",
+      `skipped=${blocked.skipped} withheld=${blocked.withheld.map((row) => row.username).join(",")}`
     );
 
     if (failures.length) {

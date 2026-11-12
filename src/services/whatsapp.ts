@@ -520,7 +520,7 @@ function resolveAssignment(
  * 將一則打去某條 WhatsApp 線路嘅訊息入庫並派單。
  *
  * - 同事個人線路 → 派畀綁定同事
- * - 公司總機 → pickNextAutoAssignStaffId（輪流：Eddie → Wing → Jason → 其餘按 staff id；唔計未完成數。Tony、Benjamin、Vivian 唔參與）
+ * - 公司總機 → pickNextAutoAssignStaffId（輪流：Eddie → Wing → Jason → 其餘按 staff id；唔計未完成數。Tony、Benjamin、Vivian、Ken 唔參與）
  * - 未知／已停用線路 → 入庫為未派，並寫 log
  *
  * 有 externalId 時以佢做冪等鍵。冇則用 wa:{to}:{from} 合成一條對話，新內容會附加，

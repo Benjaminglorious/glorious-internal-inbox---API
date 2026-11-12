@@ -14,11 +14,13 @@ import type { CommentSource, EntryPath, IntakeKind, OriginSite } from "../types"
 export const DEMO_PASSWORD = "Glorious2026!";
 
 /**
- * 可登入：四位管理員（eddie、tony、benjamin、vivian）+ 兩位在職同事。其餘種子同事收藏（active=0），保留列但登入唔到。
- * 全新資料庫插入次序係 eddie → wing → jason → tony → benjamin → vivian，只影響 staff.id。
- * 自動派單唔包括 tony、benjamin、vivian（見 assign.ts 用戶名名單，唔係因為 is_admin）。
+ * 可登入：五位管理員（eddie、tony、benjamin、vivian、ken）+ 兩位在職同事。
+ * 全新資料庫插入次序係 eddie → wing → jason → tony → benjamin → vivian → ken，只影響 staff.id。
+ * 自動派單唔包括 tony、benjamin、vivian、ken（見 assign.ts 用戶名名單，唔係因為 is_admin）。
  * 輪流次序：Eddie → Wing → Jason → 其餘在職同事（按 staff.id）。唔計未完成數。
- * Eddie 都係管理員，但仍然參與自動派單。
+ * Eddie 都係管理員，但仍然參與自動派單。Ken 同 Vivian 一樣係管理員，唔參與自動派單。
+ * 舊種子收藏同事（kaixin、ming、mei、ho、yan、chun、sze、kit、yuki）唔再寫入。
+ * 已有庫如果呢啲人仲喺 staff.id 5–13，啟動時會刪走（見 removeRetiredStaffById）。
  */
 export const SEED_STAFF: Array<{
   username: string;
@@ -32,16 +34,40 @@ export const SEED_STAFF: Array<{
   { username: "tony", display_name: "Tony Chan", is_admin: 1, active: 1 },
   { username: "benjamin", display_name: "Benjamin", is_admin: 1, active: 1 },
   { username: "vivian", display_name: "Vivian", is_admin: 1, active: 1 },
-  { username: "kaixin", display_name: "張嘉欣", is_admin: 0, active: 0 },
-  { username: "ming", display_name: "王明軒", is_admin: 0, active: 0 },
-  { username: "mei", display_name: "陳美玲", is_admin: 0, active: 0 },
-  { username: "ho", display_name: "何志豪", is_admin: 0, active: 0 },
-  { username: "yan", display_name: "林雅雯", is_admin: 0, active: 0 },
-  { username: "chun", display_name: "黃俊傑", is_admin: 0, active: 0 },
-  { username: "sze", display_name: "鄭詩敏", is_admin: 0, active: 0 },
-  { username: "kit", display_name: "吳家傑", is_admin: 0, active: 0 },
-  { username: "yuki", display_name: "趙雪兒", is_admin: 0, active: 0 },
+  { username: "ken", display_name: "Ken Kan", is_admin: 1, active: 1 },
 ];
+
+/**
+ * 正式庫舊種子同事而家嘅 id。只刪呢個範圍。
+ * 如果範圍入面有受保護同事（包括 Ken），成個範圍唔刪。
+ */
+export const RETIRED_STAFF_ID_MIN = 5;
+export const RETIRED_STAFF_ID_MAX = 13;
+
+/** id 5–13 一旦包含呢啲用戶名，就唔刪任何人。 */
+export const STAFF_DELETE_PROTECTED_USERNAMES = [
+  "eddie",
+  "wing",
+  "jason",
+  "tony",
+  "benjamin",
+  "vivian",
+  "ken",
+] as const;
+
+export interface RetiredStaffRow {
+  id: number;
+  username: string;
+  display_name: string;
+}
+
+export interface RetiredStaffRemoval {
+  removed: RetiredStaffRow[];
+  skipped: boolean;
+  blocked: RetiredStaffRow[];
+  /** 因為範圍內有受保護同事而一併留低嘅其他列。 */
+  withheld: RetiredStaffRow[];
+}
 
 interface DemoComment {
   source: CommentSource;
@@ -402,10 +428,38 @@ function adoptVivianUsername(): void {
 }
 
 /**
+ * 已有「Ken Kan」但用戶名唔係小寫 ken，或者顯示名係 Ken Kan／Ken Kan …，
+ * 而標準帳號未存在：改成 username=ken，之後 upsert 升做管理員。唔會另開一列，亦唔改密碼。
+ * 標準帳號已經存在就唔改其他列。同 Vivian 一樣。
+ */
+function adoptKenUsername(): void {
+  const row = db
+    .prepare(
+      `
+      SELECT id
+      FROM staff
+      WHERE username != 'ken'
+        AND NOT EXISTS (SELECT 1 FROM staff WHERE username = 'ken')
+        AND (
+          lower(username) = 'ken'
+          OR lower(trim(display_name)) = 'ken kan'
+          OR lower(trim(display_name)) LIKE 'ken kan %'
+        )
+      ORDER BY CASE WHEN lower(username) = 'ken' THEN 0 ELSE 1 END, id ASC
+      LIMIT 1
+      `
+    )
+    .get() as { id: number } | undefined;
+  if (!row) return;
+  db.prepare(`UPDATE staff SET username = 'ken' WHERE id = ?`).run(row.id);
+}
+
+/**
  * 以 username 做 upsert：衝突時更新 display_name、is_admin、active。
  * 密碼只喺新插入嗰陣寫入示範密碼；已存在嘅 password_hash 唔覆寫，
- * 避免同事改咗密碼之後再跑 seed 被重設。收藏同事同樣唔會被強制改密碼。
- * 如果 Benjamin 或 Vivian 已經存在（用戶名大小寫唔同，或顯示名係 Benjamin／Vivian），升級同一列，唔會重複。
+ * 避免同事改咗密碼之後再跑 seed 被重設。
+ * 如果 Benjamin、Vivian 或 Ken Kan 已經存在（用戶名大小寫唔同，或顯示名對得上），升級同一列，唔會重複。
+ * 跟住嘗試刪走 staff.id 5–13。範圍入面有受保護同事就唔刪。
  */
 export function applySeedStaff(): void {
   const insertStaff = db.prepare(UPSERT_STAFF_SQL);
@@ -414,11 +468,13 @@ export function applySeedStaff(): void {
   const staffTx = db.transaction(() => {
     adoptBenjaminUsername();
     adoptVivianUsername();
+    adoptKenUsername();
     for (const s of SEED_STAFF) {
       insertStaff.run(s.username, s.display_name, passwordHash, s.is_admin, s.active);
     }
   });
   staffTx();
+  removeRetiredStaffById();
 }
 
 /**
@@ -454,8 +510,95 @@ export function ensureVivianAdmin(): void {
 }
 
 /**
- * npm start 用。空庫寫入全部同事；已有同事（Render Postgres）只確保 Benjamin 同 Vivian 係管理員。
+ * 已有同事嘅庫用：只補或者升級 Ken Kan 做在職管理員（同 Vivian 一樣 is_admin=1、active=1，唔參與自動派單）。
+ * 唔改其他同事，唔覆寫已有密碼，唔降 Tony、Benjamin、Vivian、Eddie。
+ */
+export function ensureKenAdmin(): void {
+  const seed = SEED_STAFF.find((s) => s.username === "ken");
+  if (!seed) return;
+  const insertStaff = db.prepare(UPSERT_STAFF_SQL);
+  const passwordHash = hashPassword(DEMO_PASSWORD);
+  const tx = db.transaction(() => {
+    adoptKenUsername();
+    insertStaff.run(seed.username, seed.display_name, passwordHash, seed.is_admin, seed.active);
+  });
+  tx();
+}
+
+function placeholders(n: number): string {
+  return Array.from({ length: n }, () => "?").join(", ");
+}
+
+/**
+ * 已有庫（包括 Render Postgres）用：刪走 staff.id 5–13，令同事名單唔再顯示呢啲列，亦唔可以登入或被自動派單。
+ * 刪之前先解開留言負責人、回覆、推送同個人 WhatsApp。留言本身留低，負責人改做未派。
+ * 如果範圍入面有 Eddie、Wing、Jason、Tony、Benjamin、Vivian 或 Ken，成個範圍唔刪。
+ * 範圍入面同時有其他人先至寫錯誤日誌。全新 seed 嘅 id 5–7 係 Benjamin、Vivian、Ken，所以會靜靜跳過。
+ * 舊正式庫呢個範圍係收藏種子同事，先至會刪。
+ * 重複呼叫係安全嘅：範圍空咗就唔做。
+ */
+export function removeRetiredStaffById(): RetiredStaffRemoval {
+  const run = db.transaction((): RetiredStaffRemoval => {
+    const rows = db
+      .prepare(
+        `SELECT id, username, display_name
+         FROM staff
+         WHERE id BETWEEN ? AND ?
+         ORDER BY id ASC`
+      )
+      .all(RETIRED_STAFF_ID_MIN, RETIRED_STAFF_ID_MAX) as RetiredStaffRow[];
+    if (rows.length === 0) return { removed: [], skipped: false, blocked: [], withheld: [] };
+
+    const protectedNames = new Set<string>(STAFF_DELETE_PROTECTED_USERNAMES.map((name) => name.toLowerCase()));
+    const blocked = rows.filter((row) => protectedNames.has(row.username.toLowerCase()));
+    if (blocked.length > 0) {
+      const withheld = rows.filter((row) => !protectedNames.has(row.username.toLowerCase()));
+      return { removed: [], skipped: true, blocked, withheld };
+    }
+
+    const ids = rows.map((row) => row.id);
+    const marks = placeholders(ids.length);
+    db.prepare(
+      `UPDATE comments
+       SET assignee_staff_id = NULL, updated_at = datetime('now')
+       WHERE assignee_staff_id IN (${marks})`
+    ).run(...ids);
+    db.prepare(
+      `DELETE FROM message_media
+       WHERE reply_id IN (SELECT id FROM comment_replies WHERE staff_id IN (${marks}))`
+    ).run(...ids);
+    db.prepare(
+      `UPDATE comment_message_keys
+       SET reply_id = NULL
+       WHERE reply_id IN (SELECT id FROM comment_replies WHERE staff_id IN (${marks}))`
+    ).run(...ids);
+    db.prepare(`DELETE FROM comment_replies WHERE staff_id IN (${marks})`).run(...ids);
+    db.prepare(`DELETE FROM push_subscriptions WHERE staff_id IN (${marks})`).run(...ids);
+    db.prepare(`DELETE FROM whatsapp_lines WHERE staff_id IN (${marks})`).run(...ids);
+    db.prepare(`DELETE FROM staff WHERE id IN (${marks})`).run(...ids);
+    return { removed: rows, skipped: false, blocked: [], withheld: [] };
+  });
+
+  const result = run();
+  if (result.skipped && result.withheld.length > 0) {
+    const who = result.blocked.map((row) => `#${row.id} ${row.username} ${row.display_name}`).join("、");
+    const left = result.withheld.map((row) => `#${row.id} ${row.username} ${row.display_name}`).join("、");
+    console.error(
+      `[staff] 拒絕刪除 staff id ${RETIRED_STAFF_ID_MIN}–${RETIRED_STAFF_ID_MAX}：範圍內有受保護同事（${who}）。呢個範圍全部保留，包括 ${left}。`
+    );
+    return result;
+  }
+  if (result.removed.length > 0) {
+    const who = result.removed.map((row) => `#${row.id} ${row.username} ${row.display_name}`).join("、");
+    console.log(`[staff] 已從同事名單移除 id ${RETIRED_STAFF_ID_MIN}–${RETIRED_STAFF_ID_MAX}：${who}`);
+  }
+  return result;
+}
+
+/**
+ * npm start 用。空庫寫入全部同事；已有同事（Render Postgres）只確保 Benjamin、Vivian 同 Ken 係管理員。
  * 兩種情況都唔寫示範留言。新帳號用示範密碼；已有 password_hash 唔覆寫。
+ * 已有庫會再嘗試刪走 staff.id 5–13（受保護同事喺範圍內就唔刪）。
  */
 export function syncStaffOnBoot(): void {
   const row = db.prepare(`SELECT COUNT(*) AS n FROM staff`).get() as { n: number };
@@ -464,16 +607,20 @@ export function syncStaffOnBoot(): void {
     seedStaff();
     return;
   }
-  console.log("[boot] 確保 Benjamin 同 Vivian 係在職管理員（新帳號用示範密碼；已有密碼唔改；唔寫示範留言）");
+  console.log(
+    "[boot] 確保 Benjamin、Vivian 同 Ken Kan 係在職管理員（新帳號用示範密碼；已有密碼唔改；唔寫示範留言）"
+  );
   ensureBenjaminAdmin();
   ensureVivianAdmin();
+  ensureKenAdmin();
   ensureCompanyWhatsAppLine();
+  removeRetiredStaffById();
 }
 
 function logStaffRoster(companyLine: { phone_e164: string; display_label: string; kind: string; is_active: number | boolean }): void {
   const activeCount = SEED_STAFF.filter((s) => s.active === 1).length;
   console.log(
-    `已寫入 ${SEED_STAFF.length} 位同事（${activeCount} 位可登入，其餘收藏）。新帳號預設密碼：${DEMO_PASSWORD}；已存在嘅密碼唔會改。`
+    `已寫入 ${SEED_STAFF.length} 位同事（${activeCount} 位可登入）。新帳號預設密碼：${DEMO_PASSWORD}；已存在嘅密碼唔會改。`
   );
   const active = companyLine.is_active === true || companyLine.is_active === 1;
   console.log(
