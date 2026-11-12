@@ -244,33 +244,71 @@ function safePostUrl(value: string | null): string | null {
   }
 }
 
+function postChannelName(c: CommentWithAssignee): "Facebook" | "Instagram" | "" {
+  if (c.source === "instagram") return "Instagram";
+  if (c.source === "facebook") return "Facebook";
+  const href = safePostUrl(c.meta_post_permalink);
+  if (href) {
+    try {
+      const host = new URL(href).hostname.toLowerCase().replace(/^www\./, "");
+      if (host === "instagram.com" || host.endsWith(".instagram.com") || host === "instagr.am") return "Instagram";
+      if (
+        host === "facebook.com" ||
+        host.endsWith(".facebook.com") ||
+        host === "fb.com" ||
+        host.endsWith(".fb.com") ||
+        host === "fb.me" ||
+        host === "m.facebook.com" ||
+        host === "mbasic.facebook.com"
+      ) {
+        return "Facebook";
+      }
+    } catch {
+      /* 連結格式唔啱就跟來源站 */
+    }
+  }
+  if (c.origin_site === "instagram") return "Instagram";
+  if (c.origin_site === "facebook") return "Facebook";
+  return "";
+}
+
+function showsParentPost(c: CommentWithAssignee): boolean {
+  if (c.source === "facebook" || c.source === "instagram") return true;
+  if (c.source !== "whatsapp") return false;
+  return Boolean(c.meta_post_caption?.trim() || c.meta_post_id?.trim() || safePostUrl(c.meta_post_permalink));
+}
+
 function renderPostHint(c: CommentWithAssignee): string {
-  if (c.source !== "facebook" && c.source !== "instagram") return "";
-  if (c.meta_surface === "message") return `<div class="post-hint">私訊</div>`;
+  if (!showsParentPost(c)) return "";
+  if (c.source !== "whatsapp" && c.meta_surface === "message") return `<div class="post-hint">私訊</div>`;
   const caption = c.meta_post_caption?.replace(/\s+/g, " ").trim() || "";
   const postId = c.meta_post_id?.trim() || "";
-  if (!caption && !postId) return "";
-  const text = caption ? clipMessagePreview(caption, 60) : postId;
+  const href = safePostUrl(c.meta_post_permalink);
+  if (!caption && !postId && !href) return "";
+  const text = caption ? clipMessagePreview(caption, 60) : postId || "開啟原帖";
   return `<div class="post-hint">帖文：${linkifyMessageHtml(text)}</div>`;
 }
 
 function renderParentPost(c: CommentWithAssignee): string {
-  if (c.source !== "facebook" && c.source !== "instagram") return "";
-  const channel = c.source === "instagram" ? "Instagram" : "Facebook";
-  if (c.meta_surface === "message") {
-    return `<section class="parent-post"><h2>所屬帖文</h2><p class="muted small">呢則係${channel}私訊，唔係公開帖文留言。</p></section>`;
+  if (!showsParentPost(c)) return "";
+  const channel = postChannelName(c);
+  const privateLabel = channel || (c.source === "instagram" ? "Instagram" : "Facebook");
+  if (c.source !== "whatsapp" && c.meta_surface === "message") {
+    return `<section class="parent-post"><h2>所屬帖文</h2><p class="muted small">呢則係${privateLabel}私訊，唔係公開帖文留言。</p></section>`;
   }
   const caption = c.meta_post_caption?.trim() || "";
   const postId = c.meta_post_id?.trim() || "";
   const href = safePostUrl(c.meta_post_permalink);
   if (!caption && !postId && !href) {
-    return `<section class="parent-post"><h2>所屬帖文</h2><p class="muted small">未有${channel}帖文資料。新嘅 Meta webhook 如果帶帖文編號、內容或連結，就會顯示喺度。</p></section>`;
+    return `<section class="parent-post"><h2>所屬帖文</h2><p class="muted small">未有${privateLabel}帖文資料。新嘅 Meta webhook 如果帶帖文編號、內容或連結，就會顯示喺度。</p></section>`;
   }
+  const heading = channel ? `所屬${channel}帖文` : "所屬帖文";
+  const linkLabel = channel ? `開啟${channel}原帖` : "開啟原帖";
   const link = href
-    ? `<p><a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">開啟${channel}原帖</a></p>`
+    ? `<p><a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${linkLabel}</a></p>`
     : "";
   return `<section class="parent-post">
-    <h2>所屬${channel}帖文</h2>
+    <h2>${heading}</h2>
     ${caption ? `<p class="caption">${linkifyMessageHtml(caption)}</p>` : `<p class="muted small">未有帖文內容。</p>`}
     <p class="muted small">帖文編號：<code>${postId ? escapeHtml(postId) : "—"}</code></p>
     ${link}

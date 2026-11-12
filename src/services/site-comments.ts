@@ -393,9 +393,17 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
   return result;
 }
 
+function acceptsMetaPostFill(current: CommentWithAssignee): boolean {
+  if (current.source === "facebook" || current.source === "instagram") return true;
+  if (current.source !== "whatsapp") return false;
+  if (current.origin_site === "facebook" || current.origin_site === "instagram") return true;
+  return Boolean(current.meta_post_id || current.meta_post_permalink || current.meta_post_caption);
+}
+
 /**
  * Graph 補回帖文內容或連結。只填空白欄，唔改留言時間，唔覆蓋 webhook 已有嘅值。
- * 私訊同非 Meta 來源唔寫。
+ * 私訊、直接 WhatsApp、電郵同其他非 Meta 來源唔寫。
+ * WhatsApp 由 Facebook／Instagram 帖文或廣告撳入嚟、而且已經有帖文欄，先至補。
  */
 export function fillMetaPostIfMissing(
   id: number,
@@ -403,7 +411,7 @@ export function fillMetaPostIfMissing(
 ): CommentWithAssignee | null {
   const current = getComment(id);
   if (!current) return null;
-  if (current.source !== "facebook" && current.source !== "instagram") return current;
+  if (!acceptsMetaPostFill(current)) return current;
   const nextId = current.meta_post_id || cleanMetaPostId(post.id);
   const nextLink = current.meta_post_permalink || cleanMetaPostPermalink(post.permalink);
   const nextCaption = current.meta_post_caption || cleanMetaPostCaption(post.caption);

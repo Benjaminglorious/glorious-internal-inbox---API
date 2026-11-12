@@ -217,6 +217,21 @@ async function pageCases(): Promise<void> {
     check("資料庫客戶原文冇被改成 HTML", stored.body === customerBody, stored.body);
     check("資料庫同事原文冇被改成 HTML", storedReply.body === staffBody, storedReply.body);
 
+    const postCaption = `帖文 ${CAR} 可以睇`;
+    appDb
+      .prepare(
+        `UPDATE comments
+         SET origin_site = 'facebook', meta_post_id = 'fb-post-1',
+             meta_post_permalink = 'https://www.facebook.com/glorious/posts/1',
+             meta_post_caption = ?
+         WHERE id = ?`
+      )
+      .run(postCaption, commentId);
+    const storedCaption = appDb.prepare(`SELECT meta_post_caption FROM comments WHERE id = ?`).get(commentId) as {
+      meta_post_caption: string;
+    };
+    check("帖文內容仍然係原文", storedCaption.meta_post_caption === postCaption);
+
     const app = express();
     app.use(express.urlencoded({ extended: false }));
     app.use(express.json());
@@ -255,6 +270,12 @@ async function pageCases(): Promise<void> {
     );
     check("詳情頁訊息冇 javascript 或 data 連結", !/href\s*=\s*["']\s*(?:javascript|data):/i.test(bubbles.join("\n")));
     check("詳情頁訊息冇未跳脫嘅 script", bubbles.every((body) => unexpectedTags(body).length === 0), bubbles.join("\n"));
+    const captionHtml = detailHtml.match(/<p class="caption">([\s\S]*?)<\/p>/)?.[1] ?? "";
+    check(
+      "WhatsApp 帶入嘅 Facebook 帖文內容可撳",
+      detailHtml.includes("所屬Facebook帖文") && captionHtml === linkifyMessageHtml(postCaption),
+      captionHtml
+    );
 
     const inbox = await fetch(`${base}/`, { headers: { cookie } });
     const inboxHtml = await inbox.text();
@@ -263,6 +284,8 @@ async function pageCases(): Promise<void> {
     check("列表預覽唔會吞尾句號", preview.includes(`${linked("https://example.com/a")}.`) || preview.endsWith("."), preview);
     const replyPreview = rowHtml(inboxHtml, commentId);
     check("列表回覆預覽都有車盤連結", replyPreview.includes(`class="reply-preview"`) && replyPreview.includes(linked(CAR)), replyPreview);
+    const postHint = replyPreview.match(/<div class="post-hint">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    check("列表帖文摘要入面嘅網址可撳", postHint.includes("帖文：") && postHint.includes(linked(CAR)), postHint);
     check(
       "列表回覆預覽唔好把同事網址切成錯誤網域",
       replyPreview.includes(linked("https://staff.example/p")) && !replyPreview.includes("https://staff.exa<"),
