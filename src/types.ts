@@ -111,11 +111,15 @@ export interface Comment {
   meta_sender_id: string | null;
   /** 公開留言 comment；私訊 message。舊資料係 null，出站會再睇 external_id。 */
   meta_surface: MetaSurface | null;
-  /** Facebook post id（通常係 pageId_postId）或 Instagram media id。私訊同舊列係 null。 */
+  /**
+   * Facebook post id（通常係 pageId_postId）、Instagram media id，
+   * 或 WhatsApp click-to-chat referral 嘅 source_id（帖文或廣告）。
+   * 私訊、直接 WhatsApp、冇 referral 嘅舊列係 null。
+   */
   meta_post_id: string | null;
-  /** 帖文 permalink。Webhook 或 Graph 冇提供就係 null。 */
+  /** 帖文 permalink 或可開啟嘅廣告／帖文連結。Webhook 或 Graph 冇提供就係 null。 */
   meta_post_permalink: string | null;
-  /** 帖文內文或 caption 摘要。冇就係 null。 */
+  /** 帖文內文、caption，或 referral 嘅 headline／body。冇就係 null。 */
   meta_post_caption: string | null;
   /**
    * 28car_board：客戶寫喺網頁留言區。
