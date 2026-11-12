@@ -788,14 +788,23 @@ click-to-chat 仍然可以人手開 WhatsApp 網頁。
 
 ### 邊啲信會入庫
 
-程式只收 **寄入呢個郵箱**、而且主旨或者正文新寫嘅部分（唔計 `>` 引用）**明顯係車** 嘅信，例如：
+程式只收 **寄入呢個郵箱**、而且符合下面其中一條嘅信。
+
+**公司主旨。** 主旨有法定英文名就入，正文唔使係車。認呢兩句，大小寫、多餘空白、逗號、句號、連字號都當同一句：
+
+- `Glorious Motors Ltd`
+- `Glorious Motors Limited`
+
+例子：`Re: GLORIOUS MOTORS, LTD.`、`Glorious-Motors Limited`。主旨淨係寫 Glorious Motors、或者個名只出現喺正文，都唔算呢條。
+
+**車務。** 主旨冇公司名時，主旨或者正文新寫嘅部分（唔計 `>` 引用）要**明顯係車**，例如：
 
 - 買車、賣車、查詢、報價、現貨、車盤、試車、以舊換新、供車、車牌
 - 車型或品牌（Alphard、豐田、寶馬、平治等，完整名單喺 `src/services/email-filter.ts`）
 - 28car 庫存編號（例如 `s2806213`）或 28car 車盤連結
 - 「想買一部車」「I want to buy a car」呢類同時有車同查詢意思嘅句子
 
-判斷唔到就**唔入**。以下就算提到「車」或車型都唔入：
+兩樣都唔係就**唔入**。下面呢啲只擋「唔係公司主旨」嘅信；主旨已經係 Glorious Motors Ltd／Limited 就仍然入庫。就算提到「車」或車型都唔入嘅情況：
 
 - 電子報、`List-Unsubscribe`、大量發送（bulk）、`noreply`／`newsletter` 呢類寄件人
 - Facebook、Instagram、Meta、LinkedIn 等社交通知

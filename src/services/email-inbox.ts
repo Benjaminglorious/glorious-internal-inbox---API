@@ -107,7 +107,8 @@ function existingCommentId(messageId: string): number | null {
 }
 
 /**
- * 把一封已經收到公司郵箱嘅信，按車務規則寫入現有 comments。
+ * 把一封已經收到公司郵箱嘅信寫入現有 comments。
+ * 主旨有 Glorious Motors Ltd／Limited，或者內容明顯係車，先至入庫。
  * 同一電郵地址未完成（未處理／處理中）只得一個 ID。已完成之後先至開新 ID。
  * 新對話用公司線輪流派單（Eddie → Wing → Jason → 其他在職同事，唔包括 Tony、Benjamin、Vivian）。
  */

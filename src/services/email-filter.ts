@@ -1,8 +1,10 @@
 /**
- * 公司郵箱只入庫「明顯同車有關」嘅信。
- * 主旨，或者正文新寫嘅部分（唔計 > 引用）要有車行往來訊號。
- * 電子報、社交通知、驗證碼、唔係查車嘅收據、廣告、銀行／Meta、內部 IT 都唔入。
- * 判斷唔到就唔入。已開住嘅同一電郵對話，後續短覆由入庫層決定，唔係呢度放寬。
+ * 公司郵箱入庫兩類信：
+ * 1. 主旨有公司法定英文名（Glorious Motors Ltd / Limited，大小寫、標點、空白唔計）。
+ *    主旨中咗就夠，正文唔使係車。
+ * 2. 主旨冇公司名，但主旨或者正文新寫嘅部分（唔計 > 引用）明顯同車有關。
+ * 兩樣都唔係就唔入。電子報、社交通知、驗證碼、收據、廣告、銀行／Meta、內部 IT
+ * 只會擋第 2 類。已開住嘅同一電郵對話，後續短覆由入庫層決定。
  *
  * 工作人員要對照嘅規則就係呢個檔。README「公司電郵」一節係同一套說話。
  */
@@ -371,6 +373,20 @@ function hasStrongVehicleSignal(original: string): boolean {
   return DEAL_WORDS.some((word) => folded.includes(fold(word)));
 }
 
+/**
+ * 主旨係咪公司法定英文名。
+ * 認 Glorious Motors Ltd 同 Glorious Motors Limited。
+ * 大小寫、連續空白、逗號、句號、連字號都當同一句。
+ * 淨係正文有呢個名、或者主旨只有 Glorious Motors 而冇 Ltd／Limited，都唔算。
+ */
+export function subjectNamesGloriousMotors(subject: string): boolean {
+  const normalized = fold(subject)
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return /\bglorious motors (?:ltd|limited)\b/.test(normalized);
+}
+
 function isSecurityNotice(subject: string, fresh: string): boolean {
   const sub = fold(subject);
   const body = fold(fresh);
@@ -379,7 +395,8 @@ function isSecurityNotice(subject: string, fresh: string): boolean {
 }
 
 /**
- * 決定呢封信係咪車。hardReject 嘅信就算寄件人已經有未完成對話都唔附加。
+ * 公司主旨，或者明顯係車，先至入庫。
+ * hardReject 嘅信就算寄件人已經有未完成對話都唔附加。公司主旨唔屬 hardReject。
  */
 export function classifyCompanyEmail(input: ClassifyEmailInput): EmailClassification {
   const from = input.fromAddress.trim().toLowerCase();
@@ -389,6 +406,14 @@ export function classifyCompanyEmail(input: ClassifyEmailInput): EmailClassifica
   const folded = fold(haystack);
 
   if (!from.includes("@")) return ignore("bad-from", true);
+  if (subjectNamesGloriousMotors(subject)) {
+    return {
+      ingest: true,
+      hardReject: false,
+      reason: "company-subject",
+      vehicleRef: vehicleReference(haystack),
+    };
+  }
   if (input.autoSubmitted) return ignore("auto-submitted", true);
   if (input.listUnsubscribe || input.bulk) return ignore("newsletter", true);
   if (isBlockedEmailSender(from)) return ignore("blocked-sender", true);

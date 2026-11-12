@@ -97,7 +97,7 @@ async function main(): Promise<number> {
   let appDb: Database.Database | undefined;
 
   const filter = require("../services/email-filter") as typeof import("../services/email-filter");
-  const cases: Array<{ name: string; from: string; subject: string; text: string; flags?: { listUnsubscribe?: boolean; autoSubmitted?: boolean; bulk?: boolean }; ingest: boolean; hard?: boolean; ref?: string | null }> = [
+  const cases: Array<{ name: string; from: string; subject: string; text: string; flags?: { listUnsubscribe?: boolean; autoSubmitted?: boolean; bulk?: boolean }; ingest: boolean; hard?: boolean; ref?: string | null; reason?: string }> = [
     { name: "Alphard 現貨", from: "chan@example.com", subject: "想問 Alphard 現貨", text: "星期日可唔可以試車", ingest: true, ref: "alphard" },
     { name: "買 Toyota", from: "a@example.com", subject: "Inquiry", text: "I want to buy a Toyota Alphard, please quote", ingest: true, ref: "alphard" },
     { name: "BMW 報價", from: "a@example.com", subject: "BMW 520i 報價", text: "想買", ingest: true, ref: "bmw" },
@@ -131,6 +131,13 @@ async function main(): Promise<number> {
     { name: "查訂金收據", from: "chan@example.com", subject: "Alphard", text: "我想問訂金收據點計", ingest: true, ref: "alphard" },
     { name: "中獎", from: "luck@example.com", subject: "Congratulations", text: "you have won a car", ingest: false, hard: true },
     { name: "自動回覆", from: "chan@example.com", subject: "Alphard", text: "現貨", flags: { autoSubmitted: true }, ingest: false, hard: true },
+    { name: "公司主旨 Ltd", from: "accounts@example.com", subject: "Glorious Motors Ltd", text: "please call the office", ingest: true, reason: "company-subject" },
+    { name: "公司主旨 Limited", from: "accounts@example.com", subject: "glorious motors limited", text: "meeting notes, not a car", ingest: true, reason: "company-subject" },
+    { name: "公司主旨標點同空格", from: "accounts@example.com", subject: "Re:  GLORIOUS   MOTORS, LTD.", text: "lunch", ingest: true, reason: "company-subject" },
+    { name: "公司主旨連字號", from: "accounts@example.com", subject: "Fwd: Glorious-Motors Limited", text: "contract", ingest: true, reason: "company-subject" },
+    { name: "公司主旨蓋過電子報", from: "news@dealer.example", subject: "Glorious Motors Ltd", text: "unsubscribe", flags: { listUnsubscribe: true }, ingest: true, reason: "company-subject" },
+    { name: "冇 Ltd", from: "accounts@example.com", subject: "Glorious Motors", text: "see you", ingest: false, hard: false },
+    { name: "公司名只喺正文", from: "accounts@example.com", subject: "Hello", text: "Glorious Motors Ltd office", ingest: false, hard: false },
   ];
   for (const item of cases) {
     const result = filter.classifyCompanyEmail({
@@ -141,7 +148,10 @@ async function main(): Promise<number> {
     });
     check(
       `篩選 ${item.name}`,
-      result.ingest === item.ingest && (item.hard == null || result.hardReject === item.hard) && (item.ref == null || result.vehicleRef === item.ref),
+      result.ingest === item.ingest &&
+        (item.hard == null || result.hardReject === item.hard) &&
+        (item.ref == null || result.vehicleRef === item.ref) &&
+        (item.reason == null || result.reason === item.reason),
       `ingest=${result.ingest} hard=${result.hardReject} ref=${result.vehicleRef} reason=${result.reason}`
     );
   }
@@ -472,6 +482,25 @@ async function main(): Promise<number> {
     check(
       "自動派單冇派給 Tony、Benjamin、Vivian",
       excluded.length > 0 && excluded.every((row) => !["tony", "benjamin", "vivian"].includes(row.username))
+    );
+
+    const companyMail = await email.ingestCompanyEmail({
+      mailbox: "gloriousinformation@gmail.com",
+      messageId: "company-subject-1@example.com",
+      fromAddress: "accounts@example.com",
+      fromName: "Accounts",
+      subject: "Re: Glorious Motors Ltd.",
+      text: "Please call the office about the invoice.",
+    });
+    const companyRow = companyMail.ok && companyMail.outcome === "created" ? comments.getComment(companyMail.commentId) : null;
+    check(
+      "公司主旨唔係車都寫入現有收件箱",
+      companyMail.ok &&
+        companyMail.outcome === "created" &&
+        companyRow?.source === "email" &&
+        companyRow.intake_kind === "email" &&
+        companyRow.body.includes("Please call the office") &&
+        !companyRow.body.toLowerCase().includes("alphard")
     );
   } finally {
     try {
