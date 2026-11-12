@@ -9,6 +9,7 @@ import {
   syncStateForUi,
   syncTwentyeightcar,
 } from "../services/twentyeightcar";
+import { linkifyMessageHtml } from "../linkify";
 import { formatStaffTimestamp } from "../time";
 
 interface PageUser {
@@ -142,7 +143,7 @@ export function registerTwentyeightcarPages(router: Router, view: PageHelpers): 
             : "—";
         return `<article class="bubble ${message.is_seller ? "staff" : "customer"}">
           <div class="who">${kind} · ${escapeHtml(message.author_name)}${message.posted_at ? ` · ${escapeHtml(showWall(message.posted_at))}` : ""} · ${inbox}</div>
-          <div class="bubble-body">${escapeHtml(message.body)}</div>
+          <div class="bubble-body">${linkifyMessageHtml(message.body)}</div>
         </article>`;
       })
       .join("");

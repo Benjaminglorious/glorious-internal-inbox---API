@@ -32,7 +32,8 @@
     "demo:28car": "tsx src/demo/twentyeightcar-sync.ts",
     "demo:clear-fixtures": "tsx src/demo/clear-fixtures.ts",
     "demo:postgres": "tsx src/demo/postgres-boot.ts",
-    "demo:email": "tsx src/demo/email-ingest.ts"
+    "demo:email": "tsx src/demo/email-ingest.ts",
+    "demo:linkify": "tsx src/demo/linkify-messages.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

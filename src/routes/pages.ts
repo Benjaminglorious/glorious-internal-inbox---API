@@ -16,6 +16,7 @@ import {
   intakeSummary,
   isEmailChannel,
 } from "../labels";
+import { clipMessagePreview, linkifyMessageHtml } from "../linkify";
 import { registerTwentyeightcarPages } from "./twentyeightcar-pages";
 import { listingIndex, stockIdFromText } from "../services/twentyeightcar";
 import { formatHktIso, formatStaffTimestamp, parseStoredTimestamp, type StoredClock } from "../time";
@@ -249,8 +250,8 @@ function renderPostHint(c: CommentWithAssignee): string {
   const caption = c.meta_post_caption?.replace(/\s+/g, " ").trim() || "";
   const postId = c.meta_post_id?.trim() || "";
   if (!caption && !postId) return "";
-  const text = caption ? (caption.length > 60 ? `${caption.slice(0, 60)}…` : caption) : postId;
-  return `<div class="post-hint">帖文：${escapeHtml(text)}</div>`;
+  const text = caption ? clipMessagePreview(caption, 60) : postId;
+  return `<div class="post-hint">帖文：${linkifyMessageHtml(text)}</div>`;
 }
 
 function renderParentPost(c: CommentWithAssignee): string {
@@ -270,7 +271,7 @@ function renderParentPost(c: CommentWithAssignee): string {
     : "";
   return `<section class="parent-post">
     <h2>所屬${channel}帖文</h2>
-    ${caption ? `<p class="caption">${escapeHtml(caption)}</p>` : `<p class="muted small">未有帖文內容。</p>`}
+    ${caption ? `<p class="caption">${linkifyMessageHtml(caption)}</p>` : `<p class="muted small">未有帖文內容。</p>`}
     <p class="muted small">帖文編號：<code>${postId ? escapeHtml(postId) : "—"}</code></p>
     ${link}
   </section>`;
@@ -281,15 +282,15 @@ function replyPreview(c: CommentWithAssignee): string {
     return `<div class="reply-preview none">未有同事回覆</div>`;
   }
   const flat = c.last_reply_body.replace(/\s+/g, " ").trim();
-  const text = flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
+  const text = clipMessagePreview(flat);
   const count = c.reply_count > 1 ? `（${c.reply_count}）` : "";
   const when = c.last_reply_at ? ` · ${showTime(c.last_reply_at)}` : "";
   if (c.last_reply_direction === "inbound") {
-    return `<div class="reply-preview">客戶再留言${count}${when}：${escapeHtml(text)}</div>`;
+    return `<div class="reply-preview">客戶再留言${count}${when}：${linkifyMessageHtml(text)}</div>`;
   }
   const who = c.last_reply_staff_name || "同事";
   const delivery = c.last_reply_delivery_status ? DELIVERY_LABEL[c.last_reply_delivery_status] : "";
-  return `<div class="reply-preview">最新回覆${count} · ${escapeHtml(who)}${when} · ${escapeHtml(delivery)}：${escapeHtml(text)}</div>`;
+  return `<div class="reply-preview">最新回覆${count} · ${escapeHtml(who)}${when} · ${escapeHtml(delivery)}：${linkifyMessageHtml(text)}</div>`;
 }
 
 function layout(opts: {
@@ -526,7 +527,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
   const rows = comments
     .map((c) => {
       const customerText = latestCustomerMessageText(c);
-      const preview = customerText.length > 80 ? customerText.slice(0, 80) + "…" : customerText;
+      const preview = clipMessagePreview(customerText);
       const stockId = stockIdFromText(c.vehicle_ref);
       const known = stockId ? listingsByStock.get(stockId) : undefined;
       const vehicleCell = known
@@ -538,7 +539,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
         <td><a href="/comments/${c.id}">#${c.id}</a></td>
         <td>${renderSourceBadges(c)}</td>
         <td>${escapeHtml(c.author_name)}</td>
-        <td class="preview"><span class="content-preview">${escapeHtml(preview)}</span>${renderPostHint(c)}${replyPreview(c)}</td>
+        <td class="preview"><span class="content-preview">${linkifyMessageHtml(preview)}</span>${renderPostHint(c)}${replyPreview(c)}</td>
         <td>${vehicleCell}</td>
         <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span></td>
         <td class="when">${showTime(c.created_at)}</td>
@@ -735,7 +736,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       return `<article class="bubble ${inbound ? "customer" : "staff"}">
         <div class="who">${emailNote}${escapeHtml(who)} · ${showTime(reply.created_at)}${delivery}</div>
         ${errorLine}
-        ${showBody ? `<div class="bubble-body">${escapeHtml(reply.body)}</div>` : ""}
+        ${showBody ? `<div class="bubble-body">${linkifyMessageHtml(reply.body)}</div>` : ""}
         ${renderMediaBlocks(replyMedia)}
       </article>`;
     })
@@ -784,7 +785,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
           ${
             customerMedia.length && isPlaceholderBody(c.body)
               ? ""
-              : `<div class="bubble-body">${escapeHtml(c.body)}</div>`
+              : `<div class="bubble-body">${linkifyMessageHtml(c.body)}</div>`
           }
           ${renderMediaBlocks(customerMedia)}
         </article>

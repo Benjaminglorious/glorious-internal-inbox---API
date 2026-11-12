@@ -259,6 +259,31 @@ td.when time, .who time, .meta time, .reply-preview time { color: inherit; }
 .bubble.staff { background: #ecfdf3; border: 1px solid #bbf7d0; }
 .bubble .who { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .bubble-body { white-space: pre-wrap; line-height: 1.6; }
+.bubble-body a.msg-link,
+.content-preview a.msg-link,
+.reply-preview a.msg-link,
+.parent-post .caption a.msg-link,
+.post-hint a.msg-link {
+  color: #0b4a7a;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.bubble-body a.msg-link:visited,
+.content-preview a.msg-link:visited,
+.reply-preview a.msg-link:visited,
+.parent-post .caption a.msg-link:visited,
+.post-hint a.msg-link:visited {
+  color: #0b4a7a;
+}
+.bubble-body a.msg-link:hover,
+.content-preview a.msg-link:hover,
+.reply-preview a.msg-link:hover,
+.parent-post .caption a.msg-link:hover,
+.post-hint a.msg-link:hover {
+  color: #083456;
+}
 .reply-form { display: grid; gap: 10px; }
 .reply-form textarea {
   width: 100%;
