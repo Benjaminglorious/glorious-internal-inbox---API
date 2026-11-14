@@ -113,8 +113,9 @@ export interface Comment {
   meta_surface: MetaSurface | null;
   /**
    * Facebook post id（通常係 pageId_postId）、Instagram media id，
-   * 或 WhatsApp click-to-chat referral 嘅 source_id（帖文或廣告）。
-   * 私訊、直接 WhatsApp、冇 referral 嘅舊列係 null。
+   * WhatsApp click-to-chat referral 嘅 source_id，
+   * 或由帖文、限時動態、廣告開啟私訊時 webhook referral 嘅 post id。
+   * 普通私訊、直接 WhatsApp、冇 referral 嘅舊列係 null。
    */
   meta_post_id: string | null;
   /** 帖文 permalink 或可開啟嘅廣告／帖文連結。Webhook 或 Graph 冇提供就係 null。 */

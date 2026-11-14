@@ -278,9 +278,15 @@ function showsParentPost(c: CommentWithAssignee): boolean {
   return Boolean(c.meta_post_caption?.trim() || c.meta_post_id?.trim() || safePostUrl(c.meta_post_permalink));
 }
 
+function hasStoredParentPost(c: CommentWithAssignee): boolean {
+  return Boolean(c.meta_post_caption?.trim() || c.meta_post_id?.trim() || safePostUrl(c.meta_post_permalink));
+}
+
 function renderPostHint(c: CommentWithAssignee): string {
   if (!showsParentPost(c)) return "";
-  if (c.source !== "whatsapp" && c.meta_surface === "message") return `<div class="post-hint">私訊</div>`;
+  if (c.source !== "whatsapp" && c.meta_surface === "message" && !hasStoredParentPost(c)) {
+    return `<div class="post-hint">私訊</div>`;
+  }
   const caption = c.meta_post_caption?.replace(/\s+/g, " ").trim() || "";
   const postId = c.meta_post_id?.trim() || "";
   const href = safePostUrl(c.meta_post_permalink);
@@ -293,7 +299,7 @@ function renderParentPost(c: CommentWithAssignee): string {
   if (!showsParentPost(c)) return "";
   const channel = postChannelName(c);
   const privateLabel = channel || (c.source === "instagram" ? "Instagram" : "Facebook");
-  if (c.source !== "whatsapp" && c.meta_surface === "message") {
+  if (c.source !== "whatsapp" && c.meta_surface === "message" && !hasStoredParentPost(c)) {
     return `<section class="parent-post"><h2>所屬帖文</h2><p class="muted small">呢則係${privateLabel}私訊，唔係公開帖文留言。</p></section>`;
   }
   const caption = c.meta_post_caption?.trim() || "";

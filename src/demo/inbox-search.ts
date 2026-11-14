@@ -183,6 +183,22 @@ async function main(): Promise<number> {
       null,
       null
     );
+    insert.run(
+      "instagram",
+      "search-ig-post-dm",
+      "帖文私訊客",
+      "How much?",
+      null,
+      "open",
+      tonyId,
+      "site_comment",
+      null,
+      null,
+      "message",
+      "178900000000099",
+      "https://www.instagram.com/p/CxAb12/",
+      "白色 Alphard 限量"
+    );
     appDb
       .prepare(
         `INSERT INTO comment_replies (comment_id, staff_id, direction, body, delivery_status)
@@ -307,6 +323,41 @@ async function main(): Promise<number> {
     const dmPage = dm.comments[0] ? await fetch(`${base}/comments/${dm.comments[0].id}`, { headers: { cookie: wingCookie } }) : null;
     const dmHtml = dmPage ? await dmPage.text() : "";
     check("網頁：私訊寫明唔係帖文留言", dmHtml.includes("呢則係Facebook私訊，唔係公開帖文留言。"));
+    const dmList = await fetch(`${base}/?q=` + encodeURIComponent("A_B code"), { headers: { cookie: wingCookie } });
+    const dmListHtml = await dmList.text();
+    check(
+      "網頁：冇帖文嘅私訊列表寫私訊",
+      dmList.status === 200 && dmListHtml.includes('post-hint">私訊') && !dmListHtml.includes("帖文：")
+    );
+
+    const igPostDm = await apiComments(tonyCookie, "?q=" + encodeURIComponent("How much?"));
+    const igPostPage = igPostDm.comments[0]
+      ? await fetch(`${base}/comments/${igPostDm.comments[0].id}`, { headers: { cookie: tonyCookie } })
+      : null;
+    const igPostHtml = igPostPage ? await igPostPage.text() : "";
+    check(
+      "網頁：由帖文開啟嘅 IG 私訊顯示所屬帖文，客戶句子留喺對話",
+      igPostPage?.status === 200 &&
+        igPostHtml.includes("所屬Instagram帖文") &&
+        igPostHtml.includes("白色 Alphard 限量") &&
+        igPostHtml.includes("178900000000099") &&
+        igPostHtml.includes("開啟Instagram原帖") &&
+        igPostHtml.includes("https://www.instagram.com/p/CxAb12/") &&
+        igPostHtml.includes("How much?") &&
+        !igPostHtml.includes("呢則係Instagram私訊，唔係公開帖文留言。")
+    );
+    const igPostList = await fetch(`${base}/?q=` + encodeURIComponent("白色 Alphard 限量"), {
+      headers: { cookie: tonyCookie },
+    });
+    const igPostListHtml = await igPostList.text();
+    check(
+      "網頁：由帖文開啟嘅 IG 私訊列表顯示帖文，唔用客戶句子做標題",
+      igPostList.status === 200 &&
+        igPostListHtml.includes("帖文：白色 Alphard 限量") &&
+        igPostListHtml.includes("How much?") &&
+        !igPostListHtml.includes("帖文：How much?") &&
+        !igPostListHtml.includes('post-hint">私訊')
+    );
 
     if (failures.length) {
       console.error(`\n${failures.length} 項失敗`);
