@@ -1184,6 +1184,155 @@ async function main(): Promise<number> {
       });
     }
 
+    if (!appDb) return finish();
+    const inboxDb = appDb;
+    const staffId = Number((inboxDb.prepare(`SELECT id FROM staff ORDER BY id LIMIT 1`).get() as { id: number }).id);
+    inboxDb.prepare(`DELETE FROM comments WHERE id IN (56, 57, 58)`).run();
+    const insertFixed = inboxDb.prepare(
+      `INSERT INTO comments (
+         id, source, external_id, author_name, body, status, assignee_staff_id,
+         intake_kind, meta_sender_id, meta_surface, meta_post_id, meta_post_permalink, meta_post_caption,
+         updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'site_comment', ?, 'message', ?, ?, ?, '2026-11-14 11:41:43')`
+    );
+    insertFixed.run(
+      56,
+      "instagram",
+      "ig-backfill-other",
+      "1128302616581259",
+      "另一則",
+      "open",
+      staffId,
+      "1128302616581259",
+      null,
+      null,
+      null
+    );
+    insertFixed.run(
+      58,
+      "facebook",
+      "fb-backfill-other",
+      "1128302616581259",
+      "Facebook 另一則",
+      "open",
+      staffId,
+      "1128302616581259",
+      null,
+      null,
+      null
+    );
+    insertFixed.run(
+      57,
+      "instagram",
+      "ig-mid-57",
+      "1128302616581259",
+      "How much?",
+      "in_progress",
+      staffId,
+      "1128302616581259",
+      "already-filled",
+      "https://www.instagram.com/p/AlreadyFilled/",
+      "唔好覆寫"
+    );
+
+    type BackfillRow = {
+      id: number;
+      source: string;
+      author_name: string;
+      body: string;
+      status: string;
+      assignee_staff_id: number | null;
+      meta_sender_id: string | null;
+      meta_post_id: string | null;
+      meta_post_permalink: string | null;
+      meta_post_caption: string | null;
+      updated_at: string;
+    };
+    const readBackfill = (id: number) =>
+      inboxDb
+        .prepare(
+          `SELECT id, source, author_name, body, status, assignee_staff_id, meta_sender_id,
+                  meta_post_id, meta_post_permalink, meta_post_caption, updated_at
+           FROM comments WHERE id = ?`
+        )
+        .get(id) as BackfillRow;
+
+    const already = dbMod.backfillInstagramDmPost57();
+    const alreadyRow = readBackfill(57);
+    const otherBefore = readBackfill(56);
+    const facebookBefore = readBackfill(58);
+    check(
+      "留言 #57 已有帖文就跳過，唔覆寫",
+      already === "skipped" &&
+        alreadyRow.meta_post_id === "already-filled" &&
+        alreadyRow.meta_post_permalink === "https://www.instagram.com/p/AlreadyFilled/" &&
+        alreadyRow.meta_post_caption === "唔好覆寫" &&
+        alreadyRow.author_name === "1128302616581259" &&
+        alreadyRow.body === "How much?" &&
+        alreadyRow.status === "in_progress" &&
+        alreadyRow.assignee_staff_id === staffId &&
+        alreadyRow.meta_sender_id === "1128302616581259" &&
+        alreadyRow.updated_at === "2026-11-14 11:41:43"
+    );
+
+    inboxDb
+      .prepare(
+        `UPDATE comments
+         SET meta_post_id = NULL, meta_post_permalink = NULL, meta_post_caption = '唔好留低'
+         WHERE id = 57`
+      )
+      .run();
+    const logs: string[] = [];
+    const log = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((part) => String(part)).join(" "));
+      log(...args);
+    };
+    let filledBackfill: "updated" | "skipped" = "skipped";
+    let secondBackfill: "updated" | "skipped" = "updated";
+    try {
+      filledBackfill = dbMod.backfillInstagramDmPost57();
+      secondBackfill = dbMod.backfillInstagramDmPost57();
+    } finally {
+      console.log = log;
+    }
+    const filledRow = readBackfill(57);
+    const otherAfter = readBackfill(56);
+    const facebookAfter = readBackfill(58);
+    check(
+      "空白嘅留言 #57 補上已核對帖文，caption 留空，IGSID 改做用戶名",
+      filledBackfill === "updated" &&
+        filledRow.meta_post_id === "18115399940157260" &&
+        filledRow.meta_post_permalink === "https://www.instagram.com/p/DftggqykjYo/" &&
+        filledRow.meta_post_caption == null &&
+        filledRow.author_name === "heung812" &&
+        filledRow.body === "How much?" &&
+        filledRow.status === "in_progress" &&
+        filledRow.assignee_staff_id === staffId &&
+        filledRow.meta_sender_id === "1128302616581259" &&
+        filledRow.updated_at === "2026-11-14 11:41:43" &&
+        logs.some((line) => line.includes("已補回留言 #57"))
+    );
+    check(
+      "第二次補回跳過，唔再改 #57",
+      secondBackfill === "skipped" &&
+        filledRow.meta_post_id === readBackfill(57).meta_post_id &&
+        readBackfill(57).author_name === "heung812" &&
+        readBackfill(57).meta_post_caption == null &&
+        logs.some((line) => line.includes("跳過留言 #57"))
+    );
+    check(
+      "補回唔郁其他 id",
+      otherAfter.meta_post_id == null &&
+        otherAfter.meta_post_permalink == null &&
+        otherAfter.author_name === otherBefore.author_name &&
+        otherAfter.body === "另一則" &&
+        facebookAfter.meta_post_id == null &&
+        facebookAfter.author_name === facebookBefore.author_name &&
+        facebookAfter.body === "Facebook 另一則" &&
+        facebookAfter.source === "facebook"
+    );
+
     if (failures.length) {
       console.error(`\n${failures.length} 項失敗`);
       return 1;

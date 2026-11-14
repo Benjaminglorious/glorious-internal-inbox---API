@@ -274,6 +274,41 @@ export function shutdownDatabase(): void {
   close();
 }
 
+/**
+ * 正式庫留言 #57：客戶睇完 2026-11-14 嘅官方輪播再私訊「How much?」。
+ * Graph 讀唔到帖文（mid 只有句子；同一秒嘅 companion message 係 is_unsupported，attachments／shares 都空）。
+ * 帖文係對過 Business Suite 畫面嘅 gloriousmotorslimited 輪播，冇 caption。
+ * 只補 id=57、source=instagram、而且帖文編號同連結仍然係空。第二次啟動唔會覆寫。
+ */
+const IG_DM_57_POST_ID = "18115399940157260";
+const IG_DM_57_PERMALINK = "https://www.instagram.com/p/DftggqykjYo/";
+const IG_DM_57_IGSID = "1128302616581259";
+const IG_DM_57_USERNAME = "heung812";
+
+export function backfillInstagramDmPost57(): "updated" | "skipped" {
+  const result = database
+    .prepare(
+      `UPDATE comments
+       SET meta_post_id = ?,
+           meta_post_permalink = ?,
+           meta_post_caption = NULL,
+           author_name = CASE WHEN author_name = ? THEN ? ELSE author_name END
+       WHERE id = 57
+         AND source = 'instagram'
+         AND meta_post_id IS NULL
+         AND meta_post_permalink IS NULL`
+    )
+    .run(IG_DM_57_POST_ID, IG_DM_57_PERMALINK, IG_DM_57_IGSID, IG_DM_57_USERNAME);
+  if (result.changes > 0) {
+    console.log(
+      `[inbox] 已補回留言 #57 嘅 Instagram 原帖 ${IG_DM_57_POST_ID} ${IG_DM_57_PERMALINK}（冇 caption）`
+    );
+    return "updated";
+  }
+  console.log("[inbox] 跳過留言 #57 嘅 Instagram 原帖補回（唔係空白嘅 Instagram 列，或帖文欄已經有值）");
+  return "skipped";
+}
+
 function ensureCommenterKeyColumn(sqlite: DatabaseType): void {
   const cols = columnNames(sqlite, "comments");
   if (!cols.has("commenter_key")) sqlite.exec(`ALTER TABLE comments ADD COLUMN commenter_key TEXT`);
@@ -285,3 +320,4 @@ if (!usingPostgres) ensureCommenterKeyColumn(database as DatabaseType);
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const commenterThreads = require("../services/commenter-thread") as typeof import("../services/commenter-thread");
 commenterThreads.unifyOpenCommenterThreads();
+backfillInstagramDmPost57();
