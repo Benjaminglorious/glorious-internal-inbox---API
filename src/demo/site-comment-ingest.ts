@@ -261,6 +261,465 @@ async function main(): Promise<number> {
       badLink.items[0]?.meta_post_id === "155_166" && badLink.items[0]?.meta_post_permalink == null
     );
 
+    // Instagram Messaging「messages」：客戶睇完帖文再傳文字，referral 喺 message 入面。
+    // 形狀跟 Meta 文件：source POST、type OPEN_THREAD、post_id。客戶句子唔係 caption。
+    const igFromPost = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          id: "17841400000000001",
+          time: 1731600000000,
+          messaging: [
+            {
+              sender: { id: "17841400000000777" },
+              recipient: { id: "17841400000000001" },
+              timestamp: 1731599999000,
+              message: {
+                mid: "aWdfZAG1howmuch",
+                text: "How much?",
+                referral: {
+                  source: "POST",
+                  type: "OPEN_THREAD",
+                  post_id: "178900000000099",
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "IG 帖文私訊記住 post id，客戶句子唔係 caption",
+      igFromPost.items.length === 1 &&
+        igFromPost.items[0]?.source === "instagram" &&
+        igFromPost.items[0]?.meta_surface === "message" &&
+        igFromPost.items[0]?.body === "How much?" &&
+        igFromPost.items[0]?.meta_post_id === "178900000000099" &&
+        igFromPost.items[0]?.meta_post_caption == null &&
+        igFromPost.items[0]?.meta_post_permalink == null &&
+        igFromPost.items[0]?.external_id === "aWdfZAG1howmuch" &&
+        igFromPost.items[0]?.meta_sender_id === "17841400000000777"
+    );
+    const storedIgPost = site.upsertSiteComment(igFromPost.items[0]!);
+    check(
+      "IG 帖文私訊入庫寫低 meta_post_id，表面仍然係私訊",
+      storedIgPost.ok &&
+        storedIgPost.comment.meta_surface === "message" &&
+        storedIgPost.comment.body === "How much?" &&
+        storedIgPost.comment.meta_post_id === "178900000000099" &&
+        storedIgPost.comment.meta_post_caption == null
+    );
+    const igFollow = site.upsertSiteComment({
+      source: "instagram",
+      external_id: "aWdfZAG1follow",
+      author_name: "17841400000000777",
+      body: "再問交車",
+      meta_sender_id: "17841400000000777",
+      meta_surface: "message",
+    });
+    check(
+      "跟住冇 referral 嘅 IG 私訊唔洗走帖文",
+      igFollow.ok &&
+        storedIgPost.ok &&
+        igFollow.comment.id === storedIgPost.comment.id &&
+        igFollow.comment.meta_post_id === "178900000000099" &&
+        igFollow.comment.meta_surface === "message" &&
+        igFollow.comment.body === "How much?"
+    );
+
+    // 文件上嘅 Click-to-Direct：source ADS、type OPEN_THREAD、ads_context_data。
+    // photo_url／video_url 係廣告預覽，唔係客戶相片，亦唔係原帖連結。
+    const igAd = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          id: "17841400000000001",
+          time: 1569262486134,
+          messaging: [
+            {
+              sender: { id: "17841400000000778" },
+              recipient: { id: "17841400000000001" },
+              timestamp: 1569262485349,
+              message: {
+                mid: "aWdfZAG1ctd",
+                text: "How much?",
+                referral: {
+                  ref: "REF-DATA-IN-AD-IF-SPECIFIED",
+                  ad_id: "120210000000111",
+                  source: "ADS",
+                  type: "OPEN_THREAD",
+                  ads_context_data: {
+                    ad_title: "紅色 Alphard 現貨",
+                    photo_url: "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=1",
+                    video_url: "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=2",
+                    post_id: "178900000000100",
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "IG 廣告私訊用 post_id 同 ad_title，唔用預覽圖或客戶句子",
+      igAd.items.length === 1 &&
+        igAd.items[0]?.body === "How much?" &&
+        igAd.items[0]?.meta_post_id === "178900000000100" &&
+        igAd.items[0]?.meta_post_caption === "紅色 Alphard 現貨" &&
+        igAd.items[0]?.meta_post_permalink == null &&
+        (igAd.items[0]?.attachments?.length ?? 0) === 0
+    );
+
+    // 只有廣告編號、冇 post_id：用 ad_id，caption 仍然係 ad_title。
+    const igAdIdOnly = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "17841400000000779" },
+              message: {
+                mid: "aWdfZAG1adonly",
+                text: "想睇車",
+                referral: {
+                  ad_id: 120210000000222,
+                  source: "ADS",
+                  type: "OPEN_THREAD",
+                  ads_context_data: {
+                    ad_title: "白色七人車",
+                    photo_url: "https://scontent.xx.fbcdn.net/ad.jpg",
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "IG 廣告冇 post_id 就記住 ad_id",
+      igAdIdOnly.items[0]?.meta_post_id === "120210000000222" &&
+        igAdIdOnly.items[0]?.meta_post_caption === "白色七人車" &&
+        igAdIdOnly.items[0]?.body === "想睇車"
+    );
+
+    // 文件上嘅 messaging_referral：已有對話再開，referral 喺 event，冇 message。
+    const igMe = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          id: "17841400000000001",
+          time: 1502905976963,
+          messaging: [
+            {
+              sender: { id: "17841400000000780" },
+              recipient: { id: "17841400000000001" },
+              timestamp: 1502905976377,
+              referral: {
+                ref: "INFORMATION-INCLUDED-IN-REF-PARAMETER-OF-IGME-LINK",
+                source: "IGME-SOURCE-LINK",
+                type: "OPEN_THREAD",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check("ig.me referral 冇帖文就唔開新私訊", igMe.ignored && igMe.items.length === 0);
+
+    const igMeWithText = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "17841400000000780" },
+              message: {
+                mid: "aWdfZAG1igme",
+                text: "由 ig.me 入嚟",
+                referral: {
+                  ref: "bio",
+                  source: "SHORTLINKS",
+                  type: "OPEN_THREAD",
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "ig.me 有句子都唔寫帖文",
+      igMeWithText.items[0]?.body === "由 ig.me 入嚟" &&
+        igMeWithText.items[0]?.meta_post_id == null &&
+        igMeWithText.items[0]?.meta_post_caption == null &&
+        igMeWithText.items[0]?.meta_post_permalink == null
+    );
+
+    // Messenger messaging_referrals 文件：event 級 ADS referral，ads_context_data.post_id。
+    const fbReferralOnly = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          id: "1111111111",
+          time: 1458692752478,
+          messaging: [
+            {
+              sender: { id: "5555000000000001" },
+              recipient: { id: "1111111111" },
+              timestamp: 1458692752478,
+              referral: {
+                ref: "alphard",
+                ad_id: "52540693396957",
+                source: "ADS",
+                type: "OPEN_THREAD",
+                ads_context_data: {
+                  ad_title: "紅色 Alphard 現貨",
+                  photo_url: "https://scontent.xx.fbcdn.net/ad.jpg",
+                  video_url: "https://scontent.xx.fbcdn.net/ad.mp4",
+                  post_id: "1111111111_2222222222",
+                  product_id: "999",
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "Facebook 只有 referral 都記住帖文，正文唔係廣告標題",
+      fbReferralOnly.items.length === 1 &&
+        fbReferralOnly.items[0]?.source === "facebook" &&
+        fbReferralOnly.items[0]?.meta_surface === "message" &&
+        fbReferralOnly.items[0]?.body === "（由帖文開啟私訊）" &&
+        fbReferralOnly.items[0]?.meta_post_id === "1111111111_2222222222" &&
+        fbReferralOnly.items[0]?.meta_post_caption === "紅色 Alphard 現貨" &&
+        fbReferralOnly.items[0]?.meta_post_permalink == null &&
+        fbReferralOnly.items[0]?.external_id === "ref:5555000000000001:1111111111_2222222222" &&
+        fbReferralOnly.items[0]?.meta_sender_id === "5555000000000001"
+    );
+
+    const fbPostLink = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "5555000000000002" },
+              message: {
+                mid: "mid.fbpost",
+                text: "How much?",
+                referral: {
+                  source: "IG_POST",
+                  type: "OPEN_THREAD",
+                  post_id: "178900000000101",
+                  permalink: "https://www.instagram.com/p/CxAb12/",
+                  title: "白色 Alphard 限量",
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "source IG_POST 記住 permalink 同 title，客戶句子另計",
+      fbPostLink.items[0]?.source === "facebook" &&
+        fbPostLink.items[0]?.body === "How much?" &&
+        fbPostLink.items[0]?.meta_post_id === "178900000000101" &&
+        fbPostLink.items[0]?.meta_post_permalink === "https://www.instagram.com/p/CxAb12/" &&
+        fbPostLink.items[0]?.meta_post_caption === "白色 Alphard 限量"
+    );
+
+    const storyReply = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "17841400000000781" },
+              message: {
+                mid: "aWdfZAG1story",
+                text: "How much?",
+                reply_to: {
+                  story: {
+                    id: "178900000000088",
+                    url: "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=178900000000088",
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "回覆限時動態記住 story id，CDN 唔當原帖",
+      storyReply.items[0]?.body === "How much?" &&
+        storyReply.items[0]?.meta_post_id === "178900000000088" &&
+        storyReply.items[0]?.meta_post_permalink == null &&
+        storyReply.items[0]?.meta_post_caption == null &&
+        (storyReply.items[0]?.attachments?.length ?? 0) === 0
+    );
+
+    const storyReferral = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "17841400000000782" },
+              timestamp: 1731600001000,
+              referral: {
+                source: "STORY",
+                type: "OPEN_THREAD",
+                post_id: "178900000000089",
+                source_url: "https://www.instagram.com/stories/gloriousmotors/178900000000089/",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "STORY referral 記住 story 連結",
+      storyReferral.items[0]?.meta_post_id === "178900000000089" &&
+        storyReferral.items[0]?.meta_post_permalink ===
+          "https://www.instagram.com/stories/gloriousmotors/178900000000089/" &&
+        storyReferral.items[0]?.body === "（由帖文開啟私訊）"
+    );
+
+    // 2025-11 起嘅 ig_post attachment：media id、title、CDN url。CDN 唔係原帖。
+    const sharedPost = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          time: 1761287298065,
+          id: "17841400000000001",
+          messaging: [
+            {
+              sender: { id: "17841400000000783" },
+              recipient: { id: "17841400000000001" },
+              timestamp: 1761287294014,
+              message: {
+                mid: "aWdfZAG1share",
+                text: "How much?",
+                attachments: [
+                  {
+                    type: "share",
+                    payload: {
+                      ig_post_media_id: "18139494541428835",
+                      title: "Build a workspace that attracts talent",
+                      url: "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=18139494541428835",
+                    },
+                  },
+                  {
+                    type: "ig_post",
+                    payload: {
+                      ig_post_media_id: "18139494541428835",
+                      title: "白色 Alphard 限量",
+                      url: "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=18139494541428835",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "ig_post 分享記住 media id 同 caption，客戶句子同預覽圖分開",
+      sharedPost.items.length === 1 &&
+        sharedPost.items[0]?.body === "How much?" &&
+        sharedPost.items[0]?.meta_post_id === "18139494541428835" &&
+        sharedPost.items[0]?.meta_post_caption === "白色 Alphard 限量" &&
+        sharedPost.items[0]?.meta_post_permalink == null &&
+        (sharedPost.items[0]?.attachments?.length ?? 0) === 0
+    );
+
+    const sharedOnly = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "17841400000000784" },
+              message: {
+                mid: "aWdfZAG1shareonly",
+                attachments: [
+                  {
+                    type: "ig_post",
+                    payload: {
+                      ig_post_media_id: "178900000000102",
+                      title: "只分享帖文",
+                      url: "https://www.instagram.com/p/ShareOnly/",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "只有 ig_post、冇句子都入庫，caption 唔變成正文",
+      sharedOnly.items[0]?.body === "（由帖文開啟私訊）" &&
+        sharedOnly.items[0]?.meta_post_caption === "只分享帖文" &&
+        sharedOnly.items[0]?.meta_post_permalink === "https://www.instagram.com/p/ShareOnly/" &&
+        sharedOnly.items[0]?.meta_post_id === "178900000000102"
+    );
+
+    const photoOnly = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "17841400000000785" },
+              message: {
+                mid: "aWdfZAG1photo",
+                attachments: [{ type: "image", payload: { url: "https://cdn.example.com/car.jpg" } }],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "只有客戶相片仍然係圖片，唔當成帖文",
+      photoOnly.items[0]?.body === "［圖片］" &&
+        photoOnly.items[0]?.meta_post_id == null &&
+        photoOnly.items[0]?.meta_post_caption == null &&
+        photoOnly.items[0]?.attachments?.[0]?.kind === "image"
+    );
+
+    const shopProduct = meta.parseMetaWebhookPayload({
+      object: "instagram",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "17841400000000786" },
+              message: {
+                mid: "aWdfZAG1shop",
+                text: "呢件幾多",
+                referral: { product: { id: "PRODUCT-900" } },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "Shop product id 唔當帖文",
+      shopProduct.items[0]?.body === "呢件幾多" &&
+        shopProduct.items[0]?.meta_post_id == null &&
+        shopProduct.items[0]?.meta_post_caption == null
+    );
+
     const savedPage = process.env.META_PAGE_ID;
     const savedIgId = process.env.META_IG_BUSINESS_ACCOUNT_ID;
     process.env.META_PAGE_ID = "111";
@@ -448,6 +907,431 @@ async function main(): Promise<number> {
       delete process.env.META_PAGE_ACCESS_TOKEN;
       delete process.env.META_GRAPH_VERSION;
     }
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const express = require("express") as typeof import("express");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const webhooks = require("../routes/webhooks") as typeof import("../routes/webhooks");
+    const hookApp = express();
+    hookApp.use(express.json());
+    hookApp.use("/api/webhooks/meta", webhooks.metaWebhookRouter);
+    const hookServer = await new Promise<import("http").Server>((resolve) => {
+      const started = hookApp.listen(0, "127.0.0.1", () => resolve(started));
+    });
+    const hookAddr = hookServer.address();
+    const hookPort = hookAddr && typeof hookAddr === "object" ? hookAddr.port : 0;
+    const hookBase = `http://127.0.0.1:${hookPort}/api/webhooks/meta`;
+    const originalHookFetch = globalThis.fetch;
+    let graphCalls = 0;
+    process.env.META_PAGE_ACCESS_TOKEN = "page-token";
+    process.env.META_GRAPH_VERSION = "v21.0";
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const href = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (href.startsWith(hookBase) || href.startsWith("http://127.0.0.1:")) {
+        return originalHookFetch(url, init);
+      }
+      graphCalls += 1;
+      if (href.includes("178900000000200")) {
+        throw new Error("graph down");
+      }
+      if (href.includes("178900000000201")) {
+        return new Response("nope", { status: 500 });
+      }
+      if (href.includes("178900000000099")) {
+        check(
+          "IG 私訊補帖文係 GET media，唔係發私訊",
+          href.includes("fields=id%2Ccaption%2Cpermalink") && !href.includes("/messages") && init?.method == null
+        );
+        return new Response(
+          JSON.stringify({
+            id: "178900000000099",
+            caption: "Graph 補回嘅 IG 帖文",
+            permalink: "https://www.instagram.com/p/CxAb12/",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (href.includes("1111111111_2222222222")) {
+        return new Response(
+          JSON.stringify({
+            id: "1111111111_2222222222",
+            message: "Graph 補回嘅 Facebook 帖文",
+            permalink_url: "https://www.facebook.com/GloriousMotors/posts/2222222222",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    async function postMeta(body: unknown): Promise<{ status: number; json: { ok?: boolean; results?: Array<{ ok?: boolean }> } }> {
+      const res = await originalHookFetch(hookBase, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-webhook-token": "demo-webhook-token" },
+        body: JSON.stringify(body),
+      });
+      const json = (await res.json()) as { ok?: boolean; results?: Array<{ ok?: boolean }> };
+      return { status: res.status, json };
+    }
+
+    try {
+      const filled = await postMeta({
+        object: "instagram",
+        entry: [
+          {
+            messaging: [
+              {
+                sender: { id: "17841400000000991" },
+                recipient: { id: "17841400000000001" },
+                timestamp: 1731600002000,
+                message: {
+                  mid: "aWdfZAG1graph",
+                  text: "How much?",
+                  referral: { source: "POST", type: "OPEN_THREAD", post_id: "178900000000099" },
+                },
+              },
+            ],
+          },
+        ],
+      });
+      const filledRow = appDb
+        .prepare(
+          `SELECT body, meta_surface, meta_sender_id, external_id, meta_post_id, meta_post_permalink, meta_post_caption
+           FROM comments WHERE external_id = 'aWdfZAG1graph'`
+        )
+        .get() as {
+        body: string;
+        meta_surface: string;
+        meta_sender_id: string;
+        external_id: string;
+        meta_post_id: string | null;
+        meta_post_permalink: string | null;
+        meta_post_caption: string | null;
+      };
+      check(
+        "Webhook：IG 帖文私訊入庫後 Graph 補 caption 同 permalink",
+        filled.status === 200 &&
+          filled.json.ok === true &&
+          filledRow.body === "How much?" &&
+          filledRow.meta_surface === "message" &&
+          filledRow.meta_post_id === "178900000000099" &&
+          filledRow.meta_post_caption === "Graph 補回嘅 IG 帖文" &&
+          filledRow.meta_post_permalink === "https://www.instagram.com/p/CxAb12/"
+      );
+      const dmTarget = graph.resolveMetaReplyTarget({
+        channel: "instagram",
+        externalId: filledRow.external_id,
+        metaSenderId: filledRow.meta_sender_id,
+        metaSurface: filledRow.meta_surface,
+      });
+      check(
+        "補帖文之後 IG 回覆仍然係私訊",
+        dmTarget.ok && dmTarget.kind === "message" && dmTarget.recipientId === "17841400000000991"
+      );
+
+      const thrown = await postMeta({
+        object: "instagram",
+        entry: [
+          {
+            messaging: [
+              {
+                sender: { id: "17841400000000992" },
+                message: {
+                  mid: "aWdfZAG1graphdown",
+                  text: "How much?",
+                  referral: { source: "STORY", type: "OPEN_THREAD", post_id: "178900000000200" },
+                },
+              },
+            ],
+          },
+        ],
+      });
+      const thrownRow = appDb
+        .prepare(
+          `SELECT body, meta_surface, meta_post_id, meta_post_caption, meta_post_permalink
+           FROM comments WHERE external_id = 'aWdfZAG1graphdown'`
+        )
+        .get() as {
+        body: string;
+        meta_surface: string;
+        meta_post_id: string | null;
+        meta_post_caption: string | null;
+        meta_post_permalink: string | null;
+      };
+      check(
+        "Graph 拋錯都入到私訊，帖文編號留低",
+        thrown.status === 200 &&
+          thrown.json.ok === true &&
+          thrownRow.body === "How much?" &&
+          thrownRow.meta_surface === "message" &&
+          thrownRow.meta_post_id === "178900000000200" &&
+          thrownRow.meta_post_caption == null &&
+          thrownRow.meta_post_permalink == null
+      );
+
+      const httpFail = await postMeta({
+        object: "instagram",
+        entry: [
+          {
+            messaging: [
+              {
+                sender: { id: "17841400000000993" },
+                message: {
+                  mid: "aWdfZAG1graph500",
+                  text: "How much?",
+                  referral: { source: "IG_POST", type: "OPEN_THREAD", post_id: "178900000000201" },
+                },
+              },
+            ],
+          },
+        ],
+      });
+      const httpFailRow = appDb
+        .prepare(`SELECT body, meta_post_id, meta_post_caption FROM comments WHERE external_id = 'aWdfZAG1graph500'`)
+        .get() as { body: string; meta_post_id: string | null; meta_post_caption: string | null };
+      check(
+        "Graph 500 都入到私訊",
+        httpFail.status === 200 &&
+          httpFail.json.ok === true &&
+          httpFailRow.body === "How much?" &&
+          httpFailRow.meta_post_id === "178900000000201" &&
+          httpFailRow.meta_post_caption == null
+      );
+
+      const callsBeforeComplete = graphCalls;
+      const complete = await postMeta({
+        object: "instagram",
+        entry: [
+          {
+            messaging: [
+              {
+                sender: { id: "17841400000000994" },
+                message: {
+                  mid: "aWdfZAG1complete",
+                  text: "How much?",
+                  referral: {
+                    source: "POST",
+                    type: "OPEN_THREAD",
+                    post_id: "178900000000300",
+                    permalink: "https://www.instagram.com/p/Already/",
+                    title: "Webhook 已經有 caption",
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      });
+      const completeRow = appDb
+        .prepare(
+          `SELECT body, meta_post_caption, meta_post_permalink FROM comments WHERE external_id = 'aWdfZAG1complete'`
+        )
+        .get() as { body: string; meta_post_caption: string | null; meta_post_permalink: string | null };
+      check(
+        "permalink 同 caption 齊就唔再打 Graph",
+        complete.status === 200 &&
+          graphCalls === callsBeforeComplete &&
+          completeRow.body === "How much?" &&
+          completeRow.meta_post_caption === "Webhook 已經有 caption" &&
+          completeRow.meta_post_permalink === "https://www.instagram.com/p/Already/"
+      );
+
+      const commentFilled = await postMeta({
+        object: "page",
+        entry: [
+          {
+            changes: [
+              {
+                field: "feed",
+                value: {
+                  item: "comment",
+                  verb: "add",
+                  comment_id: "1111111111_2222222222_9009",
+                  post_id: "1111111111_2222222222",
+                  message: "公開留言都要補",
+                  from: { id: "5555000000000099", name: "留言客" },
+                },
+              },
+            ],
+          },
+        ],
+      });
+      const commentRow = appDb
+        .prepare(
+          `SELECT meta_surface, meta_post_caption, meta_post_permalink, external_id
+           FROM comments WHERE external_id = '1111111111_2222222222_9009'`
+        )
+        .get() as {
+        meta_surface: string;
+        meta_post_caption: string | null;
+        meta_post_permalink: string | null;
+        external_id: string;
+      };
+      check(
+        "公開留言補帖文路徑仍然打 comment",
+        commentFilled.status === 200 &&
+          commentRow.meta_surface === "comment" &&
+          commentRow.meta_post_caption === "Graph 補回嘅 Facebook 帖文" &&
+          commentRow.meta_post_permalink === "https://www.facebook.com/GloriousMotors/posts/2222222222" &&
+          commentRow.external_id === "1111111111_2222222222_9009"
+      );
+    } finally {
+      globalThis.fetch = originalHookFetch;
+      delete process.env.META_PAGE_ACCESS_TOKEN;
+      delete process.env.META_GRAPH_VERSION;
+      await new Promise<void>((resolve, reject) => {
+        hookServer.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+
+    if (!appDb) return finish();
+    const inboxDb = appDb;
+    const staffId = Number((inboxDb.prepare(`SELECT id FROM staff ORDER BY id LIMIT 1`).get() as { id: number }).id);
+    inboxDb.prepare(`DELETE FROM comments WHERE id IN (56, 57, 58)`).run();
+    const insertFixed = inboxDb.prepare(
+      `INSERT INTO comments (
+         id, source, external_id, author_name, body, status, assignee_staff_id,
+         intake_kind, meta_sender_id, meta_surface, meta_post_id, meta_post_permalink, meta_post_caption,
+         updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'site_comment', ?, 'message', ?, ?, ?, '2026-11-14 11:41:43')`
+    );
+    insertFixed.run(
+      56,
+      "instagram",
+      "ig-backfill-other",
+      "1128302616581259",
+      "另一則",
+      "open",
+      staffId,
+      "1128302616581259",
+      null,
+      null,
+      null
+    );
+    insertFixed.run(
+      58,
+      "facebook",
+      "fb-backfill-other",
+      "1128302616581259",
+      "Facebook 另一則",
+      "open",
+      staffId,
+      "1128302616581259",
+      null,
+      null,
+      null
+    );
+    insertFixed.run(
+      57,
+      "instagram",
+      "ig-mid-57",
+      "1128302616581259",
+      "How much?",
+      "in_progress",
+      staffId,
+      "1128302616581259",
+      "already-filled",
+      "https://www.instagram.com/p/AlreadyFilled/",
+      "唔好覆寫"
+    );
+
+    type BackfillRow = {
+      id: number;
+      source: string;
+      author_name: string;
+      body: string;
+      status: string;
+      assignee_staff_id: number | null;
+      meta_sender_id: string | null;
+      meta_post_id: string | null;
+      meta_post_permalink: string | null;
+      meta_post_caption: string | null;
+      updated_at: string;
+    };
+    const readBackfill = (id: number) =>
+      inboxDb
+        .prepare(
+          `SELECT id, source, author_name, body, status, assignee_staff_id, meta_sender_id,
+                  meta_post_id, meta_post_permalink, meta_post_caption, updated_at
+           FROM comments WHERE id = ?`
+        )
+        .get(id) as BackfillRow;
+
+    const already = dbMod.backfillInstagramDmPost57();
+    const alreadyRow = readBackfill(57);
+    const otherBefore = readBackfill(56);
+    const facebookBefore = readBackfill(58);
+    check(
+      "留言 #57 已有帖文就跳過，唔覆寫",
+      already === "skipped" &&
+        alreadyRow.meta_post_id === "already-filled" &&
+        alreadyRow.meta_post_permalink === "https://www.instagram.com/p/AlreadyFilled/" &&
+        alreadyRow.meta_post_caption === "唔好覆寫" &&
+        alreadyRow.author_name === "1128302616581259" &&
+        alreadyRow.body === "How much?" &&
+        alreadyRow.status === "in_progress" &&
+        alreadyRow.assignee_staff_id === staffId &&
+        alreadyRow.meta_sender_id === "1128302616581259" &&
+        alreadyRow.updated_at === "2026-11-14 11:41:43"
+    );
+
+    inboxDb
+      .prepare(
+        `UPDATE comments
+         SET meta_post_id = NULL, meta_post_permalink = NULL, meta_post_caption = '唔好留低'
+         WHERE id = 57`
+      )
+      .run();
+    const logs: string[] = [];
+    const log = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((part) => String(part)).join(" "));
+      log(...args);
+    };
+    let filledBackfill: "updated" | "skipped" = "skipped";
+    let secondBackfill: "updated" | "skipped" = "updated";
+    try {
+      filledBackfill = dbMod.backfillInstagramDmPost57();
+      secondBackfill = dbMod.backfillInstagramDmPost57();
+    } finally {
+      console.log = log;
+    }
+    const filledRow = readBackfill(57);
+    const otherAfter = readBackfill(56);
+    const facebookAfter = readBackfill(58);
+    check(
+      "空白嘅留言 #57 補上已核對帖文，caption 留空，IGSID 改做用戶名",
+      filledBackfill === "updated" &&
+        filledRow.meta_post_id === "18115399940157260" &&
+        filledRow.meta_post_permalink === "https://www.instagram.com/p/DftggqykjYo/" &&
+        filledRow.meta_post_caption == null &&
+        filledRow.author_name === "heung812" &&
+        filledRow.body === "How much?" &&
+        filledRow.status === "in_progress" &&
+        filledRow.assignee_staff_id === staffId &&
+        filledRow.meta_sender_id === "1128302616581259" &&
+        filledRow.updated_at === "2026-11-14 11:41:43" &&
+        logs.some((line) => line.includes("已補回留言 #57"))
+    );
+    check(
+      "第二次補回跳過，唔再改 #57",
+      secondBackfill === "skipped" &&
+        filledRow.meta_post_id === readBackfill(57).meta_post_id &&
+        readBackfill(57).author_name === "heung812" &&
+        readBackfill(57).meta_post_caption == null &&
+        logs.some((line) => line.includes("跳過留言 #57"))
+    );
+    check(
+      "補回唔郁其他 id",
+      otherAfter.meta_post_id == null &&
+        otherAfter.meta_post_permalink == null &&
+        otherAfter.author_name === otherBefore.author_name &&
+        otherAfter.body === "另一則" &&
+        facebookAfter.meta_post_id == null &&
+        facebookAfter.author_name === facebookBefore.author_name &&
+        facebookAfter.body === "Facebook 另一則" &&
+        facebookAfter.source === "facebook"
+    );
 
     if (failures.length) {
       console.error(`\n${failures.length} 項失敗`);

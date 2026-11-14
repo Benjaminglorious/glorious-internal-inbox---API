@@ -402,7 +402,7 @@ function acceptsMetaPostFill(current: CommentWithAssignee): boolean {
 
 /**
  * Graph 補回帖文內容或連結。只填空白欄，唔改留言時間，唔覆蓋 webhook 已有嘅值。
- * 私訊、直接 WhatsApp、電郵同其他非 Meta 來源唔寫。
+ * Facebook／Instagram 公開留言同私訊都可以補。直接 WhatsApp、電郵同其他非 Meta 來源唔寫。
  * WhatsApp 由 Facebook／Instagram 帖文或廣告撳入嚟、而且已經有帖文欄，先至補。
  */
 export function fillMetaPostIfMissing(

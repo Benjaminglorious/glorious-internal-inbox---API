@@ -7,6 +7,7 @@ import { placeholderFor, type MediaKind } from "./media";
  * 將 Meta Page／Instagram webhook JSON 拆成 upsertSiteComment 輸入。
  * 只處理認得嘅留言／私訊形狀；狀態回呼等會 ignored。
  * 公開留言記住 comment id；私訊記住 mid 同客戶 PSID／IGSID，出站先回得到。
+ * 由帖文、限時動態或廣告開啟嘅私訊，另外記住 meta_post_*。客戶訊息正文唔會當成帖文。
  * META_PAGE_ID／META_IG_BUSINESS_ACCOUNT_ID 自己發出嘅事件唔入庫。
  */
 
@@ -74,7 +75,7 @@ function pushItem(
   if (!id || !text) return;
   const senderId = (meta?.senderId ?? "").trim();
   const surface = meta?.surface ?? null;
-  const onPost = surface === "comment";
+  const keepPost = surface === "comment" || surface === "message";
   items.push({
     source,
     external_id: id.slice(0, 200),
@@ -82,9 +83,9 @@ function pushItem(
     body: text.slice(0, 8000),
     meta_sender_id: senderId || null,
     meta_surface: surface,
-    meta_post_id: onPost ? meta?.postId ?? null : null,
-    meta_post_permalink: onPost ? meta?.postPermalink ?? null : null,
-    meta_post_caption: onPost ? meta?.postCaption ?? null : null,
+    meta_post_id: keepPost ? meta?.postId ?? null : null,
+    meta_post_permalink: keepPost ? meta?.postPermalink ?? null : null,
+    meta_post_caption: keepPost ? meta?.postCaption ?? null : null,
     attachments: meta?.attachments,
   });
 }
@@ -125,7 +126,7 @@ function cleanWebhookCaption(value: string): string | null {
   return text.slice(0, 500);
 }
 
-/** 由 feed／comments／media 物件抽出帖文編號、連結、內文。私訊唔經呢度。 */
+/** 由 feed／comments／media 物件抽出帖文編號、連結、內文。私訊 referral 唔經呢度。 */
 function readParentPost(
   value: Record<string, unknown>,
   commentId: string,
@@ -219,7 +220,176 @@ function readDmAttachments(message: Record<string, unknown>): NonNullable<Upsert
   return out;
 }
 
-/** Messenger / IG messaging（entry.messaging[]）。 */
+/** 冇客戶句子、只有帖文 referral 或分享帖文時用。唔會當成帖文 caption。 */
+const REFERRAL_DM_BODY = "（由帖文開啟私訊）";
+
+/** Instagram／Facebook 可以開到嘅帖文、限時動態或廣告連結。CDN 預覽唔算。 */
+function openablePostPermalink(value: string): string | null {
+  const cleaned = cleanWebhookUrl(value);
+  if (!cleaned) return null;
+  let url: URL;
+  try {
+    url = new URL(cleaned);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.toLowerCase().replace(/^www\./, "");
+  const path = url.pathname.toLowerCase();
+  if (host === "instagram.com" || host === "instagr.am" || host.endsWith(".instagram.com")) {
+    if (/^\/(?:p|reel|reels|tv|stories|share)\//.test(path)) return cleaned;
+    return null;
+  }
+  if (host === "fb.me") return url.pathname.length > 1 ? cleaned : null;
+  if (
+    host === "facebook.com" ||
+    host.endsWith(".facebook.com") ||
+    host === "fb.com" ||
+    host.endsWith(".fb.com") ||
+    host === "m.facebook.com" ||
+    host === "mbasic.facebook.com"
+  ) {
+    if (
+      path.includes("/posts/") ||
+      path.includes("/permalink") ||
+      path.includes("/reel") ||
+      path.includes("/videos/") ||
+      path.includes("/photos/") ||
+      path.includes("/share/") ||
+      path.includes("/stories/")
+    ) {
+      return cleaned;
+    }
+    if (url.searchParams.has("story_fbid") || url.searchParams.has("fbid")) return cleaned;
+  }
+  return null;
+}
+
+/** POST、STORY、ADS、IG_POST 這類先係帖文或廣告。ig.me／SHORTLINK 唔算。 */
+function isContentReferralSource(source: string): boolean {
+  if (!source) return false;
+  return source
+    .split("_")
+    .filter(Boolean)
+    .some((token) => token === "POST" || token === "STORY" || token === "ADS" || token === "AD");
+}
+
+function referralCaption(parts: string[]): string | null {
+  const seen: string[] = [];
+  for (const raw of parts) {
+    const text = raw.replace(/\s+/g, " ").trim();
+    if (!text || /^https?:\/\//i.test(text)) continue;
+    if (seen.includes(text)) continue;
+    seen.push(text);
+  }
+  if (!seen.length) return null;
+  return cleanWebhookCaption(seen.join(" — "));
+}
+
+/**
+ * Messenger／Instagram messaging referral。
+ * 睇 message.referral、event.referral，同 postback.referral。
+ * 客戶訊息正文唔讀。Shop product id、ig.me ref 唔當帖文。
+ */
+function readMessagingReferral(referral: unknown): MetaPostBits | null {
+  const record = asRecord(referral);
+  if (!record) return null;
+  const source = asString(record.source)
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
+  const ads = asRecord(record.ads_context_data) ?? asRecord(record.adsContextData);
+  const contentSource = isContentReferralSource(source);
+  const postId =
+    cleanWebhookPostId(asString(record.post_id)) ||
+    cleanWebhookPostId(asString(record.postId)) ||
+    cleanWebhookPostId(asString(ads?.post_id)) ||
+    cleanWebhookPostId(asString(ads?.postId)) ||
+    cleanWebhookPostId(asString(record.media_id)) ||
+    cleanWebhookPostId(asString(record.ig_post_media_id)) ||
+    cleanWebhookPostId(asString(record.story_id));
+  const adId = cleanWebhookPostId(
+    asString(record.ad_id) || asString(record.adId) || asString(ads?.ad_id)
+  );
+  const permalink =
+    openablePostPermalink(asString(record.source_url)) ||
+    openablePostPermalink(asString(record.sourceUrl)) ||
+    openablePostPermalink(asString(record.permalink)) ||
+    openablePostPermalink(asString(record.permalink_url)) ||
+    openablePostPermalink(asString(record.url)) ||
+    openablePostPermalink(asString(ads?.source_url)) ||
+    openablePostPermalink(asString(ads?.permalink)) ||
+    openablePostPermalink(asString(ads?.permalink_url));
+  const caption = referralCaption([
+    asString(ads?.ad_title),
+    asString(ads?.adTitle),
+    asString(record.title),
+    asString(record.headline),
+    asString(record.caption),
+    asString(ads?.body),
+    asString(record.body),
+  ]);
+  const id = postId || (contentSource ? adId : null);
+  if (!id && !permalink && !caption) return null;
+  if (!contentSource && !postId && !permalink) return null;
+  return { postId: id, postPermalink: permalink, postCaption: caption };
+}
+
+/** 客戶分享帖文（ig_post／帶 media id 嘅 share）。CDN 預覽唔當 permalink，亦唔當客戶自己嘅相片。 */
+function readSharedPost(message: Record<string, unknown>): MetaPostBits | null {
+  const igPosts: MetaPostBits[] = [];
+  const shares: MetaPostBits[] = [];
+  for (const raw of asArray(message.attachments)) {
+    const attachment = asRecord(raw);
+    if (!attachment) continue;
+    const type = asString(attachment.type).toLowerCase();
+    if (type !== "ig_post" && type !== "share") continue;
+    const payload = asRecord(attachment.payload);
+    if (!payload) continue;
+    const postId = cleanWebhookPostId(
+      asString(payload.ig_post_media_id) || asString(payload.post_id) || asString(payload.media_id)
+    );
+    const postCaption = cleanWebhookCaption(asString(payload.title) || asString(payload.caption));
+    const postPermalink = openablePostPermalink(asString(payload.permalink) || asString(payload.url));
+    if (!postId && !postCaption && !postPermalink) continue;
+    const bits = { postId, postPermalink, postCaption };
+    if (type === "ig_post") igPosts.push(bits);
+    else shares.push(bits);
+  }
+  return mergePostBits(...igPosts, ...shares) ?? null;
+}
+
+/** 回覆限時動態。story.id 係媒體編號；CDN url 唔當原帖連結。 */
+function readStoryReply(message: Record<string, unknown>): MetaPostBits | null {
+  const reply = asRecord(message.reply_to);
+  const story = reply ? asRecord(reply.story) : null;
+  if (!story) return null;
+  const postId = cleanWebhookPostId(asString(story.id));
+  const postPermalink = openablePostPermalink(asString(story.url) || asString(story.permalink));
+  if (!postId && !postPermalink) return null;
+  return { postId, postPermalink, postCaption: null };
+}
+
+function mergePostBits(...parts: Array<MetaPostBits | null>): MetaPostBits | undefined {
+  let postId: string | null = null;
+  let postPermalink: string | null = null;
+  let postCaption: string | null = null;
+  for (const part of parts) {
+    if (!part) continue;
+    postId = postId || part.postId || null;
+    postPermalink = postPermalink || part.postPermalink || null;
+    postCaption = postCaption || part.postCaption || null;
+  }
+  if (!postId && !postPermalink && !postCaption) return undefined;
+  return { postId, postPermalink, postCaption };
+}
+
+function messagingSender(event: Record<string, unknown>): { senderId: string; author: string } {
+  const sender = asRecord(event.sender);
+  const senderId = actorId(sender);
+  return { senderId, author: fromName(sender) || senderId };
+}
+
+/** Messenger / IG messaging（entry.messaging[]），包括冇 message 嘅 referral。 */
 function parseMessaging(
   messaging: unknown[],
   source: SiteCommentSource,
@@ -228,25 +398,48 @@ function parseMessaging(
   for (const raw of messaging) {
     const event = asRecord(raw);
     if (!event) continue;
-    if (event.message == null) continue;
-    const message = asRecord(event.message);
-    if (!message) continue;
-    if (message.is_echo === true || message.is_echo === "true") continue;
-
-    const mid = asString(message.mid) || asString(message.id);
-    const text = asString(message.text).trim();
-    const attachments = readDmAttachments(message);
-    const body = text || (attachments[0] ? placeholderFor(attachments[0].kind, attachments[0].isVoice) : "");
-    if (!body) continue;
-    const sender = asRecord(event.sender);
-    const senderId = actorId(sender);
+    const { senderId, author } = messagingSender(event);
     if (isOwnMetaActor(senderId)) continue;
-    const author = fromName(sender) || senderId;
-    const externalId = mid || (senderId ? `msg:${senderId}:${body.slice(0, 40)}` : "");
-    pushItem(items, source, externalId, author, body, {
+    const postback = asRecord(event.postback);
+    const message = asRecord(event.message);
+    const post = mergePostBits(
+      message ? readMessagingReferral(message.referral) : null,
+      readMessagingReferral(event.referral),
+      postback ? readMessagingReferral(postback.referral) : null,
+      message ? readSharedPost(message) : null,
+      message ? readStoryReply(message) : null
+    );
+
+    if (message) {
+      if (message.is_echo === true || message.is_echo === "true") continue;
+      if (message.is_deleted === true || message.is_deleted === "true") continue;
+      const mid = asString(message.mid) || asString(message.id);
+      const text = asString(message.text).trim();
+      const attachments = readDmAttachments(message);
+      const body =
+        text ||
+        (attachments[0] ? placeholderFor(attachments[0].kind, attachments[0].isVoice) : "") ||
+        (post ? REFERRAL_DM_BODY : "");
+      if (!body) continue;
+      const externalId = mid || (senderId ? `msg:${senderId}:${body.slice(0, 40)}` : "");
+      pushItem(items, source, externalId, author, body, {
+        senderId,
+        surface: "message",
+        ...post,
+        attachments: attachments.length ? attachments : undefined,
+      });
+      continue;
+    }
+
+    if (!post || !senderId) continue;
+    const stamp = asString(event.timestamp);
+    const postbackTitle = postback ? asString(postback.title).trim() : "";
+    const mid = postback ? asString(postback.mid) : "";
+    const externalId = (mid || `ref:${senderId}:${post.postId || stamp || "open"}`).slice(0, 200);
+    pushItem(items, source, externalId, author, postbackTitle || REFERRAL_DM_BODY, {
       senderId,
       surface: "message",
-      attachments: attachments.length ? attachments : undefined,
+      ...post,
     });
   }
 }

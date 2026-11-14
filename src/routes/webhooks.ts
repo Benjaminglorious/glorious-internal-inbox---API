@@ -264,9 +264,12 @@ async function attachWhatsAppReferralPost(
   }
 }
 
-/** Webhook 已入庫之後先補帖文。Graph 失敗唔影響入庫，亦唔改回覆路徑。 */
+/**
+ * Webhook 已入庫之後先補帖文。
+ * 公開留言，同由帖文、限時動態或廣告開啟嘅私訊，有 post id 但缺 permalink 或 caption 時都補。
+ * Graph 失敗唔影響入庫，亦唔改回覆路徑。
+ */
 async function attachParentPost(item: UpsertSiteCommentInput, commentId: number): Promise<void> {
-  if (item.meta_surface === "message") return;
   if (item.source !== "facebook" && item.source !== "instagram") return;
   const postId = typeof item.meta_post_id === "string" ? item.meta_post_id.trim() : "";
   if (!postId) return;
