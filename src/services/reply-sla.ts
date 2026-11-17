@@ -2,8 +2,6 @@ import { db } from "../db";
 import {
   REPLY_SLA_CHECK_MS,
   REPLY_SLA_NOTIFY_USERNAMES,
-  REPLY_SLA_START_HKT,
-  REPLY_SLA_START_UTC,
   REPLY_SLA_STRIKES,
   REPLY_SLA_SUSPEND_MS,
 } from "../reply-sla-config";
@@ -13,7 +11,11 @@ import { pushToStaff } from "./push";
 import { parseStoredTimestamp } from "../time";
 
 /**
- * 每則客戶入站（新留言，或者之後嘅 inbound 再留言）都要現任負責人回覆。
+ * 每則未完成對話入面、尚未有同事回覆的客戶入站（新留言，或者之後嘅 inbound 再留言）
+ * 都要現任負責人回覆。已完成（done）的對話唔計。已經有較後同事回覆的維持達標，唔當逾時。
+ * 上線前送到的訊息由檢查器第一次跑的瞬間重新計時（reply_sla_epoch），
+ * 唔計之前等咗幾多日，亦唔會一上線就當逾時。重啟唔改呢個瞬間，亦唔會重開已有期限。
+ * 上線後的新訊息由送到開始計。夜晚窗 23:00–09:00 一樣暫停。
  * 期限一過又未有同事 outbound，就記一次逾時。同一則入站只記一次。
  * 逾時計喺期限到期嗰刻嘅負責人；之後改派唔會再計多次。
  * 未有負責人就唔計入任何同事，但仍然通知管理員。
@@ -182,13 +184,33 @@ function parseUtc(value: string): Date | null {
   return parseStoredTimestamp(value, "utc");
 }
 
+function ensureReplySlaEpoch(now: Date): Date {
+  const stamp = formatUtcTimestamp(now);
+  const inserted = db
+    .prepare(`INSERT INTO reply_sla_epoch (id, effective_at) VALUES (1, ?) ON CONFLICT(id) DO NOTHING`)
+    .run(stamp);
+  const row = db.prepare(`SELECT effective_at FROM reply_sla_epoch WHERE id = 1`).get() as
+    | { effective_at: string }
+    | undefined;
+  if (!row) throw new Error("reply_sla_epoch 缺少生效時間");
+  if (inserted.changes === 1) {
+    console.log(
+      `[sla] 已記錄回覆時限生效時間 ${row.effective_at} UTC。未完成而尚未回覆的舊訊息由呢刻重新計時。`
+    );
+  }
+  const parsed = parseUtc(row.effective_at);
+  if (!parsed) throw new Error("reply_sla_epoch 時間無法解析");
+  return parsed;
+}
+
 function insertCase(
   commentId: number,
   inboundReplyId: number | null,
   inboundAt: string,
-  inbound: Date
+  inbound: Date,
+  effective: Date
 ): boolean {
-  const deadline = computeReplyDeadline(inbound);
+  const deadline = computeReplyDeadline(inbound, effective);
   const countStart = formatUtcTimestamp(deadline.countStart);
   const due = formatUtcTimestamp(deadline.due);
   const sql =
@@ -215,13 +237,13 @@ function insertCase(
   return result.changes === 1;
 }
 
-function discoverCases(): number {
+function discoverCases(effective: Date): number {
   let opened = 0;
   const comments = db
     .prepare(
       `SELECT c.id, c.created_at
        FROM comments c
-       WHERE c.created_at >= ?
+       WHERE c.status != 'done'
          AND NOT EXISTS (
            SELECT 1 FROM reply_sla s
            WHERE s.comment_id = c.id AND s.inbound_reply_id IS NULL
@@ -229,7 +251,7 @@ function discoverCases(): number {
        ORDER BY c.id ASC
        LIMIT ?`
     )
-    .all(REPLY_SLA_START_UTC, DISCOVER_LIMIT) as Array<{ id: number; created_at: string }>;
+    .all(DISCOVER_LIMIT) as Array<{ id: number; created_at: string }>;
   for (const row of comments) {
     const inbound = parseUtc(row.created_at);
     if (!inbound) {
@@ -237,7 +259,7 @@ function discoverCases(): number {
       continue;
     }
     try {
-      if (insertCase(row.id, null, row.created_at, inbound)) opened += 1;
+      if (insertCase(row.id, null, row.created_at, inbound, effective)) opened += 1;
     } catch (err) {
       console.error(`[sla] 無法為留言 #${row.id} 開期限`, err instanceof Error ? err.message : err);
     }
@@ -247,13 +269,14 @@ function discoverCases(): number {
     .prepare(
       `SELECT r.id, r.comment_id, r.created_at
        FROM comment_replies r
+       JOIN comments c ON c.id = r.comment_id
        WHERE r.direction = 'inbound'
-         AND r.created_at >= ?
+         AND c.status != 'done'
          AND NOT EXISTS (SELECT 1 FROM reply_sla s WHERE s.inbound_reply_id = r.id)
        ORDER BY r.id ASC
        LIMIT ?`
     )
-    .all(REPLY_SLA_START_UTC, DISCOVER_LIMIT) as Array<{ id: number; comment_id: number; created_at: string }>;
+    .all(DISCOVER_LIMIT) as Array<{ id: number; comment_id: number; created_at: string }>;
   for (const row of followUps) {
     const inbound = parseUtc(row.created_at);
     if (!inbound) {
@@ -261,7 +284,7 @@ function discoverCases(): number {
       continue;
     }
     try {
-      if (insertCase(row.comment_id, row.id, row.created_at, inbound)) opened += 1;
+      if (insertCase(row.comment_id, row.id, row.created_at, inbound, effective)) opened += 1;
     } catch (err) {
       console.error(`[sla] 無法為客戶訊息 #${row.id} 開期限`, err instanceof Error ? err.message : err);
     }
@@ -366,8 +389,8 @@ function upsertStaffState(
   ).run(staffId, delayCount, suspendedFrom, suspendedUntil, stamp);
 }
 
-function settleOne(caseId: number, now: Date): "met" | "delay" | "skip" {
-  const settled = db.transaction((): { kind: "met" | "delay" | "skip"; push: SlaNoticePush | null } => {
+function settleOne(caseId: number, now: Date, allowDelay: boolean): "met" | "delay" | "skip" | "open" {
+  const settled = db.transaction((): { kind: "met" | "delay" | "skip" | "open"; push: SlaNoticePush | null } => {
     const row = db
       .prepare(
         `SELECT id, comment_id, inbound_reply_id, inbound_at, due_at, met_at, delay_recorded_at
@@ -375,33 +398,47 @@ function settleOne(caseId: number, now: Date): "met" | "delay" | "skip" {
       )
       .get(caseId) as SlaCaseRow | undefined;
     if (!row || row.met_at || row.delay_recorded_at) return { kind: "skip", push: null };
+    const skippedAlready = db.prepare(`SELECT skipped_at FROM reply_sla WHERE id = ?`).get(row.id) as
+      | { skipped_at: string | null }
+      | undefined;
+    if (skippedAlready?.skipped_at) return { kind: "skip", push: null };
     const reply = firstStaffReply(row);
     if (reply && reply.created_at <= row.due_at) {
       const marked = db
         .prepare(
           `UPDATE reply_sla
            SET met_at = ?, met_reply_id = ?
-           WHERE id = ? AND met_at IS NULL AND delay_recorded_at IS NULL`
+           WHERE id = ? AND met_at IS NULL AND delay_recorded_at IS NULL AND skipped_at IS NULL`
         )
         .run(reply.created_at, reply.id, row.id);
       return { kind: marked.changes === 1 ? "met" : "skip", push: null };
     }
 
-    const assignee = db
-      .prepare(`SELECT assignee_staff_id FROM comments WHERE id = ?`)
-      .get(row.comment_id) as { assignee_staff_id: number | null } | undefined;
-    const staffId = assignee?.assignee_staff_id ?? null;
+    const comment = db
+      .prepare(`SELECT assignee_staff_id, status FROM comments WHERE id = ?`)
+      .get(row.comment_id) as { assignee_staff_id: number | null; status: string } | undefined;
+    const stamp = formatUtcTimestamp(now);
+    if (!comment || comment.status === "done") {
+      db.prepare(
+        `UPDATE reply_sla
+         SET skipped_at = ?
+         WHERE id = ? AND met_at IS NULL AND delay_recorded_at IS NULL AND skipped_at IS NULL`
+      ).run(stamp, row.id);
+      return { kind: "skip", push: null };
+    }
+    if (!allowDelay) return { kind: "open", push: null };
+
+    const staffId = comment.assignee_staff_id ?? null;
     const staff = staffId
       ? (db.prepare(`SELECT id, username, display_name, active FROM staff WHERE id = ?`).get(staffId) as
           | NoticeStaff
           | undefined)
       : undefined;
-    const stamp = formatUtcTimestamp(now);
     const claimed = db
       .prepare(
         `UPDATE reply_sla
          SET delay_recorded_at = ?, delay_staff_id = ?, notified_at = ?
-         WHERE id = ? AND met_at IS NULL AND delay_recorded_at IS NULL`
+         WHERE id = ? AND met_at IS NULL AND delay_recorded_at IS NULL AND skipped_at IS NULL`
       )
       .run(stamp, staff ? staff.id : null, stamp, row.id);
     if (claimed.changes !== 1) return { kind: "skip", push: null };
@@ -470,6 +507,23 @@ function settleOne(caseId: number, now: Date): "met" | "delay" | "skip" {
   return settled.kind;
 }
 
+function reconcileOpenCases(now: Date): { met: number } {
+  const rows = db
+    .prepare(
+      `SELECT id
+       FROM reply_sla
+       WHERE met_at IS NULL AND delay_recorded_at IS NULL AND skipped_at IS NULL
+       ORDER BY due_at ASC, id ASC
+       LIMIT ?`
+    )
+    .all(DISCOVER_LIMIT) as Array<{ id: number }>;
+  let met = 0;
+  for (const row of rows) {
+    if (settleOne(row.id, now, false) === "met") met += 1;
+  }
+  return { met };
+}
+
 function settleDueCases(now: Date): { met: number; delays: number } {
   const stamp = formatUtcTimestamp(now);
   const due = db
@@ -478,6 +532,7 @@ function settleDueCases(now: Date): { met: number; delays: number } {
        FROM reply_sla
        WHERE met_at IS NULL
          AND delay_recorded_at IS NULL
+         AND skipped_at IS NULL
          AND due_at <= ?
        ORDER BY due_at ASC, id ASC
        LIMIT ?`
@@ -486,7 +541,7 @@ function settleDueCases(now: Date): { met: number; delays: number } {
   let met = 0;
   let delays = 0;
   for (const row of due) {
-    const kind = settleOne(row.id, now);
+    const kind = settleOne(row.id, now, true);
     if (kind === "met") met += 1;
     else if (kind === "delay") delays += 1;
   }
@@ -496,9 +551,11 @@ function settleDueCases(now: Date): { met: number; delays: number } {
 /** 開新期限、記準時回覆、記逾時、清走到期暫停。可以重入，同一則入站唔會通知兩次。 */
 export function scanReplySla(now = new Date()): ReplySlaScanResult {
   const restored = restoreExpiredSuspensions(now);
-  const opened = discoverCases();
+  const effective = ensureReplySlaEpoch(now);
+  const opened = discoverCases(effective);
+  const reconciled = reconcileOpenCases(now);
   const settled = settleDueCases(now);
-  return { restored, opened, met: settled.met, delays: settled.delays };
+  return { restored, opened, met: reconciled.met + settled.met, delays: settled.delays };
 }
 
 let checkerStarted = false;
@@ -509,7 +566,7 @@ export function startReplySlaChecker(): void {
   if (checkerStarted) return;
   checkerStarted = true;
   console.log(
-    `[sla] 回覆時限由 ${REPLY_SLA_START_HKT} 香港時間起計，每 ${REPLY_SLA_CHECK_MS / 1000} 秒檢查一次。暫停七日後自動恢復輪候。`
+    `[sla] 回覆時限每 ${REPLY_SLA_CHECK_MS / 1000} 秒檢查一次。未覆舊訊息由第一次檢查重新計時。暫停七日後自動恢復輪候。`
   );
   const tick = () => {
     if (checkerRunning) return;

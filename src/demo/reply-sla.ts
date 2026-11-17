@@ -9,16 +9,18 @@ import type { Server } from "http";
 import type { AddressInfo } from "net";
 import os from "os";
 import path from "path";
-import { REPLY_SLA_START_UTC, REPLY_SLA_SUSPEND_MS } from "../reply-sla-config";
+import { REPLY_SLA_SUSPEND_MS } from "../reply-sla-config";
 import { computeReplyDeadline, formatUtcTimestamp } from "../services/reply-sla-clock";
 import { parseStoredTimestamp } from "../time";
 
 const failures: string[] = [];
 const DEMO_PASSWORD = "Glorious2026!";
-const T_IN = "2026-11-17 01:00:00";
-const T_DUE = "2026-11-17 03:00:00";
-const T_LATE = "2026-11-17 06:00:00";
-const T_ON_TIME = "2026-11-17 02:00:00";
+const GO_LIVE = "2026-11-17 03:30:00";
+const OLD_DUE = "2026-11-17 05:30:00";
+const T_IN = "2026-11-17 04:00:00";
+const T_DUE = "2026-11-17 06:00:00";
+const T_LATE = "2026-11-17 07:00:00";
+const T_ON_TIME = "2026-11-17 05:00:00";
 const PAST = "2000-01-01 00:00:00";
 const FUTURE = "2999-01-01 00:00:00";
 
@@ -38,8 +40,8 @@ function atHkt(wall: string): Date {
   return instant;
 }
 
-function deadlineOf(wall: string): { due: string; start: string; limit: number } {
-  const deadline = computeReplyDeadline(atHkt(wall));
+function deadlineOf(wall: string, notBefore?: string): { due: string; start: string; limit: number } {
+  const deadline = computeReplyDeadline(atHkt(wall), notBefore ? atHkt(notBefore) : undefined);
   return {
     due: formatUtcTimestamp(deadline.due),
     start: formatUtcTimestamp(deadline.countStart),
@@ -48,10 +50,28 @@ function deadlineOf(wall: string): { due: string; start: string; limit: number }
 }
 
 function clockCases(): void {
-  const start = parseStoredTimestamp("2026-11-17 00:00:00", "hkt");
+  const backlog = deadlineOf("2026-11-01 10:00:00", "2026-11-17 11:30:00");
   check(
-    "規則由 2026-11-17 00:00 香港時間開始，資料庫用 UTC",
-    start != null && formatUtcTimestamp(start) === REPLY_SLA_START_UTC && REPLY_SLA_START_UTC === "2026-11-16 16:00:00"
+    "舊訊息由上線一刻重新計，唔用已經等咗的日子",
+    backlog.limit === 7200 && backlog.start === GO_LIVE && backlog.due === OLD_DUE,
+    JSON.stringify(backlog)
+  );
+  const nightLive = deadlineOf("2026-11-01 10:00:00", "2026-11-14 23:30:00");
+  check(
+    "上線如果落在夜晚窗，舊訊息由下一刻 09:00 先計",
+    nightLive.limit === 10800 && nightLive.start === "2026-11-15 01:00:00" && nightLive.due === "2026-11-15 04:00:00",
+    JSON.stringify(nightLive)
+  );
+  const earlyMorning = deadlineOf("2026-11-01 10:00:00", "2026-11-15 08:00:00");
+  check(
+    "上線在 09:00 前，舊訊息由當日 09:00 先計",
+    earlyMorning.limit === 10800 && earlyMorning.start === "2026-11-15 01:00:00" && earlyMorning.due === "2026-11-15 04:00:00"
+  );
+  const fresh = deadlineOf("2026-11-17 12:00:00", "2026-11-17 11:30:00");
+  check(
+    "上線之後的新訊息由送到開始計",
+    fresh.limit === 7200 && fresh.start === T_IN && fresh.due === T_DUE,
+    JSON.stringify(fresh)
   );
 
   const satEarly = deadlineOf("2026-11-14 22:00:00");
@@ -283,29 +303,64 @@ async function dbCases(): Promise<void> {
       .run(staffId, count, until ? PAST : null, until, PAST);
   };
 
-  const early = addComment(idOf("eddie"), "2026-11-16 15:59:59");
-  const boundary = addComment(idOf("eddie"), REPLY_SLA_START_UTC);
-  let result = slaMod.scanReplySla(parseStoredTimestamp("2026-11-16 16:30:00", "utc") as Date);
-  check("起計之前的客戶訊息唔開期限", opening(early) == null);
-  const boundaryCase = opening(boundary);
+  const oldUnanswered = addComment(idOf("eddie"), "2026-11-01 02:00:00");
+  const oldAnswered = addComment(idOf("eddie"), "2026-11-02 03:00:00");
+  addOutbound(oldAnswered, idOf("eddie"), "2026-11-02 05:00:00");
+  const oldDone = addComment(idOf("jason"), "2026-11-03 02:00:00");
+  appDb.prepare(`UPDATE comments SET status = 'done' WHERE id = ?`).run(oldDone);
+  const finishedLater = addComment(idOf("jason"), "2026-11-01 08:00:00");
+  const goLive = parseStoredTimestamp(GO_LIVE, "utc") as Date;
+  let result = slaMod.scanReplySla(goLive);
+  const epochRow = () =>
+    appDb.prepare(`SELECT effective_at FROM reply_sla_epoch WHERE id = 1`).get() as { effective_at: string };
+  const backlog = opening(oldUnanswered);
   check(
-    "正正 2026-11-17 00:00 香港時間開始計，夜晚窗推到 09:00，星期二用 2 小時",
-    boundaryCase != null &&
-      boundaryCase.count_start_at === T_IN &&
-      boundaryCase.due_at === T_DUE &&
-      Number(boundaryCase.limit_seconds) === 7200 &&
-      boundaryCase.delay_recorded_at == null,
-    JSON.stringify(boundaryCase)
+    "第一次檢查記下生效時間，舊的未覆訊息由呢刻重新計而且未即時逾時",
+    epochRow().effective_at === GO_LIVE &&
+      backlog != null &&
+      backlog.count_start_at === GO_LIVE &&
+      backlog.due_at === OLD_DUE &&
+      Number(backlog.limit_seconds) === 7200 &&
+      backlog.delay_recorded_at == null &&
+      result.delays === 0 &&
+      pushes.length === 0,
+    JSON.stringify(backlog)
   );
-  check("未到期限唔當逾時", result.delays === 0 && pushes.length === 0);
-  addOutbound(boundary, idOf("eddie"), T_ON_TIME);
+  check(
+    "已經有同事回覆的舊訊息維持達標",
+    opening(oldAnswered)?.met_at === "2026-11-02 05:00:00" && noticeBodies(oldAnswered).length === 0
+  );
+  check("已完成的對話唔開期限", opening(oldDone) == null);
+  appDb.prepare(`UPDATE comments SET status = 'done' WHERE id = ?`).run(finishedLater);
+  slaMod.scanReplySla(parseStoredTimestamp("2026-11-17 04:00:00", "utc") as Date);
+  const backlogAgain = opening(oldUnanswered);
+  check(
+    "再檢查唔會改生效時間，亦唔會重開已有期限",
+    epochRow().effective_at === GO_LIVE &&
+      backlogAgain?.due_at === OLD_DUE &&
+      backlogAgain.delay_recorded_at == null &&
+      backlogAgain.count_start_at === GO_LIVE
+  );
+  check(
+    "期限前改做已完成就唔當逾時",
+    opening(finishedLater)?.delay_recorded_at == null && noticeBodies(finishedLater).length === 0
+  );
+  slaMod.scanReplySla(parseStoredTimestamp("2026-11-17 05:45:00", "utc") as Date);
+  check(
+    "舊訊息等到新期限過咗先算逾時",
+    opening(oldUnanswered)?.delay_staff_id === idOf("eddie") &&
+      opening(oldUnanswered)?.delay_recorded_at === "2026-11-17 05:45:00" &&
+      stateOf(idOf("eddie")).delay_count === 1 &&
+      noticeBodies(oldUnanswered).length === 3 &&
+      noticeBodies(finishedLater).length === 0
+  );
 
   const onTime = addComment(idOf("eddie"), T_IN);
   addOutbound(onTime, idOf("eddie"), T_ON_TIME);
   const exact = addComment(idOf("jason"), T_IN);
   addOutbound(exact, idOf("jason"), T_DUE);
   const lateReply = addComment(idOf("jason"), T_IN);
-  addOutbound(lateReply, idOf("jason"), "2026-11-17 04:00:00");
+  addOutbound(lateReply, idOf("jason"), "2026-11-17 06:30:00");
   const late = addComment(idOf("eddie"), T_IN);
   const oldThread = addComment(idOf("sam"), "2026-11-01 00:00:00");
   addOutbound(oldThread, idOf("sam"), "2026-11-10 02:00:00");
@@ -314,8 +369,14 @@ async function dbCases(): Promise<void> {
   const lateNow = parseStoredTimestamp(T_LATE, "utc") as Date;
   const beforePushes = pushes.length;
   result = slaMod.scanReplySla(lateNow);
-  check("準時回覆（包括剛好到期）唔計逾時", opening(onTime)?.met_at === T_ON_TIME && opening(exact)?.met_at === T_DUE);
-  check("起計瞬間那則被準時回覆", opening(boundary)?.met_at === T_ON_TIME && stateOf(idOf("eddie")).delay_count === 1);
+  check(
+    "準時回覆（包括剛好到期）唔計逾時，新訊息由送到開始計",
+    opening(onTime)?.met_at === T_ON_TIME &&
+      opening(exact)?.met_at === T_DUE &&
+      opening(onTime)?.count_start_at === T_IN &&
+      opening(onTime)?.due_at === T_DUE
+  );
+  check("舊訊息加一則新的逾時，Eddie 累積兩次", stateOf(idOf("eddie")).delay_count === 2);
   const lateCase = opening(late);
   check(
     "期限後先回覆仍然逾時，計喺當時負責人",
@@ -344,17 +405,20 @@ async function dbCases(): Promise<void> {
   slaMod.scanReplySla(lateNow);
   check(
     "同一則入站再檢查唔會再通知或再加次數",
-    pushes.length === pushesAfterLate && noticeBodies(late).length === 3 && stateOf(idOf("eddie")).delay_count === 1
+    pushes.length === pushesAfterLate && noticeBodies(late).length === 3 && stateOf(idOf("eddie")).delay_count === 2
   );
 
   const followCase = appDb
     .prepare(`SELECT delay_staff_id, met_at FROM reply_sla WHERE inbound_reply_id = ?`)
     .get(follow) as { delay_staff_id: number | null; met_at: string | null } | undefined;
   check(
-    "舊對話喺起計之後的再留言先計，之前的同事回覆唔算覆到這則",
+    "舊對話的新再留言先計，之前的同事回覆唔算覆到這則",
     followCase?.delay_staff_id === idOf("sam") && followCase.met_at == null
   );
-  check("起計前的舊留言本身唔開期限", opening(oldThread) == null);
+  check(
+    "舊首則已經有同事回覆就維持達標",
+    opening(oldThread)?.met_at === "2026-11-10 02:00:00" && opening(oldThread)?.delay_recorded_at == null
+  );
   check("客戶再留言唔當同事回覆", stateOf(idOf("sam")).delay_count === 1);
 
   const moved = addComment(idOf("jason"), T_IN);
@@ -368,7 +432,7 @@ async function dbCases(): Promise<void> {
   slaMod.scanReplySla(lateNow);
   check(
     "改派之後唔會再計一次",
-    stateOf(idOf("sam")).delay_count === 2 && stateOf(idOf("eddie")).delay_count === 1 && noticeBodies(moved).length === 3
+    stateOf(idOf("sam")).delay_count === 2 && stateOf(idOf("eddie")).delay_count === 2 && noticeBodies(moved).length === 3
   );
 
   const orphan = addComment(null, T_IN);
@@ -387,7 +451,11 @@ async function dbCases(): Promise<void> {
     orphanText
   );
 
-  const wingComments = [addComment(idOf("wing"), T_IN), addComment(idOf("wing"), T_IN), addComment(idOf("wing"), T_IN)];
+  const wingComments = [
+    addComment(idOf("wing"), "2026-11-01 01:00:00"),
+    addComment(idOf("wing"), "2026-11-01 02:00:00"),
+    addComment(idOf("wing"), "2026-11-01 03:00:00"),
+  ];
   const pushesBeforeStrikes = pushes.length;
   slaMod.scanReplySla(lateNow);
   const until = formatUtcTimestamp(new Date(lateNow.getTime() + REPLY_SLA_SUSPEND_MS));
@@ -424,7 +492,14 @@ async function dbCases(): Promise<void> {
   );
 
   const during = addComment(idOf("wing"), T_IN);
-  const duringNow = parseStoredTimestamp("2026-11-17 07:00:00", "utc") as Date;
+  check(
+    "幾則未覆舊訊息的鐘一齊由上線一刻開始",
+    wingComments.every((commentId) => {
+      const row = opening(commentId);
+      return row?.count_start_at === GO_LIVE && row.due_at === OLD_DUE;
+    })
+  );
+  const duringNow = parseStoredTimestamp("2026-11-17 08:00:00", "utc") as Date;
   slaMod.scanReplySla(duringNow);
   const duringState = stateOf(idOf("wing"));
   const duringText = noticeBodies(during)[0] || "";
@@ -493,7 +568,7 @@ async function dbCases(): Promise<void> {
     `pick=${restoredPick}`
   );
 
-  const restored = slaMod.scanReplySla(parseStoredTimestamp("2026-11-17 08:00:00", "utc") as Date);
+  const restored = slaMod.scanReplySla(parseStoredTimestamp("2026-11-17 09:00:00", "utc") as Date);
   check(
     "檢查器清走到期暫停，但保留下一輪次數",
     restored.restored >= 1 && stateOf(idOf("wing")).suspended_until == null && stateOf(idOf("wing")).delay_count === 1,
@@ -512,7 +587,8 @@ async function dbCases(): Promise<void> {
        const { db } = require("./src/db/index.ts");
        const id = pickNextAutoAssignStaffId();
        const row = id ? db.prepare("SELECT username FROM staff WHERE id = ?").get(id) : null;
-       fs.writeFileSync(process.env.SLA_PICK_OUT, JSON.stringify({ id: id, username: row && row.username }));`,
+       const epoch = db.prepare("SELECT effective_at FROM reply_sla_epoch WHERE id = 1").get();
+       fs.writeFileSync(process.env.SLA_PICK_OUT, JSON.stringify({ id: id, username: row && row.username, effective_at: epoch && epoch.effective_at }));`,
     ],
     {
       cwd: process.cwd(),
@@ -526,10 +602,12 @@ async function dbCases(): Promise<void> {
       },
     }
   );
-  const fresh = fs.existsSync(outFile) ? (JSON.parse(fs.readFileSync(outFile, "utf8")) as { id: number; username: string }) : null;
+  const fresh = fs.existsSync(outFile)
+    ? (JSON.parse(fs.readFileSync(outFile, "utf8")) as { id: number; username: string; effective_at?: string })
+    : null;
   check(
-    "伺服器喺暫停中途重啟，到期後新進程不用管理員就再派給他",
-    child.status === 0 && fresh?.username === "wing" && fresh.id === idOf("wing"),
+    "伺服器喺暫停中途重啟，到期後新進程不用管理員就再派給他，生效時間亦唔會重設",
+    child.status === 0 && fresh?.username === "wing" && fresh.id === idOf("wing") && fresh.effective_at === GO_LIVE,
     child.stderr?.slice(-400) || JSON.stringify(fresh)
   );
 
@@ -575,6 +653,7 @@ async function dbCases(): Promise<void> {
     !denied.ok && denied.ok === false && denied.status === 403 && denied.error.includes("請刷新頁面") && assigneeStill.id === idOf("eddie"),
     denied.ok ? "sent" : denied.error
   );
+  appDb.prepare(`UPDATE comments SET status = 'done' WHERE id = ?`).run(stale);
 
   setSuspension(idOf("wing"), FUTURE, 2);
   const app = express();
@@ -609,6 +688,7 @@ async function dbCases(): Promise<void> {
       tonyPage.status === 200 &&
         tonyHtml.includes("逾時次數") &&
         tonyHtml.includes("暫停至 2999-01-01 08:00:00 HKT（到期自動恢復輪候）") &&
+        tonyHtml.includes("未覆的舊訊息由第一次檢查重新計時") &&
         tonyHtml.includes("暫停七日後自動恢復輪候，唔使管理員人手恢復") &&
         tonyHtml.includes(">2</td>") &&
         tonyHtml.includes("不參與自動派單") &&

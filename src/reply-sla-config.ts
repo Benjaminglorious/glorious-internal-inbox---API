@@ -1,12 +1,8 @@
 /**
  * 同事回覆時限。改規則只改呢度。
  * 資料庫仍然係 UTC。星期同夜晚窗用 Asia/Hong_Kong。
+ * 舊訊息的起計時間唔寫死：係部署後檢查器第一次跑的瞬間，記喺 reply_sla_epoch。
  */
-
-/** 2026-11-17 00:00 香港時間。之前嘅客戶訊息唔追、唔當逾時。 */
-export const REPLY_SLA_START_HKT = "2026-11-17 00:00:00";
-/** 同上瞬間，UTC 文字，同 datetime('now') 一樣格式。 */
-export const REPLY_SLA_START_UTC = "2026-11-16 16:00:00";
 
 /** 星期一至六，計時開始嗰刻決定。 */
 export const REPLY_SLA_WEEKDAY_SECONDS = 2 * 60 * 60;

@@ -257,6 +257,7 @@ CREATE TABLE IF NOT EXISTS reply_sla (
   delay_staff_id INTEGER REFERENCES staff(id) ON DELETE SET NULL,
   delay_recorded_at TEXT,
   notified_at TEXT,
+  skipped_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -270,7 +271,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_reply_sla_followup
 
 CREATE INDEX IF NOT EXISTS idx_reply_sla_due
   ON reply_sla(due_at)
-  WHERE delay_recorded_at IS NULL AND met_at IS NULL;
+  WHERE delay_recorded_at IS NULL AND met_at IS NULL AND skipped_at IS NULL;
+
+-- 部署後檢查器第一次跑的 UTC 時間。重啟唔改，避免舊訊息的鐘被重設。
+CREATE TABLE IF NOT EXISTS reply_sla_epoch (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  effective_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE INDEX IF NOT EXISTS idx_comments_created_at ON comments(created_at);
 
