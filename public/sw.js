@@ -51,6 +51,8 @@ self.addEventListener("push", (event) => {
   const payload = readPayload(event);
   const bodySource = typeof payload.body === "string" ? payload.body.trim() : "";
   const body = (bodySource || "留言箱有新訊息").slice(0, 180);
+  const titleSource = typeof payload.title === "string" ? payload.title.trim() : "";
+  const title = (titleSource || "有新留言").slice(0, 40);
   const path = safePath(payload.url);
   const tag = typeof payload.tag === "string" && payload.tag.trim() ? payload.tag.trim().slice(0, 64) : "glorious-inbox-new";
 
@@ -64,7 +66,7 @@ self.addEventListener("push", (event) => {
         if (client.visibilityState === "visible") inboxVisible = true;
       }
       if (inboxVisible) return;
-      await self.registration.showNotification("有新留言", {
+      await self.registration.showNotification(title, {
         body: body,
         lang: "zh-Hant",
         tag: tag,

@@ -32,6 +32,7 @@ import {
   isIntakeKind,
   isOriginFilter,
 } from "../types";
+import { listSlaNotices, ownSlaStatus } from "../services/reply-sla";
 import { formatStaffTimestamp, presentStaffTimes, STAFF_TIME_ZONE } from "../time";
 
 export const apiRouter = Router();
@@ -111,13 +112,31 @@ apiRouter.get("/comments/updates", requireAuth, (req: Request, res: Response) =>
       return;
     }
   }
+  const noticeRaw = req.query.since_notice_id;
+  let sinceNoticeId: number | null = null;
+  if (noticeRaw != null && noticeRaw !== "") {
+    if (typeof noticeRaw !== "string" || !/^\d+$/.test(noticeRaw)) {
+      res.status(400).json({ error: "since_notice_id 必須係非負整數" });
+      return;
+    }
+    sinceNoticeId = Number(noticeRaw);
+    if (!Number.isSafeInteger(sinceNoticeId)) {
+      res.status(400).json({ error: "since_notice_id 必須係非負整數" });
+      return;
+    }
+  }
   const updates = listCommentUpdates(sinceId, 30, sessionViewer(req), sinceReplyId);
+  const notices = listSlaNotices(req.session.staffId ?? 0, sinceNoticeId);
   res.set("Cache-Control", "no-store");
   res.json({
     ...updates,
     time_zone: STAFF_TIME_ZONE,
     comments: updates.comments.map((comment) => presentStaffTimes(comment)),
     follow_ups: updates.follow_ups.map((comment) => presentStaffTimes(comment)),
+    sla_notices: notices.notices,
+    latest_notice_id: notices.latest_id,
+    sla_notices_has_more: notices.has_more,
+    sla_self: ownSlaStatus(req.session.staffId ?? 0),
   });
 });
 

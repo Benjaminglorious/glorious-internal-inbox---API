@@ -27,12 +27,15 @@
     if (raw == null || !/^\d+$/.test(raw)) return;
     var replyRaw = root.getAttribute("data-latest-reply-id");
     var initialReply = replyRaw != null && /^\d+$/.test(replyRaw) ? Number(replyRaw) : null;
-    startWatcher(Number(raw), initialReply);
+    var noticeRaw = root.getAttribute("data-latest-notice-id");
+    var initialNotice = noticeRaw != null && /^\d+$/.test(noticeRaw) ? Number(noticeRaw) : null;
+    startWatcher(Number(raw), initialReply, initialNotice);
   });
 
-  function startWatcher(initialCursor, initialReplyCursor) {
+  function startWatcher(initialCursor, initialReplyCursor, initialNoticeCursor) {
     var cursor = initialCursor;
     var replyCursor = initialReplyCursor;
+    var noticeCursor = initialNoticeCursor;
     var unseenCount = 0;
     var newest = null;
     var baseTitle = document.title;
@@ -41,6 +44,7 @@
     var pollAgain = false;
     var timer = 0;
     var toast = buildToast();
+    var slaToast = buildSlaToast();
     maybeAskPermission();
 
     function schedule(ms) {
@@ -146,6 +150,7 @@
       var nextMs = POLL_MS;
       var updatesUrl = "/api/comments/updates?since_id=" + encodeURIComponent(cursor);
       if (replyCursor != null) updatesUrl += "&since_reply_id=" + encodeURIComponent(replyCursor);
+      if (noticeCursor != null) updatesUrl += "&since_notice_id=" + encodeURIComponent(noticeCursor);
       fetch(updatesUrl, {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
@@ -181,6 +186,18 @@
               replyCursor = data.latest_reply_id;
             }
           }
+          renderSlaBanner(data.sla_self);
+          if (noticeCursor != null) {
+            var notices = Array.isArray(data.sla_notices) ? data.sla_notices : [];
+            if (notices.length) showSla(notices);
+            if (data.sla_notices_has_more && notices.length) {
+              var lastNotice = Number(notices[notices.length - 1].id);
+              if (isFinite(lastNotice) && lastNotice > noticeCursor) noticeCursor = lastNotice;
+              nextMs = 400;
+            } else if (typeof data.latest_notice_id === "number" && data.latest_notice_id > noticeCursor) {
+              noticeCursor = data.latest_notice_id;
+            }
+          }
         })
         .catch(function () {
           // 網絡短暫失敗就等下一次輪詢。
@@ -197,11 +214,39 @@
         });
     }
 
+    function renderSlaBanner(status) {
+      var banner = document.getElementById("sla-suspend-banner");
+      if (!banner) return;
+      var text = status && status.banner ? String(status.banner) : "";
+      banner.textContent = text;
+      banner.hidden = !text;
+    }
+
+    function showSla(notices) {
+      var latest = notices[notices.length - 1];
+      slaToast.title.textContent = latest && latest.title ? String(latest.title) : "回覆逾時";
+      slaToast.summary.textContent = latest && latest.body ? String(latest.body) : "";
+      if (notices.length > 1) {
+        slaToast.more.hidden = false;
+        slaToast.more.textContent = "共 " + notices.length + " 則回覆逾時";
+      } else {
+        slaToast.more.hidden = true;
+        slaToast.more.textContent = "";
+      }
+      var url = latest && typeof latest.url === "string" ? latest.url : "/";
+      if (url.charAt(0) !== "/" || url.charAt(1) === "/") url = "/";
+      slaToast.view.href = url;
+      slaToast.root.hidden = false;
+    }
+
     toast.refresh.addEventListener("click", function () {
       window.location.reload();
     });
     toast.dismiss.addEventListener("click", function () {
       hideToast();
+    });
+    slaToast.dismiss.addEventListener("click", function () {
+      slaToast.root.hidden = true;
     });
 
     if (navigator.serviceWorker) {
@@ -265,6 +310,45 @@
     document.body.appendChild(root);
 
     return { root: root, summary: summary, more: more, view: view, refresh: refresh, dismiss: dismiss };
+  }
+
+  function buildSlaToast() {
+    var root = document.createElement("div");
+    root.className = "inbox-toast inbox-toast-sla";
+    root.hidden = true;
+    root.setAttribute("role", "status");
+    root.setAttribute("aria-live", "polite");
+
+    var title = document.createElement("h2");
+    title.textContent = "回覆逾時";
+
+    var summary = document.createElement("p");
+    summary.className = "inbox-toast-summary";
+
+    var more = document.createElement("p");
+    more.className = "inbox-toast-more";
+    more.hidden = true;
+
+    var actions = document.createElement("div");
+    actions.className = "inbox-toast-actions";
+
+    var view = document.createElement("a");
+    view.className = "btn primary";
+    view.textContent = "查看留言";
+
+    var dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "btn";
+    dismiss.textContent = "關閉";
+
+    actions.appendChild(view);
+    actions.appendChild(dismiss);
+    root.appendChild(title);
+    root.appendChild(summary);
+    root.appendChild(more);
+    root.appendChild(actions);
+    document.body.appendChild(root);
+    return { root: root, title: title, summary: summary, more: more, view: view, dismiss: dismiss };
   }
 
   function maybeAskPermission() {

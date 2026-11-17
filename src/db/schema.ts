@@ -242,4 +242,73 @@ CREATE TABLE IF NOT EXISTS comment_message_keys (
 );
 
 CREATE INDEX IF NOT EXISTS idx_comment_message_keys_comment ON comment_message_keys(comment_id);
+
+-- 客戶入站回覆時限。每則新留言或 inbound 再留言一筆。逾時只記一次。
+CREATE TABLE IF NOT EXISTS reply_sla (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+  inbound_reply_id INTEGER,
+  inbound_at TEXT NOT NULL,
+  count_start_at TEXT NOT NULL,
+  due_at TEXT NOT NULL,
+  limit_seconds INTEGER NOT NULL,
+  met_reply_id INTEGER,
+  met_at TEXT,
+  delay_staff_id INTEGER REFERENCES staff(id) ON DELETE SET NULL,
+  delay_recorded_at TEXT,
+  notified_at TEXT,
+  skipped_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reply_sla_opening
+  ON reply_sla(comment_id)
+  WHERE inbound_reply_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reply_sla_followup
+  ON reply_sla(inbound_reply_id)
+  WHERE inbound_reply_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_reply_sla_due
+  ON reply_sla(due_at)
+  WHERE delay_recorded_at IS NULL AND met_at IS NULL AND skipped_at IS NULL;
+
+-- 部署後檢查器第一次跑的 UTC 時間。重啟唔改，避免舊訊息的鐘被重設。
+CREATE TABLE IF NOT EXISTS reply_sla_epoch (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  effective_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_comments_created_at ON comments(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_comment_replies_inbound_created
+  ON comment_replies(created_at)
+  WHERE direction = 'inbound';
+
+-- 本輪逾時次數同暫停自動派單到期（UTC）。到期即自動回到輪流，唔使管理員恢復。
+-- suspensions_started 記已經開過幾次 3 次暫停：0 即下次係 3 日，1 或以上即下次係 7 日。重啟唔會清。
+CREATE TABLE IF NOT EXISTS staff_reply_sla (
+  staff_id INTEGER PRIMARY KEY REFERENCES staff(id) ON DELETE CASCADE,
+  delay_count INTEGER NOT NULL DEFAULT 0,
+  suspended_from TEXT,
+  suspended_until TEXT,
+  suspensions_started INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_reply_sla_until ON staff_reply_sla(suspended_until);
+
+CREATE TABLE IF NOT EXISTS staff_notices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  staff_id INTEGER NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  url TEXT NOT NULL,
+  comment_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_notices_staff ON staff_notices(staff_id, id);
 `;

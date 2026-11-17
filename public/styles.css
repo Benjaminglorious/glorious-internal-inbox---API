@@ -354,6 +354,26 @@ td.when time, .who time, .meta time, .reply-preview time { color: inherit; }
 .inbox-toast-summary { font-size: 14px; }
 .inbox-toast-more { font-size: 13px; color: var(--muted); }
 .inbox-toast-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.inbox-toast.inbox-toast-sla {
+  bottom: 210px;
+  z-index: 41;
+  border-left-color: #b45309;
+}
+.sla-suspend-banner {
+  background: #7f1d1d;
+  color: #fff;
+  font-weight: 800;
+  font-size: 1.05rem;
+  line-height: 1.45;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  margin: 0 0 16px;
+}
+.badge.sla-overdue {
+  background: #fee2e2;
+  color: #991b1b;
+  margin-left: 6px;
+}
 body.inbox-has-toast { padding-bottom: 200px; }
 
 @media (max-width: 640px) {
@@ -361,4 +381,5 @@ body.inbox-has-toast { padding-bottom: 200px; }
   .meta { grid-template-columns: 1fr; }
   td.preview { max-width: 200px; }
   .inbox-toast { right: 12px; left: 12px; width: auto; bottom: 12px; }
+  .inbox-toast.inbox-toast-sla { bottom: auto; top: 12px; }
 }
