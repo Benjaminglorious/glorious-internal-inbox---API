@@ -1,10 +1,13 @@
 import { db, usingPostgres } from "../db";
+import { formatUtcTimestamp } from "./reply-sla-clock";
 
 /**
  * 公司自動派單輪流次序：Eddie → Wing → Jason → 其餘在職同事（staff.id 升序）。
  * 其餘唔包括 Tony、Benjamin、Vivian、Ken。四人即使 active=1 都唔會被自動派單；管理員可以人手改派畀佢哋。
  * 排除係用戶名名單，唔係所有管理員。Eddie（is_admin）仍然喺優先名單。
  * 新同事（唔喺優先名單、亦唔喺排除名單）排喺 Jason 後面，以 staff.id 升序。只計 active = 1。
+ * 回覆逾時累積 3 次嘅同事，暫停期間同樣跳過。到期（staff_reply_sla.suspended_until，UTC）
+ * 就自動回到呢條輪流，唔使管理員恢復，亦唔使靠進程記憶。伺服器暫停中途重啟都一樣。
  * 唔計 open／in_progress 幾多。上一位記喺 auto_assign_state，重啟同多個 instance 共用。
  */
 export const AUTO_ASSIGN_PRIORITY_USERNAMES = ["eddie", "wing", "jason"] as const;
@@ -69,17 +72,32 @@ function excludedUsernames(): string[] {
   return AUTO_ASSIGN_EXCLUDED_USERNAMES.map((name) => name.toLowerCase());
 }
 
+export function isAutoAssignExcluded(username: string): boolean {
+  return excludedUsernames().includes(username.toLowerCase());
+}
+
+/** 暫停未到期先至跳過。到期或未暫停都留喺輪流。 */
+function suspensionSkipSql(): string {
+  return `NOT EXISTS (
+    SELECT 1 FROM staff_reply_sla sla
+    WHERE sla.staff_id = staff.id
+      AND sla.suspended_until IS NOT NULL
+      AND sla.suspended_until > ?
+  )`;
+}
+
 /** 有冇至少一位可以自動派單嘅在職同事。唔推進游標。 */
-export function hasEligibleAutoAssignStaff(): boolean {
+export function hasEligibleAutoAssignStaff(now = new Date()): boolean {
   const excluded = excludedUsernames();
   const excludedSql = excluded.map(() => "?").join(", ");
   const row = db
     .prepare(
       `SELECT 1 AS ok FROM staff
        WHERE active = 1 AND lower(username) NOT IN (${excludedSql})
+         AND ${suspensionSkipSql()}
        LIMIT 1`
     )
-    .get(...excluded) as { ok: number } | undefined;
+    .get(...excluded, formatUtcTimestamp(now)) as { ok: number } | undefined;
   return row != null;
 }
 
@@ -101,9 +119,10 @@ function chooseNextStaffId(): number | null {
   const eligible = db
     .prepare(
       `SELECT id, username FROM staff
-       WHERE active = 1 AND lower(username) NOT IN (${excludedSql})`
+       WHERE active = 1 AND lower(username) NOT IN (${excludedSql})
+         AND ${suspensionSkipSql()}`
     )
-    .all(...excluded) as RotationStaff[];
+    .all(...excluded, formatUtcTimestamp(new Date())) as RotationStaff[];
   if (eligible.length === 0) return null;
 
   const chosen = nextInRotation(eligible, cursorRank(state.last_staff_id, state.last_username));
@@ -124,7 +143,8 @@ function chooseNextStaffId(): number | null {
 /**
  * 下一位自動派單同事。唔睇 open／in_progress。
  * 次序：Eddie → Wing → Jason → 其他 active 同事（staff.id 升序）。
- * Tony、Benjamin、Vivian、Ken 同 active = 0 唔參與。Eddie 雖然係管理員都參與。
+ * Tony、Benjamin、Vivian、Ken、active = 0，同暫停未到期嘅同事唔參與。
+ * 暫停到期自動再參與。Eddie 雖然係管理員都參與。
  * 公司 WhatsApp 總機入站、網站留言 ingest、同未派留言補派都用呢條。
  * 同事個人 WhatsApp 唔經呢度。
  * 游標同今次選擇一齊提交；呼叫方如果包住 transaction，失敗會一齊回滾。

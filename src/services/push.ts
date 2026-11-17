@@ -299,6 +299,26 @@ function flush(): void {
   });
 }
 
+/** 指定同事嘅 Web Push。回覆逾時用呢條，唔另開電郵或短信。未設定 VAPID 就唔送。 */
+export function pushToStaff(
+  staffIds: number[],
+  notice: { title: string; body: string; url: string; tag: string }
+): void {
+  const allowed = new Set(staffIds.filter((id) => Number.isInteger(id) && id > 0));
+  if (!allowed.size || !isPushConfigured()) return;
+  const subs = listSubscriptions().filter((sub) => allowed.has(sub.staff_id));
+  if (!subs.length) return;
+  const payload = JSON.stringify({
+    title: notice.title,
+    body: notice.body,
+    url: notice.url,
+    tag: notice.tag,
+  });
+  void Promise.all(subs.map((sub) => sendOne(sub, payload))).catch((err) => {
+    console.error("[push] 推送失敗", safeError(err));
+  });
+}
+
 /**
  * 新留言入庫之後呼叫。會稍為合併同一輪插入，再按可見範圍推送：
  * 管理員收到全部（包括未派）；在職同事只收到派咗畀自己嘅。收藏同事唔推。

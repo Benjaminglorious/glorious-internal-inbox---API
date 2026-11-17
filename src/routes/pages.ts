@@ -19,13 +19,16 @@ import {
 import { clipMessagePreview, linkifyMessageHtml } from "../linkify";
 import { registerTwentyeightcarPages } from "./twentyeightcar-pages";
 import { listingIndex, stockIdFromText } from "../services/twentyeightcar";
+import { latestSlaNoticeId, loadStaffSlaOverview } from "../services/reply-sla";
 import { formatHktIso, formatStaffTimestamp, parseStoredTimestamp, type StoredClock } from "../time";
 import {
   REASSIGNED_MESSAGE,
   canViewComment,
   getComment,
   getCommentWithCursor,
+  latestCommentId,
   latestCustomerMessageText,
+  latestReplyId,
   listCommentsWithCursor,
   listStaff,
   findStaffByUsername,
@@ -345,6 +348,7 @@ function layout(opts: {
   /** 有呢個數字先至喺留言箱／詳情輪詢新留言。0 代表暫時未有留言。 */
   liveCursor?: number;
   liveReplyCursor?: number;
+  liveNoticeCursor?: number;
 }): string {
   const nav = opts.user
     ? `
@@ -375,7 +379,7 @@ function layout(opts: {
 
   const live =
     typeof opts.liveCursor === "number"
-      ? `<div id="inbox-live" data-latest-id="${opts.liveCursor}" data-latest-reply-id="${opts.liveReplyCursor ?? 0}" hidden></div>`
+      ? `<div id="inbox-live" data-latest-id="${opts.liveCursor}" data-latest-reply-id="${opts.liveReplyCursor ?? 0}" data-latest-notice-id="${opts.liveNoticeCursor ?? 0}" hidden></div>`
       : "";
 
   const authenticated = opts.user ? ` data-authenticated="1"` : "";
@@ -697,6 +701,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
       active: "inbox",
       liveCursor: latestId,
       liveReplyCursor: latestReplyId,
+      liveNoticeCursor: latestSlaNoticeId(req.session.staffId ?? 0),
     })
   );
 });
@@ -922,6 +927,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       active: "inbox",
       liveCursor: latestId,
       liveReplyCursor: latestReplyId,
+      liveNoticeCursor: latestSlaNoticeId(req.session.staffId ?? 0),
     })
   );
 });
@@ -1017,10 +1023,22 @@ pagesRouter.post("/comments/:id/assign", requireAuth, (req: Request, res: Respon
 pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
   const staff = listStaff();
   const staffLines = activeStaffLinesByStaffId();
+  const sla = req.session.isAdmin ? loadStaffSlaOverview() : null;
   const rows = staff
     .map((s) => {
       const line = staffLines.get(s.id);
       const phone = line ? `${escapeHtml(formatPhoneE164(line.phone_e164))}（${escapeHtml(line.display_label)}）` : "—";
+      const status = sla?.get(s.id);
+      let pool = "";
+      if (sla) {
+        if (status?.poolExcluded) pool = "不參與自動派單";
+        else if (status?.suspendedUntil) {
+          pool = `暫停至 ${formatStaffTimestamp(status.suspendedUntil, "utc")}（到期自動恢復輪候）`;
+        } else pool = "輪候中";
+      }
+      const slaCells = sla
+        ? `<td>${status?.delayCount ?? 0}</td><td>${escapeHtml(pool)}</td>`
+        : "";
       return `<tr>
       <td>${s.id}</td>
       <td>${escapeHtml(s.display_name)}</td>
@@ -1028,20 +1046,23 @@ pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
       <td>${s.is_admin ? "管理員" : "同事"}</td>
       <td>${s.active ? "啟用" : "收藏"}</td>
       <td>${phone}</td>
+      ${slaCells}
     </tr>`;
     })
     .join("");
 
   const note = req.session.isAdmin
-    ? `<p class="muted">你係管理員，可以睇全部留言（包括未派）同改派。<a href="/whatsapp-lines">管理 WhatsApp 線路</a></p>`
+    ? `<p class="muted">你係管理員，可以睇全部留言（包括未派）同改派。<a href="/whatsapp-lines">管理 WhatsApp 線路</a></p>
+       <p class="muted">回覆時限由 2026-11-17 00:00（香港時間）起計。星期一至六要喺計時 2 小時內回覆每則客戶訊息，星期日係 3 小時。每日 23:00 至 09:00 唔計時。可派單同事累積 3 次逾時，會暫停公司線自動派單 7 日；暫停七日後自動恢復輪候，唔使管理員人手恢復，伺服器重啟都一樣。Tony、Benjamin、Vivian、Ken 唔參與自動派單，逾時會通知但唔會因此暫停。已派咗嘅留言維持原負責人。</p>`
     : `<p class="muted">你只可以處理派咗畀你嘅留言。改派只限管理員。個人 WhatsApp 由管理員綁定。</p>`;
+  const slaHead = sla ? `<th>逾時次數</th><th>自動派單</th>` : "";
 
   const body = `
     <div class="page-head"><h1>同事名單</h1></div>
     ${note}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>ID</th><th>姓名</th><th>帳號</th><th>角色</th><th>狀態</th><th>個人 WhatsApp</th></tr></thead>
+        <thead><tr><th>ID</th><th>姓名</th><th>帳號</th><th>角色</th><th>狀態</th><th>個人 WhatsApp</th>${slaHead}</tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -1053,6 +1074,9 @@ pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
       body,
       user: sessionUser(req),
       active: "staff",
+      liveCursor: latestCommentId(),
+      liveReplyCursor: latestReplyId(),
+      liveNoticeCursor: latestSlaNoticeId(req.session.staffId ?? 0),
     })
   );
 });

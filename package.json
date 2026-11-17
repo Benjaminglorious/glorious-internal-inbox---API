@@ -22,6 +22,7 @@
     "demo:inbox-preview": "tsx src/demo/inbox-customer-preview.ts",
     "demo:inbox-actions": "tsx src/demo/inbox-actions.ts",
     "demo:staff-time": "tsx src/demo/staff-time.ts",
+    "demo:reply-sla": "tsx src/demo/reply-sla.ts",
     "demo:change-password": "tsx src/demo/change-password.ts",
     "vapid:keys": "web-push generate-vapid-keys --json",
     "icons": "node scripts/generate-pwa-icons.mjs",
