@@ -32,7 +32,7 @@ import {
   isIntakeKind,
   isOriginFilter,
 } from "../types";
-import { listSlaNotices } from "../services/reply-sla";
+import { listSlaNotices, ownSlaStatus } from "../services/reply-sla";
 import { formatStaffTimestamp, presentStaffTimes, STAFF_TIME_ZONE } from "../time";
 
 export const apiRouter = Router();
@@ -136,6 +136,7 @@ apiRouter.get("/comments/updates", requireAuth, (req: Request, res: Response) =>
     sla_notices: notices.notices,
     latest_notice_id: notices.latest_id,
     sla_notices_has_more: notices.has_more,
+    sla_self: ownSlaStatus(req.session.staffId ?? 0),
   });
 });
 

@@ -359,6 +359,21 @@ td.when time, .who time, .meta time, .reply-preview time { color: inherit; }
   z-index: 41;
   border-left-color: #b45309;
 }
+.sla-suspend-banner {
+  background: #7f1d1d;
+  color: #fff;
+  font-weight: 800;
+  font-size: 1.05rem;
+  line-height: 1.45;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  margin: 0 0 16px;
+}
+.badge.sla-overdue {
+  background: #fee2e2;
+  color: #991b1b;
+  margin-left: 6px;
+}
 body.inbox-has-toast { padding-bottom: 200px; }
 
 @media (max-width: 640px) {

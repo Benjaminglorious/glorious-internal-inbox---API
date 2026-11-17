@@ -186,6 +186,7 @@
               replyCursor = data.latest_reply_id;
             }
           }
+          renderSlaBanner(data.sla_self);
           if (noticeCursor != null) {
             var notices = Array.isArray(data.sla_notices) ? data.sla_notices : [];
             if (notices.length) showSla(notices);
@@ -211,6 +212,14 @@
           }
           schedule(nextMs);
         });
+    }
+
+    function renderSlaBanner(status) {
+      var banner = document.getElementById("sla-suspend-banner");
+      if (!banner) return;
+      var text = status && status.banner ? String(status.banner) : "";
+      banner.textContent = text;
+      banner.hidden = !text;
     }
 
     function showSla(notices) {

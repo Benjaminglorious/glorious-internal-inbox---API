@@ -19,7 +19,12 @@ import {
 import { clipMessagePreview, linkifyMessageHtml } from "../linkify";
 import { registerTwentyeightcarPages } from "./twentyeightcar-pages";
 import { listingIndex, stockIdFromText } from "../services/twentyeightcar";
-import { latestSlaNoticeId, loadStaffSlaOverview } from "../services/reply-sla";
+import {
+  latestSlaNoticeId,
+  loadStaffSlaOverview,
+  overdueUnansweredCommentIds,
+  ownSlaStatus,
+} from "../services/reply-sla";
 import { formatHktIso, formatStaffTimestamp, parseStoredTimestamp, type StoredClock } from "../time";
 import {
   REASSIGNED_MESSAGE,
@@ -340,6 +345,12 @@ function replyPreview(c: CommentWithAssignee): string {
   return `<div class="reply-preview">最新回覆${count} · ${escapeHtml(who)}${when} · ${escapeHtml(delivery)}：${linkifyMessageHtml(text)}</div>`;
 }
 
+function renderSlaBanner(staffId: number | undefined): string {
+  const status = staffId ? ownSlaStatus(staffId) : null;
+  if (!status?.banner) return `<div id="sla-suspend-banner" class="sla-suspend-banner" hidden></div>`;
+  return `<div id="sla-suspend-banner" class="sla-suspend-banner" role="status">${escapeHtml(status.banner)}</div>`;
+}
+
 function layout(opts: {
   title: string;
   body: string;
@@ -572,6 +583,8 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     return s ? `?${s}` : "";
   };
 
+  const overdueIds = overdueUnansweredCommentIds(viewer.isAdmin ? null : viewer.staffId);
+  const slaBanner = renderSlaBanner(req.session.staffId);
   const rows = comments
     .map((c) => {
       const customerText = latestCustomerMessageText(c);
@@ -589,7 +602,9 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
         <td>${escapeHtml(c.author_name)}</td>
         <td class="preview"><span class="content-preview">${linkifyMessageHtml(preview)}</span>${renderPostHint(c)}${replyPreview(c)}</td>
         <td>${vehicleCell}</td>
-        <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span></td>
+        <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span>${
+          overdueIds.has(c.id) ? `<span class="badge sla-overdue">已逾時</span>` : ""
+        }</td>
         <td class="when">${showTime(c.created_at)}</td>
         <td>${c.assignee_name ? escapeHtml(c.assignee_name) : "未派"}</td>
         <td class="actions-cell"><a class="btn primary" href="/comments/${c.id}#reply">回覆</a>${collapsedMore(`${customerReplyButton(c)}${whatsAppLinks(c, staffLines)}`)}</td>
@@ -598,6 +613,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     .join("");
 
   const body = `
+    ${slaBanner}
     <div class="page-head">
       <h1>留言箱</h1>
       <p class="muted">${q ? `搵到 ${comments.length} 條` : `共 ${comments.length} 條`}</p>
@@ -791,11 +807,15 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
     })
     .join("");
 
+  const detailViewer = sessionViewer(req);
+  const detailOverdue = overdueUnansweredCommentIds(detailViewer.isAdmin ? null : detailViewer.staffId).has(c.id);
   const body = `
+    ${renderSlaBanner(req.session.staffId)}
     <p><a href="/">← 返回留言箱</a></p>
     <article class="detail">
       <div class="page-head">
         <h1>留言 #${c.id}</h1>
+        ${detailOverdue ? `<span class="badge sla-overdue">已逾時</span>` : ""}
         ${renderSourceBadges(c)}
         <span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span>
       </div>
@@ -1033,7 +1053,8 @@ pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
       if (sla) {
         if (status?.poolExcluded) pool = "不參與自動派單";
         else if (status?.suspendedUntil) {
-          pool = `暫停至 ${formatStaffTimestamp(status.suspendedUntil, "utc")}（到期自動恢復輪候）`;
+          const days = status.suspendDays === 7 ? "7 日" : "3 日";
+          pool = `暫停至 ${formatStaffTimestamp(status.suspendedUntil, "utc")}（到期自動恢復輪候，今次 ${days}）`;
         } else pool = "輪候中";
       }
       const slaCells = sla
@@ -1053,7 +1074,7 @@ pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
 
   const note = req.session.isAdmin
     ? `<p class="muted">你係管理員，可以睇全部留言（包括未派）同改派。<a href="/whatsapp-lines">管理 WhatsApp 線路</a></p>
-       <p class="muted">未完成對話入面、尚未有同事回覆的客戶訊息都要計回覆時限，包括上線前已收到但一直未覆的訊息。未覆的舊訊息由第一次檢查重新計時，之前等咗幾多日唔計；如果開始嗰刻係 23:00 至 09:00，就由 09:00 先計。星期一至六 2 小時，星期日 3 小時。上線之後的新訊息由送到開始計，每日 23:00 至 09:00 唔計時。已完成的對話唔計。已經回覆咗的訊息唔當逾時。可派單同事累積 3 次逾時，會暫停公司線自動派單 7 日；暫停七日後自動恢復輪候，唔使管理員人手恢復，伺服器重啟都一樣。Tony、Benjamin、Vivian、Ken 唔參與自動派單，逾時會通知但唔會因此暫停。已派咗嘅留言維持原負責人。</p>`
+       <p class="muted">未完成對話入面、尚未有同事回覆的客戶訊息都要計回覆時限，包括上線前已收到但一直未覆的訊息。未覆的舊訊息由第一次檢查重新計時，之前等咗幾多日唔計；如果開始嗰刻係 23:00 至 09:00，就由 09:00 先計。星期一至六 2 小時，星期日 3 小時。上線之後的新訊息由送到開始計，每日 23:00 至 09:00 唔計時。已完成的對話唔計。已經回覆咗的訊息唔當逾時。可派單同事累積 3 次逾時，第一次暫停公司線自動派單 3 日，之後再累積 3 次就暫停 7 日；每次開始暫停都把次數歸零。到期自動恢復輪候，唔使管理員人手恢復，伺服器重啟都一樣。Tony、Benjamin、Vivian、Ken 唔參與自動派單，逾時會通知但唔會因此暫停。已派咗嘅留言維持原負責人。</p>`
     : `<p class="muted">你只可以處理派咗畀你嘅留言。改派只限管理員。個人 WhatsApp 由管理員綁定。</p>`;
   const slaHead = sla ? `<th>逾時次數</th><th>自動派單</th>` : "";
 

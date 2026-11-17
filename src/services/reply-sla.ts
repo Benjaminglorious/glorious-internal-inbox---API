@@ -1,14 +1,17 @@
 import { db } from "../db";
 import {
   REPLY_SLA_CHECK_MS,
+  REPLY_SLA_FIRST_SUSPEND_DAYS,
+  REPLY_SLA_FIRST_SUSPEND_MS,
+  REPLY_SLA_LATER_SUSPEND_DAYS,
+  REPLY_SLA_LATER_SUSPEND_MS,
   REPLY_SLA_NOTIFY_USERNAMES,
   REPLY_SLA_STRIKES,
-  REPLY_SLA_SUSPEND_MS,
 } from "../reply-sla-config";
 import { isAutoAssignExcluded } from "./assign";
 import { computeReplyDeadline, formatUtcTimestamp } from "./reply-sla-clock";
 import { pushToStaff } from "./push";
-import { parseStoredTimestamp } from "../time";
+import { formatStaffTimestamp, parseStoredTimestamp } from "../time";
 
 /**
  * 每則未完成對話入面、尚未有同事回覆的客戶入站（新留言，或者之後嘅 inbound 再留言）
@@ -27,6 +30,8 @@ import { parseStoredTimestamp } from "../time";
  * 客戶再留言、系統冇員工 id 嘅訊息都唔算。Meta echo 喺 webhook 已經丟棄；
  * 電郵自動回覆唔會入庫。
  *
+ * 第一次累積 3 次逾時暫停公司線自動派單 3 日；之後每次再累積 3 次暫停 7 日。
+ * suspensions_started 記已經開過幾次，重啟都記得。每次開始暫停都把本輪次數歸零。
  * 暫停只係唔再入公司線輪流。登入同已派咗嘅留言唔會收。
  * 七日到期靠資料庫嘅 suspended_until 同而家時間比較，唔靠記憶體旗標。
  * 清理欄位失敗都唔會擋住派單。伺服器喺暫停期間重啟，到期一樣自動回到輪流。
@@ -76,6 +81,7 @@ interface StaffStateRow {
   delay_count: number;
   suspended_from: string | null;
   suspended_until: string | null;
+  suspensions_started: number;
 }
 
 interface NoticeStaff {
@@ -108,6 +114,8 @@ export interface StaffSlaOverview {
   delayCount: number;
   /** 仍然生效嘅暫停到期（UTC 文字）。已到期或未暫停係 null。 */
   suspendedUntil: string | null;
+  /** 而家呢次暫停係 3 日定 7 日。未暫停係 null。 */
+  suspendDays: 3 | 7 | null;
   poolExcluded: boolean;
 }
 
@@ -117,7 +125,8 @@ export function loadStaffSlaOverview(now = new Date()): Map<number, StaffSlaOver
     .prepare(
       `SELECT s.id, s.username,
               COALESCE(sla.delay_count, 0) AS delay_count,
-              sla.suspended_until AS suspended_until
+              sla.suspended_until AS suspended_until,
+              COALESCE(sla.suspensions_started, 0) AS suspensions_started
        FROM staff s
        LEFT JOIN staff_reply_sla sla ON sla.staff_id = s.id`
     )
@@ -126,17 +135,105 @@ export function loadStaffSlaOverview(now = new Date()): Map<number, StaffSlaOver
     username: string;
     delay_count: number;
     suspended_until: string | null;
+    suspensions_started: number;
   }>;
   const map = new Map<number, StaffSlaOverview>();
   for (const row of rows) {
     const until = row.suspended_until && row.suspended_until > stamp ? row.suspended_until : null;
+    const started = Number(row.suspensions_started) || 0;
     map.set(Number(row.id), {
       delayCount: Number(row.delay_count) || 0,
       suspendedUntil: until,
+      suspendDays: until ? (started >= 2 ? 7 : 3) : null,
       poolExcluded: isAutoAssignExcluded(row.username),
     });
   }
   return map;
+}
+
+export interface OwnSlaStatus {
+  delay_count: number;
+  suspended: boolean;
+  suspend_days: 3 | 7 | null;
+  suspended_until: string | null;
+  banner: string | null;
+}
+
+/** 同事自己嘅留言箱用。暫停到期就冇 banner。 */
+export function ownSlaStatus(staffId: number, now = new Date()): OwnSlaStatus {
+  const empty: OwnSlaStatus = {
+    delay_count: 0,
+    suspended: false,
+    suspend_days: null,
+    suspended_until: null,
+    banner: null,
+  };
+  if (!Number.isInteger(staffId) || staffId <= 0) return empty;
+  const row = db
+    .prepare(
+      `SELECT s.username, COALESCE(sla.delay_count, 0) AS delay_count,
+              sla.suspended_until AS suspended_until,
+              COALESCE(sla.suspensions_started, 0) AS suspensions_started
+       FROM staff s
+       LEFT JOIN staff_reply_sla sla ON sla.staff_id = s.id
+       WHERE s.id = ?`
+    )
+    .get(staffId) as
+    | {
+        username: string;
+        delay_count: number;
+        suspended_until: string | null;
+        suspensions_started: number;
+      }
+    | undefined;
+  if (!row) return empty;
+  const stamp = formatUtcTimestamp(now);
+  const active =
+    !isAutoAssignExcluded(row.username) &&
+    row.suspended_until != null &&
+    row.suspended_until > stamp;
+  const started = Number(row.suspensions_started) || 0;
+  const suspendDays: 3 | 7 | null = active ? (started >= 2 ? 7 : 3) : null;
+  const untilLabel = active && row.suspended_until ? formatStaffTimestamp(row.suspended_until, "utc") : null;
+  const banner =
+    active && suspendDays && untilLabel
+      ? `你已累積 3 次逾時回覆。自動派單已暫停${suspendDays === 3 ? "三日" : "七日"}，至 ${untilLabel} 到期自動恢復。`
+      : null;
+  return {
+    delay_count: Number(row.delay_count) || 0,
+    suspended: active,
+    suspend_days: suspendDays,
+    suspended_until: untilLabel,
+    banner,
+  };
+}
+
+/** 仍然未有同事回覆的已逾時入站。assigneeStaffId 為 null 就係全部。 */
+export function overdueUnansweredCommentIds(assigneeStaffId: number | null): Set<number> {
+  const sql = `SELECT DISTINCT s.comment_id AS id
+     FROM reply_sla s
+     JOIN comments c ON c.id = s.comment_id
+     WHERE s.delay_recorded_at IS NOT NULL
+       AND s.skipped_at IS NULL
+       AND c.status != 'done'
+       ${assigneeStaffId == null ? "" : "AND c.assignee_staff_id = ?"}
+       AND NOT EXISTS (
+         SELECT 1 FROM comment_replies r
+         WHERE r.comment_id = s.comment_id
+           AND r.direction = 'outbound'
+           AND r.staff_id IS NOT NULL
+           AND (
+             (s.inbound_reply_id IS NULL AND r.created_at >= s.inbound_at)
+             OR (
+               s.inbound_reply_id IS NOT NULL
+               AND (r.created_at > s.inbound_at OR (r.created_at = s.inbound_at AND r.id > s.inbound_reply_id))
+             )
+           )
+       )`;
+  const rows = (
+    assigneeStaffId == null ? db.prepare(sql).all() : db.prepare(sql).all(assigneeStaffId)
+  ) as Array<{ id: number }>;
+  return new Set(rows.map((row) => Number(row.id)));
 }
 
 export function latestSlaNoticeId(staffId: number): number {
@@ -355,20 +452,43 @@ function noticeRecipients(): NoticeStaff[] {
   return picked;
 }
 
+function whichInbound(inboundReplyId: number | null): string {
+  return inboundReplyId == null ? "客戶首則" : `客戶訊息 #${inboundReplyId}`;
+}
+
+function pausePhrase(days: 3 | 7): string {
+  return days === REPLY_SLA_FIRST_SUSPEND_DAYS ? "三日" : "七日";
+}
+
 function overdueText(input: {
   staffName: string;
   commentId: number;
   inboundReplyId: number | null;
   suspended: boolean;
+  suspendDays: 3 | 7 | null;
   unassigned: boolean;
 }): string {
-  const which =
-    input.inboundReplyId == null ? "客戶首則" : `客戶訊息 #${input.inboundReplyId}`;
+  const which = whichInbound(input.inboundReplyId);
   const lead = input.unassigned
     ? `未有負責人。留言 #${input.commentId}（${which}）回覆已逾時，仍未有同事回覆。這次沒有計入同事逾時次數。`
     : `${input.staffName} 回覆已逾時。留言 #${input.commentId}（${which}）已超過回覆時限，仍未有同事回覆。`;
-  if (!input.suspended) return lead;
-  return `${lead}${input.staffName} 已累積 ${REPLY_SLA_STRIKES} 次逾時，暫停自動派單一星期。`;
+  if (!input.suspended || !input.suspendDays) return lead;
+  return `${lead}${input.staffName} 已累積 ${REPLY_SLA_STRIKES} 次逾時，暫停自動派單${pausePhrase(input.suspendDays)}。`;
+}
+
+function assigneeOverdueText(input: {
+  commentId: number;
+  inboundReplyId: number | null;
+  delayCount: number;
+  suspended: boolean;
+  suspendDays: 3 | 7 | null;
+}): string {
+  const which = whichInbound(input.inboundReplyId);
+  const lead = `你的回覆已逾時。留言 #${input.commentId}（${which}）已超過回覆時限，仍未有同事回覆。`;
+  if (input.suspended && input.suspendDays) {
+    return `${lead}你已累積 ${REPLY_SLA_STRIKES} 次逾時，自動派單暫停${pausePhrase(input.suspendDays)}，到期自動恢復。`;
+  }
+  return `${lead}你而家累積 ${input.delayCount}/${REPLY_SLA_STRIKES} 次逾時。`;
 }
 
 function upsertStaffState(
@@ -376,32 +496,36 @@ function upsertStaffState(
   delayCount: number,
   suspendedFrom: string | null,
   suspendedUntil: string | null,
+  suspensionsStarted: number,
   stamp: string
 ): void {
   db.prepare(
-    `INSERT INTO staff_reply_sla (staff_id, delay_count, suspended_from, suspended_until, updated_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO staff_reply_sla (
+       staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at
+     )
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(staff_id) DO UPDATE SET
        delay_count = excluded.delay_count,
        suspended_from = excluded.suspended_from,
        suspended_until = excluded.suspended_until,
+       suspensions_started = excluded.suspensions_started,
        updated_at = excluded.updated_at`
-  ).run(staffId, delayCount, suspendedFrom, suspendedUntil, stamp);
+  ).run(staffId, delayCount, suspendedFrom, suspendedUntil, suspensionsStarted, stamp);
 }
 
 function settleOne(caseId: number, now: Date, allowDelay: boolean): "met" | "delay" | "skip" | "open" {
-  const settled = db.transaction((): { kind: "met" | "delay" | "skip" | "open"; push: SlaNoticePush | null } => {
+  const settled = db.transaction((): { kind: "met" | "delay" | "skip" | "open"; pushes: SlaNoticePush[] } => {
     const row = db
       .prepare(
         `SELECT id, comment_id, inbound_reply_id, inbound_at, due_at, met_at, delay_recorded_at
          FROM reply_sla WHERE id = ?`
       )
       .get(caseId) as SlaCaseRow | undefined;
-    if (!row || row.met_at || row.delay_recorded_at) return { kind: "skip", push: null };
+    if (!row || row.met_at || row.delay_recorded_at) return { kind: "skip", pushes: [] };
     const skippedAlready = db.prepare(`SELECT skipped_at FROM reply_sla WHERE id = ?`).get(row.id) as
       | { skipped_at: string | null }
       | undefined;
-    if (skippedAlready?.skipped_at) return { kind: "skip", push: null };
+    if (skippedAlready?.skipped_at) return { kind: "skip", pushes: [] };
     const reply = firstStaffReply(row);
     if (reply && reply.created_at <= row.due_at) {
       const marked = db
@@ -411,7 +535,7 @@ function settleOne(caseId: number, now: Date, allowDelay: boolean): "met" | "del
            WHERE id = ? AND met_at IS NULL AND delay_recorded_at IS NULL AND skipped_at IS NULL`
         )
         .run(reply.created_at, reply.id, row.id);
-      return { kind: marked.changes === 1 ? "met" : "skip", push: null };
+      return { kind: marked.changes === 1 ? "met" : "skip", pushes: [] };
     }
 
     const comment = db
@@ -424,9 +548,9 @@ function settleOne(caseId: number, now: Date, allowDelay: boolean): "met" | "del
          SET skipped_at = ?
          WHERE id = ? AND met_at IS NULL AND delay_recorded_at IS NULL AND skipped_at IS NULL`
       ).run(stamp, row.id);
-      return { kind: "skip", push: null };
+      return { kind: "skip", pushes: [] };
     }
-    if (!allowDelay) return { kind: "open", push: null };
+    if (!allowDelay) return { kind: "open", pushes: [] };
 
     const staffId = comment.assignee_staff_id ?? null;
     const staff = staffId
@@ -441,67 +565,94 @@ function settleOne(caseId: number, now: Date, allowDelay: boolean): "met" | "del
          WHERE id = ? AND met_at IS NULL AND delay_recorded_at IS NULL AND skipped_at IS NULL`
       )
       .run(stamp, staff ? staff.id : null, stamp, row.id);
-    if (claimed.changes !== 1) return { kind: "skip", push: null };
+    if (claimed.changes !== 1) return { kind: "skip", pushes: [] };
 
     let suspended = false;
+    let suspendDays: 3 | 7 | null = null;
+    let assigneeCount = 0;
     if (staff) {
       const existing = db
         .prepare(
-          `SELECT delay_count, suspended_from, suspended_until
+          `SELECT delay_count, suspended_from, suspended_until, suspensions_started
            FROM staff_reply_sla WHERE staff_id = ?`
         )
         .get(staff.id) as StaffStateRow | undefined;
       const count = (existing ? Number(existing.delay_count) : 0) + 1;
+      const started = existing ? Number(existing.suspensions_started) || 0 : 0;
+      assigneeCount = count;
       if (isAutoAssignExcluded(staff.username)) {
-        upsertStaffState(staff.id, count, null, null, stamp);
+        upsertStaffState(staff.id, count, null, null, started, stamp);
       } else if (count >= REPLY_SLA_STRIKES) {
-        const until = formatUtcTimestamp(new Date(now.getTime() + REPLY_SLA_SUSPEND_MS));
-        upsertStaffState(staff.id, 0, stamp, until, stamp);
+        suspendDays = started === 0 ? REPLY_SLA_FIRST_SUSPEND_DAYS : REPLY_SLA_LATER_SUSPEND_DAYS;
+        const span = suspendDays === REPLY_SLA_FIRST_SUSPEND_DAYS ? REPLY_SLA_FIRST_SUSPEND_MS : REPLY_SLA_LATER_SUSPEND_MS;
+        const until = formatUtcTimestamp(new Date(now.getTime() + span));
+        upsertStaffState(staff.id, 0, stamp, until, started + 1, stamp);
         suspended = true;
+        assigneeCount = REPLY_SLA_STRIKES;
       } else {
         upsertStaffState(
           staff.id,
           count,
           existing?.suspended_from ?? null,
           existing?.suspended_until ?? null,
+          started,
           stamp
         );
       }
     }
 
-    const body = overdueText({
+    const adminBody = overdueText({
       staffName: staff?.display_name || "未有負責人",
       commentId: row.comment_id,
       inboundReplyId: row.inbound_reply_id,
       suspended,
+      suspendDays,
       unassigned: !staff,
     });
     const recipients = noticeRecipients();
-    const title = "回覆逾時";
     const url = `/comments/${row.comment_id}`;
-    for (const recipient of recipients) {
+    const tag = `sla-${row.id}`.slice(0, 64);
+    const drafts: Array<{ staffId: number; title: string; body: string }> = recipients.map((recipient) => ({
+      staffId: recipient.id,
+      title: "回覆逾時",
+      body: adminBody,
+    }));
+    if (staff && !recipients.some((recipient) => recipient.id === staff.id)) {
+      drafts.push({
+        staffId: staff.id,
+        title: "你的回覆已逾時",
+        body: assigneeOverdueText({
+          commentId: row.comment_id,
+          inboundReplyId: row.inbound_reply_id,
+          delayCount: assigneeCount,
+          suspended,
+          suspendDays,
+        }),
+      });
+    }
+    for (const draft of drafts) {
       db.prepare(
         `INSERT INTO staff_notices (staff_id, kind, title, body, url, comment_id)
          VALUES (?, 'reply_sla', ?, ?, ?, ?)`
-      ).run(recipient.id, title, body, url, row.comment_id);
+      ).run(draft.staffId, draft.title, draft.body, url, row.comment_id);
     }
-    return {
-      kind: "delay",
-      push: {
-        staffIds: recipients.map((recipient) => recipient.id),
-        title,
-        body,
-        url,
-        tag: `sla-${row.id}`.slice(0, 64),
-      },
-    };
+    const pushes: SlaNoticePush[] = [];
+    for (const draft of drafts) {
+      const same = pushes.find((item) => item.body === draft.body && item.title === draft.title);
+      if (same) same.staffIds.push(draft.staffId);
+      else pushes.push({ staffIds: [draft.staffId], title: draft.title, body: draft.body, url, tag });
+    }
+    return { kind: "delay", pushes };
   })();
 
-  if (settled.kind === "delay" && settled.push && settled.push.staffIds.length) {
-    try {
-      pushImpl(settled.push);
-    } catch (err) {
-      console.error("[sla] 推送失敗", err instanceof Error ? err.message : err);
+  if (settled.kind === "delay") {
+    for (const push of settled.pushes) {
+      if (!push.staffIds.length) continue;
+      try {
+        pushImpl(push);
+      } catch (err) {
+        console.error("[sla] 推送失敗", err instanceof Error ? err.message : err);
+      }
     }
   }
   return settled.kind;

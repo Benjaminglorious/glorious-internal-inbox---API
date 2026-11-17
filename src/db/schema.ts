@@ -287,11 +287,13 @@ CREATE INDEX IF NOT EXISTS idx_comment_replies_inbound_created
   WHERE direction = 'inbound';
 
 -- 本輪逾時次數同暫停自動派單到期（UTC）。到期即自動回到輪流，唔使管理員恢復。
+-- suspensions_started 記已經開過幾次 3 次暫停：0 即下次係 3 日，1 或以上即下次係 7 日。重啟唔會清。
 CREATE TABLE IF NOT EXISTS staff_reply_sla (
   staff_id INTEGER PRIMARY KEY REFERENCES staff(id) ON DELETE CASCADE,
   delay_count INTEGER NOT NULL DEFAULT 0,
   suspended_from TEXT,
   suspended_until TEXT,
+  suspensions_started INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

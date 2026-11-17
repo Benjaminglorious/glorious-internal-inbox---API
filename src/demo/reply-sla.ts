@@ -9,7 +9,7 @@ import type { Server } from "http";
 import type { AddressInfo } from "net";
 import os from "os";
 import path from "path";
-import { REPLY_SLA_SUSPEND_MS } from "../reply-sla-config";
+import { REPLY_SLA_FIRST_SUSPEND_MS, REPLY_SLA_LATER_SUSPEND_MS } from "../reply-sla-config";
 import { computeReplyDeadline, formatUtcTimestamp } from "../services/reply-sla-clock";
 import { parseStoredTimestamp } from "../time";
 
@@ -398,7 +398,9 @@ async function dbCases(): Promise<void> {
       !lateNotices[0].includes("暫停") &&
       latePushes.length === 1 &&
       latePushes[0].staffIds.join(",") === [idOf("tony"), idOf("eddie"), idOf("benjamin")].join(",") &&
-      pushes.length === beforePushes + 3,
+      latePushes.length === 1 &&
+      pushes.filter((item) => item.url === `/comments/${lateReply}`).some((item) => item.body.includes("你的回覆已逾時")) &&
+      pushes.length === beforePushes + 5,
     lateNotices[0]
   );
   const pushesAfterLate = pushes.length;
@@ -432,7 +434,7 @@ async function dbCases(): Promise<void> {
   slaMod.scanReplySla(lateNow);
   check(
     "改派之後唔會再計一次",
-    stateOf(idOf("sam")).delay_count === 2 && stateOf(idOf("eddie")).delay_count === 2 && noticeBodies(moved).length === 3
+    stateOf(idOf("sam")).delay_count === 2 && stateOf(idOf("eddie")).delay_count === 2 && noticeBodies(moved).length === 4
   );
 
   const orphan = addComment(null, T_IN);
@@ -458,26 +460,38 @@ async function dbCases(): Promise<void> {
   ];
   const pushesBeforeStrikes = pushes.length;
   slaMod.scanReplySla(lateNow);
-  const until = formatUtcTimestamp(new Date(lateNow.getTime() + REPLY_SLA_SUSPEND_MS));
+  const until = formatUtcTimestamp(new Date(lateNow.getTime() + REPLY_SLA_FIRST_SUSPEND_MS));
   const wing = stateOf(idOf("wing"));
+  const wingStarted = appDb
+    .prepare(`SELECT suspensions_started AS n FROM staff_reply_sla WHERE staff_id = ?`)
+    .get(idOf("wing")) as { n: number };
   check(
-    "第三次逾時暫停七日、次數歸零、帳號仍然可以登入",
-    wing.delay_count === 0 && wing.suspended_until === until && wing.active === 1,
-    JSON.stringify(wing)
+    "第一次累積三次暫停 3 日、次數歸零、帳號仍然可以登入",
+    wing.delay_count === 0 && wing.suspended_until === until && wing.active === 1 && Number(wingStarted.n) === 1,
+    JSON.stringify({ wing, started: wingStarted.n })
   );
   check("頭兩次通知唔講暫停", !noticeBodies(wingComments[0])[0].includes("暫停") && !noticeBodies(wingComments[1])[0].includes("暫停"));
   const third = noticeBodies(wingComments[2])[0] || "";
+  const thirdBodies = noticeBodies(wingComments[2]);
+  const thirdOwn = thirdBodies.find((body) => body.includes("你的回覆已逾時")) || "";
   check(
-    "第三次通知講暫停自動派單一星期",
+    "第三次通知管理員係暫停三日，同時通知負責人自己",
     third.includes("Wing Cheng") &&
       third.includes(`留言 #${wingComments[2]}`) &&
       third.includes("逾時") &&
-      third.includes("暫停自動派單一星期") &&
-      third.includes("3 次"),
-    third
+      third.includes("暫停自動派單三日") &&
+      third.includes("3 次") &&
+      thirdOwn.includes("你的回覆已逾時") &&
+      thirdOwn.includes(`留言 #${wingComments[2]}`) &&
+      thirdOwn.includes("客戶首則") &&
+      thirdOwn.includes("暫停三日") &&
+      thirdBodies.length === 4,
+    thirdOwn || third
   );
+  const firstOwn = noticeBodies(wingComments[0]).find((body) => body.includes("你而家累積")) || "";
+  check("第一次逾時通知負責人自己係 1/3", firstOwn.includes("1/3") && firstOwn.includes(`留言 #${wingComments[0]}`));
   slaMod.scanReplySla(lateNow);
-  check("三次暫停的通知唔會重覆", pushes.length === pushesBeforeStrikes + 3 && noticeBodies(wingComments[2]).length === 3);
+  check("三次暫停的通知唔會重覆", pushes.length === pushesBeforeStrikes + 6 && noticeBodies(wingComments[2]).length === 4);
 
   setCursor(idOf("eddie"), "eddie");
   const skipped = [
@@ -514,15 +528,21 @@ async function dbCases(): Promise<void> {
   );
   const cycle = [addComment(idOf("wing"), T_IN), addComment(idOf("wing"), T_IN)];
   slaMod.scanReplySla(duringNow);
-  const renewedUntil = formatUtcTimestamp(new Date(duringNow.getTime() + REPLY_SLA_SUSPEND_MS));
+  const renewedUntil = formatUtcTimestamp(new Date(duringNow.getTime() + REPLY_SLA_LATER_SUSPEND_MS));
   const renewed = stateOf(idOf("wing"));
+  const renewedStarted = appDb
+    .prepare(`SELECT suspensions_started AS n FROM staff_reply_sla WHERE staff_id = ?`)
+    .get(idOf("wing")) as { n: number };
+  const renewedOwn = noticeBodies(cycle[1]).find((body) => body.includes("你的回覆已逾時")) || "";
   check(
-    "暫停期間再累積到三次會重新暫停七日，次數再歸零",
+    "之後再累積三次會暫停七日，次數再歸零",
     renewed.delay_count === 0 &&
       renewed.suspended_until === renewedUntil &&
       renewed.active === 1 &&
+      Number(renewedStarted.n) === 2 &&
       !noticeBodies(cycle[0])[0].includes("暫停") &&
-      noticeBodies(cycle[1])[0].includes("暫停自動派單一星期"),
+      noticeBodies(cycle[1])[0].includes("暫停自動派單七日") &&
+      renewedOwn.includes("暫停七日"),
     JSON.stringify(renewed)
   );
 
@@ -588,7 +608,8 @@ async function dbCases(): Promise<void> {
        const id = pickNextAutoAssignStaffId();
        const row = id ? db.prepare("SELECT username FROM staff WHERE id = ?").get(id) : null;
        const epoch = db.prepare("SELECT effective_at FROM reply_sla_epoch WHERE id = 1").get();
-       fs.writeFileSync(process.env.SLA_PICK_OUT, JSON.stringify({ id: id, username: row && row.username, effective_at: epoch && epoch.effective_at }));`,
+       const wingState = db.prepare("SELECT suspensions_started AS n FROM staff_reply_sla sla JOIN staff s ON s.id = sla.staff_id WHERE s.username = 'wing'").get();
+       fs.writeFileSync(process.env.SLA_PICK_OUT, JSON.stringify({ id: id, username: row && row.username, effective_at: epoch && epoch.effective_at, suspensions_started: wingState && wingState.n }));`,
     ],
     {
       cwd: process.cwd(),
@@ -603,11 +624,20 @@ async function dbCases(): Promise<void> {
     }
   );
   const fresh = fs.existsSync(outFile)
-    ? (JSON.parse(fs.readFileSync(outFile, "utf8")) as { id: number; username: string; effective_at?: string })
+    ? (JSON.parse(fs.readFileSync(outFile, "utf8")) as {
+        id: number;
+        username: string;
+        effective_at?: string;
+        suspensions_started?: number;
+      })
     : null;
   check(
-    "伺服器喺暫停中途重啟，到期後新進程不用管理員就再派給他，生效時間亦唔會重設",
-    child.status === 0 && fresh?.username === "wing" && fresh.id === idOf("wing") && fresh.effective_at === GO_LIVE,
+    "伺服器喺暫停中途重啟，到期後新進程不用管理員就再派給他，生效時間同暫停輪次都唔會重設",
+    child.status === 0 &&
+      fresh?.username === "wing" &&
+      fresh.id === idOf("wing") &&
+      fresh.effective_at === GO_LIVE &&
+      Number(fresh.suspensions_started) === 2,
     child.stderr?.slice(-400) || JSON.stringify(fresh)
   );
 
@@ -687,9 +717,10 @@ async function dbCases(): Promise<void> {
       "管理員看到逾時次數、暫停到期同自動恢復",
       tonyPage.status === 200 &&
         tonyHtml.includes("逾時次數") &&
-        tonyHtml.includes("暫停至 2999-01-01 08:00:00 HKT（到期自動恢復輪候）") &&
         tonyHtml.includes("未覆的舊訊息由第一次檢查重新計時") &&
-        tonyHtml.includes("暫停七日後自動恢復輪候，唔使管理員人手恢復") &&
+        tonyHtml.includes("第一次暫停公司線自動派單 3 日") &&
+        tonyHtml.includes("唔使管理員人手恢復") &&
+        tonyHtml.includes("暫停至 2999-01-01 08:00:00 HKT（到期自動恢復輪候，今次 7 日）") &&
         tonyHtml.includes(">2</td>") &&
         tonyHtml.includes("不參與自動派單") &&
         !tonyHtml.includes("手動恢復"),
@@ -699,12 +730,60 @@ async function dbCases(): Promise<void> {
     const wingHtml = await wingPage.text();
     check("同事名單的逾時狀態只給管理員看", wingPage.status === 200 && !wingHtml.includes("逾時次數") && !wingHtml.includes("暫停至"));
 
+    const visibleLate = addComment(idOf("wing"), "2026-11-01 04:00:00");
+    appDb
+      .prepare(
+        `INSERT INTO reply_sla (
+           comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds,
+           delay_recorded_at, delay_staff_id
+         ) VALUES (?, NULL, ?, ?, ?, 7200, ?, ?)`
+      )
+      .run(visibleLate, "2026-11-01 04:00:00", GO_LIVE, OLD_DUE, T_LATE, idOf("wing"));
+    const overdueForWing = slaMod.overdueUnansweredCommentIds(idOf("wing"));
+    check("負責人有未覆的逾時留言", overdueForWing.has(visibleLate), String(overdueForWing.size));
+    const wingInbox = await fetch(`${base}/`, { headers: { cookie: wingCookie } });
+    const wingInboxHtml = await wingInbox.text();
+    const wingLive = await fetch(`${base}/api/comments/updates?since_id=0`, {
+      headers: { cookie: wingCookie, accept: "application/json" },
+    });
+    const wingLiveJson = (await wingLive.json()) as {
+      sla_self?: { suspended?: boolean; suspend_days?: number; banner?: string | null };
+    };
+    check(
+      "負責人留言箱標示已逾時，並且見到自己的暫停橫額",
+      wingInbox.status === 200 &&
+        wingInboxHtml.includes("已逾時") &&
+        wingInboxHtml.includes("你已累積 3 次逾時回覆") &&
+        wingInboxHtml.includes("自動派單已暫停七日") &&
+        wingInboxHtml.includes("到期自動恢復") &&
+        wingLiveJson.sla_self?.suspended === true &&
+        wingLiveJson.sla_self.suspend_days === 7 &&
+        (wingLiveJson.sla_self.banner || "").includes("暫停七日"),
+      wingLiveJson.sla_self?.banner || String(wingInbox.status)
+    );
+
     appDb.prepare(`UPDATE staff_reply_sla SET suspended_until = ? WHERE staff_id = ?`).run(PAST, idOf("wing"));
+    slaMod.scanReplySla(new Date());
     const afterPage = await fetch(`${base}/staff`, { headers: { cookie: tonyCookie } });
     const afterHtml = await afterPage.text();
     check(
       "頁面用到期時間判斷已恢復，不用管理員按鈕",
       afterHtml.includes("輪候中") && !afterHtml.includes("暫停至") && !afterHtml.includes("恢復派單")
+    );
+    const clearedInbox = await fetch(`${base}/`, { headers: { cookie: wingCookie } });
+    const clearedHtml = await clearedInbox.text();
+    const clearedLive = await fetch(`${base}/api/comments/updates?since_id=0`, {
+      headers: { cookie: wingCookie, accept: "application/json" },
+    });
+    const clearedJson = (await clearedLive.json()) as {
+      sla_self?: { suspended?: boolean; banner?: string | null };
+    };
+    check(
+      "暫停到期後橫額自己消失，未覆的留言仍標已逾時",
+      clearedHtml.includes("已逾時") &&
+        !clearedHtml.includes("自動派單已暫停") &&
+        clearedJson.sla_self?.suspended === false &&
+        !clearedJson.sla_self?.banner
     );
 
     const latestNotice = slaMod.latestSlaNoticeId(idOf("tony"));
@@ -738,7 +817,10 @@ async function dbCases(): Promise<void> {
         updatesJson.sla_notices[0].url === `/comments/${newest}` &&
         updatesJson.sla_notices[0].body.includes("Jason Cheng") &&
         againJson.sla_notices?.length === 0 &&
-        wingJson.sla_notices?.length === 0 &&
+        (wingJson.sla_notices || []).every((item) => {
+          const notice = item as { url?: string };
+          return notice.url !== `/comments/${newest}`;
+        }) &&
         bad.status === 400,
       JSON.stringify(updatesJson.sla_notices)
     );
