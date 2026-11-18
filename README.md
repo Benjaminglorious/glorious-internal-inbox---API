@@ -561,7 +561,7 @@ Verify token = `WEBHOOK_VERIFY_TOKEN`。
 
 `GET /api/webhooks/meta?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...` 會回 challenge。
 
-`POST /api/webhooks/meta`：認得 Page `feed` 留言、Messenger `messaging`、Instagram `comments`／私訊時，會 `upsertSiteComment`（`facebook` 或 `instagram`）。公開留言寫 `meta_surface=comment` 同留言者 id；私訊寫 `meta_surface=message`、`external_id` 用 mid、`meta_sender_id` 用 PSID／IGSID。狀態回呼等會 `{ "ok": true, "ignored": true }`。有設 `META_PAGE_ID` 或 `META_IG_BUSINESS_ACCOUNT_ID` 時，專頁／IG 帳號自己發出嘅留言同私訊唔入庫。有設 `META_APP_SECRET` 就驗證 `X-Hub-Signature-256`；未設就跳過。
+`POST /api/webhooks/meta`：認得 Page `feed` 留言、Messenger `messaging`、`messaging_referrals`、Instagram `comments`／私訊時，會 `upsertSiteComment`（`facebook` 或 `instagram`）。公開留言寫 `meta_surface=comment` 同留言者 id；私訊寫 `meta_surface=message`、`external_id` 用 mid、`meta_sender_id` 用 PSID／IGSID。由帖文、Reels、限時動態或廣告開嘅私訊另外寫 `meta_post_id`、`meta_post_permalink`、`meta_post_caption`（客戶句子唔會當成帖文）。`entry.messaging_referrals`，同專頁歡迎訊息／`is_echo` 上面嘅 referral，都會留喺客戶對話；專頁自己嘅句子唔入庫。已有未完成對話時，呢個 referral 只補空白帖文欄，唔加假客戶訊息。狀態回呼等會 `{ "ok": true, "ignored": true }`。有設 `META_PAGE_ID` 或 `META_IG_BUSINESS_ACCOUNT_ID` 時，專頁／IG 帳號自己發出嘅留言同私訊唔入庫。有設 `META_APP_SECRET` 就驗證 `X-Hub-Signature-256`；未設就跳過。
 
 **仍然需要 Tony／同事喺 Meta Developer Console 建立 App、訂閱欄位、完成 App Review，並將 Page 指派俾可以回覆嘅人。** 出站見下面「Facebook／Instagram 出站」。WhatsApp Cloud 收件用 `/api/webhooks/whatsapp`，POST 驗證同上面一樣（`X-Hub-Signature-256`；自訂 token 只係帶咗先至核對）。公司總機回覆出站用下面嘅 `WHATSAPP_ACCESS_TOKEN`，唔用 Page token。
 

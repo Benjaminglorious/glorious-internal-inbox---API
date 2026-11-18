@@ -7,8 +7,10 @@ import { placeholderFor, type MediaKind } from "./media";
  * 將 Meta Page／Instagram webhook JSON 拆成 upsertSiteComment 輸入。
  * 只處理認得嘅留言／私訊形狀；狀態回呼等會 ignored。
  * 公開留言記住 comment id；私訊記住 mid 同客戶 PSID／IGSID，出站先回得到。
- * 由帖文、限時動態或廣告開啟嘅私訊，另外記住 meta_post_*。客戶訊息正文唔會當成帖文。
- * META_PAGE_ID／META_IG_BUSINESS_ACCOUNT_ID 自己發出嘅事件唔入庫。
+ * 由帖文、限時動態、Reels 或廣告開啟嘅私訊，另外記住 meta_post_*。客戶訊息正文唔會當成帖文。
+ * 專頁歡迎訊息同 is_echo 唔入庫，但上面嘅 referral 會寫到客戶對話。
+ * entry.messaging_referrals 同 messaging 一樣處理。
+ * META_PAGE_ID／META_IG_BUSINESS_ACCOUNT_ID 自己發出嘅句子唔入庫。
  */
 
 export interface ParsedMetaWebhook {
@@ -68,7 +70,7 @@ function pushItem(
   externalId: string,
   authorName: string,
   body: string,
-  meta?: { senderId?: string; surface?: MetaSurface } & MetaPostBits
+  meta?: { senderId?: string; surface?: MetaSurface; referralOnly?: boolean } & MetaPostBits
 ): void {
   const id = externalId.trim();
   const text = body.trim();
@@ -87,6 +89,7 @@ function pushItem(
     meta_post_permalink: keepPost ? meta?.postPermalink ?? null : null,
     meta_post_caption: keepPost ? meta?.postCaption ?? null : null,
     attachments: meta?.attachments,
+    referral_only: meta?.referralOnly || undefined,
   });
 }
 
@@ -264,13 +267,16 @@ function openablePostPermalink(value: string): string | null {
   return null;
 }
 
-/** POST、STORY、ADS、IG_POST 這類先係帖文或廣告。ig.me／SHORTLINK 唔算。 */
+/** POST、STORY、REEL、ADS 這類先係帖文或廣告。ig.me／SHORTLINK 唔算。 */
 function isContentReferralSource(source: string): boolean {
   if (!source) return false;
   return source
     .split("_")
     .filter(Boolean)
-    .some((token) => token === "POST" || token === "STORY" || token === "ADS" || token === "AD");
+    .some(
+      (token) =>
+        token === "POST" || token === "STORY" || token === "REEL" || token === "REELS" || token === "ADS" || token === "AD"
+    );
 }
 
 function referralCaption(parts: string[]): string | null {
@@ -316,6 +322,8 @@ function readMessagingReferral(referral: unknown): MetaPostBits | null {
     openablePostPermalink(asString(record.permalink)) ||
     openablePostPermalink(asString(record.permalink_url)) ||
     openablePostPermalink(asString(record.url)) ||
+    openablePostPermalink(asString(record.referer_uri)) ||
+    openablePostPermalink(asString(record.refererUri)) ||
     openablePostPermalink(asString(ads?.source_url)) ||
     openablePostPermalink(asString(ads?.permalink)) ||
     openablePostPermalink(asString(ads?.permalink_url));
@@ -389,30 +397,120 @@ function messagingSender(event: Record<string, unknown>): { senderId: string; au
   return { senderId, author: fromName(sender) || senderId };
 }
 
-/** Messenger / IG messaging（entry.messaging[]），包括冇 message 嘅 referral。 */
+function isEchoMessage(message: Record<string, unknown> | null): boolean {
+  if (!message) return false;
+  const flag = message.is_echo;
+  return flag === true || flag === 1 || flag === "true" || flag === "1";
+}
+
+function isDeletedMessage(message: Record<string, unknown> | null): boolean {
+  if (!message) return false;
+  const flag = message.is_deleted;
+  return flag === true || flag === 1 || flag === "true" || flag === "1";
+}
+
+/** 專頁自己發、或者 Messenger 標成 echo。句子唔入庫，referral 另計。 */
+function isPageOwnedMessaging(senderId: string, message: Record<string, unknown> | null): boolean {
+  if (isOwnMetaActor(senderId)) return true;
+  return isEchoMessage(message);
+}
+
+/**
+ * Echo／歡迎訊息嘅 sender 係專頁，客戶係 recipient。
+ * 未設 META_PAGE_ID 時仍然用 recipient，避免把專頁 id 當成客戶。
+ */
+function customerOnPageEvent(
+  event: Record<string, unknown>,
+  senderId: string
+): { senderId: string; author: string } | null {
+  const recipient = asRecord(event.recipient);
+  const recipientId = actorId(recipient);
+  const sender = asRecord(event.sender);
+  if (recipientId && recipientId !== senderId && !isOwnMetaActor(recipientId)) {
+    return { senderId: recipientId, author: fromName(recipient) || recipientId };
+  }
+  if (senderId && !isOwnMetaActor(senderId)) {
+    return { senderId, author: fromName(sender) || senderId };
+  }
+  return null;
+}
+
+/** referral 可以喺 message.referral、event.referral，或者 event 本身（messaging_referrals）。 */
+function eventReferral(event: Record<string, unknown>): MetaPostBits | null {
+  if (event.referral) return readMessagingReferral(event.referral);
+  if (
+    event.source ||
+    event.ad_id ||
+    event.adId ||
+    event.ads_context_data ||
+    event.adsContextData ||
+    event.post_id ||
+    event.postId
+  ) {
+    return readMessagingReferral(event);
+  }
+  return null;
+}
+
+function applyPostBits(target: UpsertSiteCommentInput, post: MetaPostBits): void {
+  if (!target.meta_post_id && post.postId) target.meta_post_id = post.postId;
+  if (!target.meta_post_permalink && post.postPermalink) target.meta_post_permalink = post.postPermalink;
+  if (!target.meta_post_caption && post.postCaption) target.meta_post_caption = post.postCaption;
+}
+
+interface HeldPageReferral {
+  senderId: string;
+  author: string;
+  post: MetaPostBits;
+  externalId: string;
+}
+
+/** Messenger / IG messaging（entry.messaging[] 同 messaging_referrals），包括冇 message 嘅 referral。 */
 function parseMessaging(
   messaging: unknown[],
   source: SiteCommentSource,
   items: UpsertSiteCommentInput[]
 ): void {
+  const referralOnly = new Set<UpsertSiteCommentInput>();
+  const pageReferrals: HeldPageReferral[] = [];
+
+  const rememberReferral = (before: number): void => {
+    if (items.length === before + 1) referralOnly.add(items[items.length - 1]!);
+  };
+
   for (const raw of messaging) {
     const event = asRecord(raw);
     if (!event) continue;
     const { senderId, author } = messagingSender(event);
-    if (isOwnMetaActor(senderId)) continue;
     const postback = asRecord(event.postback);
     const message = asRecord(event.message);
     const post = mergePostBits(
       message ? readMessagingReferral(message.referral) : null,
-      readMessagingReferral(event.referral),
+      eventReferral(event),
       postback ? readMessagingReferral(postback.referral) : null,
       message ? readSharedPost(message) : null,
       message ? readStoryReply(message) : null
     );
 
+    if (isPageOwnedMessaging(senderId, message)) {
+      if (!post) continue;
+      const customer = customerOnPageEvent(event, senderId);
+      if (!customer) continue;
+      const stamp = asString(event.timestamp);
+      pageReferrals.push({
+        senderId: customer.senderId,
+        author: customer.author,
+        post,
+        externalId: `ref:${customer.senderId}:${post.postId || stamp || "open"}`.slice(0, 200),
+      });
+      console.log(
+        `[meta] 已保留專頁回聲或歡迎訊息上嘅帖文 referral（帖文 ${post.postId || "無編號"}）`
+      );
+      continue;
+    }
+
     if (message) {
-      if (message.is_echo === true || message.is_echo === "true") continue;
-      if (message.is_deleted === true || message.is_deleted === "true") continue;
+      if (isDeletedMessage(message)) continue;
       const mid = asString(message.mid) || asString(message.id);
       const text = asString(message.text).trim();
       const attachments = readDmAttachments(message);
@@ -435,12 +533,68 @@ function parseMessaging(
     const stamp = asString(event.timestamp);
     const postbackTitle = postback ? asString(postback.title).trim() : "";
     const mid = postback ? asString(postback.mid) : "";
+    const body = postbackTitle || REFERRAL_DM_BODY;
     const externalId = (mid || `ref:${senderId}:${post.postId || stamp || "open"}`).slice(0, 200);
-    pushItem(items, source, externalId, author, postbackTitle || REFERRAL_DM_BODY, {
+    const before = items.length;
+    pushItem(items, source, externalId, author, body, {
       senderId,
       surface: "message",
+      referralOnly: !postbackTitle,
       ...post,
     });
+    if (!postbackTitle) rememberReferral(before);
+  }
+
+  for (const held of pageReferrals) {
+    const existing = items.find(
+      (item) =>
+        item.source === source &&
+        item.meta_surface === "message" &&
+        item.meta_sender_id === held.senderId &&
+        !referralOnly.has(item)
+    );
+    if (existing) {
+      applyPostBits(existing, held.post);
+      continue;
+    }
+    const prior = items.find(
+      (item) =>
+        item.source === source && item.meta_surface === "message" && item.meta_sender_id === held.senderId
+    );
+    if (prior) {
+      applyPostBits(prior, held.post);
+      continue;
+    }
+    const before = items.length;
+    pushItem(items, source, held.externalId, held.author, REFERRAL_DM_BODY, {
+      senderId: held.senderId,
+      surface: "message",
+      referralOnly: true,
+      ...held.post,
+    });
+    rememberReferral(before);
+  }
+
+  for (const placeholder of [...referralOnly]) {
+    const idx = items.indexOf(placeholder);
+    if (idx < 0) continue;
+    const real = items.find(
+      (item) =>
+        item !== placeholder &&
+        !referralOnly.has(item) &&
+        item.source === placeholder.source &&
+        item.meta_surface === "message" &&
+        item.meta_sender_id &&
+        item.meta_sender_id === placeholder.meta_sender_id
+    );
+    if (!real) continue;
+    applyPostBits(real, {
+      postId: placeholder.meta_post_id,
+      postPermalink: placeholder.meta_post_permalink,
+      postCaption: placeholder.meta_post_caption,
+    });
+    items.splice(idx, 1);
+    referralOnly.delete(placeholder);
   }
 }
 
@@ -456,6 +610,11 @@ function parseEntry(entry: Record<string, unknown>, objectType: string, items: U
 
     if (field === "feed") {
       parseFeedChange(value, items);
+      continue;
+    }
+    if (field === "messaging_referrals" || field === "messaging_referral") {
+      const nested = asArray(value.messaging);
+      parseMessaging(nested.length ? nested : [value], defaultDmSource, items);
       continue;
     }
     if (field === "comments" || field === "live_comments") {
@@ -479,7 +638,11 @@ function parseEntry(entry: Record<string, unknown>, objectType: string, items: U
     }
   }
 
-  parseMessaging(asArray(entry.messaging), defaultDmSource, items);
+  parseMessaging(
+    [...asArray(entry.messaging), ...asArray(entry.messaging_referrals)],
+    defaultDmSource,
+    items
+  );
 }
 
 /**
@@ -512,9 +675,34 @@ export function parseMetaWebhookPayload(body: unknown): ParsedMetaWebhook {
     if (!entry) continue;
     parseEntry(entry, objectType || "page", items);
   }
+  foldReferralOnlyItems(items);
 
   if (items.length === 0) {
     return { items: [], ignored: true };
   }
   return { items, ignored: false };
+}
+
+/** 同一個 payload 入面，referral 占位同客戶句子合成一則，帖文欄留喺句子上。 */
+function foldReferralOnlyItems(items: UpsertSiteCommentInput[]): void {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const placeholder = items[i];
+    if (!placeholder?.referral_only) continue;
+    const real = items.find(
+      (item) =>
+        item !== placeholder &&
+        !item.referral_only &&
+        item.source === placeholder.source &&
+        item.meta_surface === "message" &&
+        Boolean(item.meta_sender_id) &&
+        item.meta_sender_id === placeholder.meta_sender_id
+    );
+    if (!real) continue;
+    applyPostBits(real, {
+      postId: placeholder.meta_post_id,
+      postPermalink: placeholder.meta_post_permalink,
+      postCaption: placeholder.meta_post_caption,
+    });
+    items.splice(i, 1);
+  }
 }
