@@ -3,6 +3,7 @@
  * 臨時 SQLite。Graph 用 mock fetch，唔會打去 Meta。
  */
 import { execFileSync } from "child_process";
+import { createRequire } from "module";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -13,6 +14,7 @@ import { COMPANY_WHATSAPP_PHONE } from "../config";
 import { remuxWebmOpusToOgg } from "../services/ogg-opus";
 
 const failures: string[] = [];
+const require = createRequire(__filename);
 const DEMO_PASSWORD = "Glorious2026!";
 const CUSTOMER = "85297770000";
 const STAFF_PHONE = "85261112222";
@@ -82,7 +84,143 @@ function bodyBuffer(body: unknown): Buffer {
   return Buffer.alloc(0);
 }
 
+type BatchFile = { name?: string; type?: string; voice?: boolean; file?: { name?: string; type?: string } };
+type BatchApi = {
+  MAX_STAFF_MEDIA_BATCH: number;
+  planStaffMediaSelection: (files: BatchFile[]) => { ok: boolean; error: string; files: BatchFile[] };
+  selectionStatus: (files: BatchFile[]) => string;
+  sendButtonLabel: (items: BatchFile[]) => string;
+  sendingStatus: (index: number, total: number) => string;
+  captionForStaffMedia: (items: BatchFile[], index: number, caption: string) => string;
+  reduceStaffMediaSend: (
+    state: { total: number; index: number; sent: number; statuses: string[] },
+    result: { ok: boolean; status: number; error: string; delivery: string; network?: boolean }
+  ) => { action: string; statusText: string; keepFrom: number; sent: number; statuses: string[]; delivery: string; error: string };
+  sentUrl: (commentId: string, delivery: string) => string;
+  errorUrl: (commentId: string, message: string) => string;
+};
+
+function checkStaffMediaBatch(): void {
+  const batch = require("../../public/staff-media-batch.js") as BatchApi;
+  const reassigned = "呢則留言已改派畀其他同事，請刷新頁面";
+  const ordered = [
+    { name: "b.jpg", type: "image/jpeg" },
+    { name: "a.jpg", type: "image/jpeg" },
+    { name: "c.png", type: "image/png" },
+  ];
+  const planned = batch.planStaffMediaSelection(ordered);
+  check(
+    "多張相片保持揀選次序",
+    planned.ok && planned.files.map((file) => file.name).join(",") === "b.jpg,a.jpg,c.png"
+  );
+  check(
+    "一張相片嘅提示維持原句",
+    batch.selectionStatus([{ name: "車頭.jpg", type: "image/jpeg" }]) === "已揀好「車頭.jpg」。撳發送媒體。"
+  );
+  check(
+    "多張相片提示講明張數同次序",
+    batch.selectionStatus(ordered) === "已揀好 3 張相片。會按揀選次序發送。撳發送媒體。" &&
+      batch.sendButtonLabel(ordered) === "發送 3 張相片"
+  );
+  check(
+    "夾雜影片時仍然一次送出，按鈕唔當全部係相片",
+    batch.selectionStatus([
+      { name: "a.jpg", type: "image/jpeg" },
+      { name: "clip.mp4", type: "video/mp4" },
+    ]) === "已揀好 2 個檔案。會按揀選次序發送。撳發送媒體。" &&
+      batch.sendButtonLabel([
+        { name: "a.jpg", type: "image/jpeg" },
+        { file: { name: "clip.mp4", type: "video/mp4" } },
+      ]) === "發送 2 個媒體"
+  );
+  const tooMany = Array.from({ length: batch.MAX_STAFF_MEDIA_BATCH + 1 }, (_, index) => ({
+    name: `${index}.jpg`,
+    type: "image/jpeg",
+  }));
+  const rejected = batch.planStaffMediaSelection(tooMany);
+  check("一次最多 30 個檔案", !rejected.ok && rejected.files.length === 0 && rejected.error.includes("30"));
+
+  const album = ordered.map((file) => ({ file, voice: false }));
+  check(
+    "多張相片嘅說明只加喺第一張",
+    batch.captionForStaffMedia(album, 0, "車相") === "車相" &&
+      batch.captionForStaffMedia(album, 1, "車相") === "" &&
+      batch.captionForStaffMedia(album, 2, "車相") === ""
+  );
+  check(
+    "單張相片仍然帶完整說明",
+    batch.captionForStaffMedia([{ file: ordered[0], voice: false }], 0, "車相") === "車相"
+  );
+  const audioThenPhotos = [
+    { voice: false, file: { name: "note.mp3", type: "audio/mpeg" } },
+    { voice: false, file: { name: "a.jpg", type: "image/jpeg" } },
+    { voice: false, file: { name: "b.jpg", type: "image/jpeg" } },
+  ];
+  check(
+    "說明加喺第一張相片，唔加喺前面嘅語音檔",
+    batch.captionForStaffMedia(audioThenPhotos, 0, "說明") === "" &&
+      batch.captionForStaffMedia(audioThenPhotos, 1, "說明") === "說明" &&
+      batch.captionForStaffMedia(audioThenPhotos, 2, "說明") === ""
+  );
+  check("單張發送中提示維持原句", batch.sendingStatus(0, 1) === "發送中…");
+  check("多張發送中提示有次序", batch.sendingStatus(1, 3) === "發送中…（2/3）");
+
+  const blocked = "呢則留言已改派畀其他同事，請刷新頁面";
+  const firstOk = batch.reduceStaffMediaSend(
+    { total: 3, index: 0, sent: 0, statuses: [] },
+    { ok: true, status: 201, error: "", delivery: "sent" }
+  );
+  const secondBlocked = batch.reduceStaffMediaSend(
+    { total: 3, index: 1, sent: firstOk.sent, statuses: firstOk.statuses },
+    { ok: false, status: 403, error: blocked, delivery: "" }
+  );
+  check(
+    "第一張送出之後如果改派，就停低而且唔再送後面",
+    firstOk.action === "continue" &&
+      secondBlocked.action === "stay" &&
+      secondBlocked.keepFrom === 1 &&
+      secondBlocked.statusText === `已發送 1 個。其餘未發送：${blocked}`
+  );
+  const denied = batch.reduceStaffMediaSend(
+    { total: 2, index: 0, sent: 0, statuses: [] },
+    { ok: false, status: 403, error: reassigned, delivery: "" }
+  );
+  check(
+    "未送出就改派，留喺頁面並顯示原句",
+    denied.action === "stay" && denied.statusText === reassigned && denied.keepFrom === 0
+  );
+  const badFile = batch.reduceStaffMediaSend(
+    { total: 1, index: 0, sent: 0, statuses: [] },
+    { ok: false, status: 400, error: "媒體內容不正確", delivery: "" }
+  );
+  check(
+    "單張失敗仍然跳去原本嘅錯誤位置",
+    badFile.action === "redirect-error" &&
+      batch.errorUrl("12", badFile.error) ===
+        "/comments/12?error=" + encodeURIComponent("媒體內容不正確") + "#staff-media"
+  );
+  const oneSent = batch.reduceStaffMediaSend(
+    { total: 1, index: 0, sent: 0, statuses: [] },
+    { ok: true, status: 201, error: "", delivery: "sent" }
+  );
+  check(
+    "單張成功網址維持 sent 同 delivery",
+    oneSent.action === "redirect-ok" &&
+      oneSent.delivery === "sent" &&
+      batch.sentUrl("12", oneSent.delivery) === "/comments/12?sent=1&delivery=sent#thread"
+  );
+  const network = batch.reduceStaffMediaSend(
+    { total: 2, index: 1, sent: 1, statuses: ["sent"] },
+    { ok: false, status: 0, error: "", delivery: "", network: true }
+  );
+  check(
+    "送咗一部分之後斷線就停，已送出嘅唔重送",
+    network.action === "stay" && network.keepFrom === 1 && network.statusText === "已發送 1 個。其餘未能發送。請再試一次。"
+  );
+}
+
 async function main(): Promise<number> {
+  checkStaffMediaBatch();
 
   const synthetic = sampleWebm();
   const ogg = remuxWebmOpusToOgg(synthetic);
@@ -400,6 +538,16 @@ async function main(): Promise<number> {
       "Facebook 公開留言冇同事 WhatsApp 深連結",
       fbPage.status === 200 && !fbHtml.includes("用我嘅 WhatsApp 發送畀客戶") && fbHtml.includes("傳送相片、影片或語音")
     );
+    const fileInput = fbHtml.match(/<input id="staff-media-file"[^>]*>/);
+    check(
+      "相片選擇器可以一次過揀多張",
+      fbPage.status === 200 &&
+        !!fileInput &&
+        /\bmultiple\b/.test(fileInput[0]) &&
+        fbHtml.includes("可以一次過揀多張相片，再撳發送。會按你揀選嘅次序送出。") &&
+        fbHtml.includes("/staff-media-batch.js") &&
+        fbHtml.indexOf("/staff-media-batch.js") < fbHtml.indexOf("/app.js")
+    );
 
     if (!companyInbound.ok || !imageInbound.ok) {
       check("入站樣本成功", false);
@@ -460,6 +608,49 @@ async function main(): Promise<number> {
           imagePayload?.caption === "車相" &&
           sentJson?.type === "image",
         photoJson.error || photoJson.reply?.delivery_status || String(photoReply.status)
+      );
+
+      calls.length = 0;
+      const albumCaptions = ["相簿第一", ""];
+      const albumStatuses: number[] = [];
+      for (const albumCaption of albumCaptions) {
+        const albumReply = await fetch(`${base}/api/comments/${companyInbound.comment.id}/media-replies`, {
+          method: "POST",
+          headers: { cookie: wingCookie, "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({
+            caption: albumCaption,
+            mime_type: "image/jpeg",
+            is_voice: false,
+            data_base64: JPEG.toString("base64"),
+          }),
+        });
+        albumStatuses.push(albumReply.status);
+      }
+      const albumMessages = calls.filter((call) => call.url.endsWith("/messages"));
+      const albumPayloads = albumMessages.map((call) => {
+        try {
+          return JSON.parse(call.body.toString("utf8")) as { type?: string; image?: { caption?: string; id?: string } };
+        } catch {
+          return null;
+        }
+      });
+      const thread = await fetch(`${base}/api/comments/${companyInbound.comment.id}/replies`, {
+        headers: { cookie: wingCookie, accept: "application/json" },
+      });
+      const threadJson = (await thread.json()) as { replies?: Array<{ body?: string }> };
+      const bodies = (threadJson.replies || []).map((reply) => reply.body || "");
+      const firstAlbum = bodies.lastIndexOf("相簿第一");
+      check(
+        "一次過揀嘅相片會按次序逐張送出，說明只喺第一張",
+        albumStatuses.every((status) => status === 201) &&
+          albumMessages.length === 2 &&
+          albumPayloads[0]?.type === "image" &&
+          albumPayloads[0]?.image?.caption === "相簿第一" &&
+          albumPayloads[1]?.type === "image" &&
+          albumPayloads[1]?.image?.caption == null &&
+          firstAlbum >= 0 &&
+          bodies[firstAlbum + 1] === "［圖片］",
+        `statuses=${albumStatuses.join(",")} captions=${albumPayloads.map((item) => item?.image?.caption ?? "").join("|")}`
       );
 
       calls.length = 0;

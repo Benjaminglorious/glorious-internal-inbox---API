@@ -417,6 +417,7 @@ function layout(opts: {
     ${opts.body}
   </main>
   ${live}
+  <script src="/staff-media-batch.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>`;
@@ -901,13 +902,15 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
       <section class="reply-panel" id="staff-media" data-comment-id="${c.id}">
         <h2>傳送相片、影片或語音</h2>
         <p class="muted small">${escapeHtml(mediaComposerHint(c))}</p>
+        <p class="muted small">可以一次過揀多張相片，再撳發送。會按你揀選嘅次序送出。</p>
         <p class="media-status" id="staff-media-status" role="status"></p>
-        <label>說明（可選。相片同影片會一併發給支援嘅渠道；語音說明只顯示喺收件箱）
+        <label>說明（可選。相片同影片會一併發給支援嘅渠道；語音說明只顯示喺收件箱。一次過揀多個時，說明只加喺第一張相片或影片）
           <input id="staff-media-caption" type="text" maxlength="1000" placeholder="可留空">
         </label>
+        <div id="staff-media-picked" class="picked-files"></div>
         <div class="wa-actions">
           <label class="btn">上傳相片、影片或語音
-            <input id="staff-media-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/3gpp,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/webm,audio/*" hidden>
+            <input id="staff-media-file" type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/3gpp,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/webm,audio/*" hidden>
           </label>
           <button type="button" class="btn" id="staff-media-record">錄製語音</button>
           <button type="button" class="btn primary" id="staff-media-send" disabled>發送媒體</button>

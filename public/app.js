@@ -641,12 +641,55 @@
     var sendBtn = document.getElementById("staff-media-send");
     if (!status || !fileInput || !recordBtn || !sendBtn) return;
 
-    var pending = null;
+    var mediaBatch = window.GloriousStaffMedia;
+    var pending = [];
+    var previewUrls = [];
+    var picked = document.getElementById("staff-media-picked");
     var recorder = null;
     var stream = null;
+    var selectionGen = 0;
+    var sending = false;
 
     function setStatus(text) {
       status.textContent = text || "";
+    }
+
+    function clearPreviews() {
+      previewUrls.forEach(function (url) {
+        URL.revokeObjectURL(url);
+      });
+      previewUrls = [];
+    }
+
+    function renderPicked(items) {
+      if (sendBtn) sendBtn.textContent = mediaBatch ? mediaBatch.sendButtonLabel(items) : "發送媒體";
+      if (!picked) return;
+      clearPreviews();
+      picked.textContent = "";
+      items.forEach(function (item, index) {
+        var fig = document.createElement("figure");
+        var file = item.file;
+        var name = item.name || (file && file.name) || (item.voice ? "語音" : "檔案");
+        var type = String((file && file.type) || "");
+        var image = !item.voice && mediaBatch && mediaBatch.fileLooksLikeImage(file || item);
+        if (image && file && window.URL && URL.createObjectURL) {
+          var img = document.createElement("img");
+          var url = URL.createObjectURL(file);
+          previewUrls.push(url);
+          img.src = url;
+          img.alt = name;
+          fig.appendChild(img);
+        } else {
+          var badge = document.createElement("span");
+          badge.className = "picked-kind";
+          badge.textContent = item.voice || type.indexOf("audio/") === 0 ? "語音" : type.indexOf("video/") === 0 ? "影片" : "檔案";
+          fig.appendChild(badge);
+        }
+        var cap = document.createElement("figcaption");
+        cap.textContent = index + 1 + ". " + name;
+        fig.appendChild(cap);
+        picked.appendChild(fig);
+      });
     }
 
     function fileToBase64(file) {
@@ -665,14 +708,25 @@
     }
 
     fileInput.addEventListener("change", function () {
-      var file = fileInput.files && fileInput.files[0];
-      if (!file) return;
-      pending = { file: file, voice: false };
+      if (!mediaBatch || sending) return;
+      var planned = mediaBatch.planStaffMediaSelection(fileInput.files);
+      if (!planned.files.length && !planned.error) return;
+      if (!planned.ok) {
+        fileInput.value = "";
+        setStatus(planned.error);
+        return;
+      }
+      selectionGen += 1;
+      pending = planned.files.map(function (file) {
+        return { file: file, voice: false, name: file.name || "upload" };
+      });
+      renderPicked(pending);
       sendBtn.disabled = false;
-      setStatus("已揀好「" + file.name + "」。撳發送媒體。");
+      setStatus(mediaBatch.selectionStatus(planned.files));
     });
 
     recordBtn.addEventListener("click", function () {
+      if (sending) return;
       if (recorder && recorder.state === "recording") {
         recorder.stop();
         return;
@@ -695,6 +749,7 @@
           }
           recorder = mime ? new MediaRecorder(mic, { mimeType: mime }) : new MediaRecorder(mic);
           var chunks = [];
+          var recordGen = selectionGen;
           recorder.ondataavailable = function (event) {
             if (event.data && event.data.size) chunks.push(event.data);
           };
@@ -705,10 +760,13 @@
               });
               stream = null;
             }
-            var type = recorder.mimeType || mime || "audio/webm";
-            pending = { file: new Blob(chunks, { type: type }), voice: true, name: "voice" };
-            sendBtn.disabled = false;
             recordBtn.textContent = "錄製語音";
+            if (sending || selectionGen !== recordGen) return;
+            var type = recorder.mimeType || mime || "audio/webm";
+            pending = [{ file: new Blob(chunks, { type: type }), voice: true, name: "語音" }];
+            fileInput.value = "";
+            renderPicked(pending);
+            sendBtn.disabled = false;
             setStatus("已錄好語音。可以試聽之前先撳發送媒體。");
           };
           recorder.start();
@@ -720,58 +778,106 @@
         });
     });
 
-    sendBtn.addEventListener("click", function () {
-      if (!pending || !pending.file) return;
-      sendBtn.disabled = true;
-      setStatus("發送中…");
-      var file = pending.file;
-      var voice = pending.voice === true;
-      fileToBase64(file)
-        .then(function (data) {
-          return fetch("/api/comments/" + encodeURIComponent(commentId) + "/media-replies", {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "Content-Type": "application/json", Accept: "application/json" },
-            body: JSON.stringify({
-              caption: caption && caption.value ? caption.value : "",
-              mime_type: file.type || "",
-              filename: file.name || (voice ? "voice" : "upload"),
-              is_voice: voice,
-              data_base64: data,
-            }),
-          });
-        })
-        .then(function (res) {
-          return res.json().then(function (data) {
-            return { ok: res.ok, status: res.status, data: data };
-          });
-        })
-        .then(function (result) {
-          if (!result.ok) {
-            var message = result.data && result.data.error ? result.data.error : "未能發送媒體";
-            if (result.status === 403) {
-              sendBtn.disabled = false;
-              setStatus(message);
-              return;
+    function postOne(item, captionText) {
+      var file = item.file;
+      var voice = item.voice === true;
+      return fileToBase64(file).then(function (data) {
+        return fetch("/api/comments/" + encodeURIComponent(commentId) + "/media-replies", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            caption: captionText,
+            mime_type: file.type || "",
+            filename: file.name || item.name || (voice ? "voice" : "upload"),
+            is_voice: voice,
+            data_base64: data,
+          }),
+        }).then(function (res) {
+          return res.json().then(
+            function (body) {
+              return {
+                ok: res.ok,
+                status: res.status,
+                error: body && body.error ? body.error : "",
+                delivery: body && body.reply ? body.reply.delivery_status : "",
+                network: false,
+              };
+            },
+            function () {
+              return { ok: false, status: res.status, error: "", delivery: "", network: true };
             }
-            window.location.assign(
-              "/comments/" + encodeURIComponent(commentId) + "?error=" + encodeURIComponent(message) + "#staff-media"
-            );
-            return;
-          }
-          var delivery = result.data && result.data.reply ? result.data.reply.delivery_status : "stored";
-          window.location.assign(
-            "/comments/" +
-              encodeURIComponent(commentId) +
-              "?sent=1&delivery=" +
-              encodeURIComponent(delivery || "stored") +
-              "#thread"
           );
+        });
+      });
+    }
+
+    function finishStep(step, items) {
+      if (!mediaBatch) return;
+      if (step.action === "redirect-ok") {
+        window.location.assign(mediaBatch.sentUrl(commentId, step.delivery));
+        return;
+      }
+      if (step.action === "redirect-error") {
+        window.location.assign(mediaBatch.errorUrl(commentId, step.error || step.statusText));
+        return;
+      }
+      pending = items.slice(step.keepFrom);
+      renderPicked(pending);
+      sendBtn.disabled = !step.enableSend || pending.length === 0;
+      recordBtn.disabled = false;
+      fileInput.disabled = false;
+      sending = false;
+      setStatus(step.statusText);
+    }
+
+    function sendAt(items, index, sent, statuses) {
+      if (index >= items.length) {
+        finishStep(
+          {
+            action: "redirect-ok",
+            delivery: mediaBatch.uniformDelivery(statuses),
+            keepFrom: items.length,
+            enableSend: false,
+            sent: sent,
+            statuses: statuses,
+            statusText: "",
+            error: "",
+          },
+          items
+        );
+        return Promise.resolve();
+      }
+      setStatus(mediaBatch.sendingStatus(index, items.length));
+      var captionText = mediaBatch.captionForStaffMedia(items, index, caption && caption.value ? caption.value : "");
+      return postOne(items[index], captionText)
+        .then(function (result) {
+          var step = mediaBatch.reduceStaffMediaSend(
+            { total: items.length, index: index, sent: sent, statuses: statuses },
+            result
+          );
+          if (step.action === "continue") return sendAt(items, index + 1, step.sent, step.statuses);
+          finishStep(step, items);
         })
         .catch(function () {
-          sendBtn.disabled = false;
-          setStatus("未能發送媒體。請再試一次。");
+          var step = mediaBatch.reduceStaffMediaSend(
+            { total: items.length, index: index, sent: sent, statuses: statuses },
+            { network: true, ok: false, status: 0, error: "", delivery: "" }
+          );
+          finishStep(step, items);
         });
+    }
+
+    sendBtn.addEventListener("click", function () {
+      if (!mediaBatch || sending || !pending.length) return;
+      var items = pending.slice();
+      sending = true;
+      selectionGen += 1;
+      sendBtn.disabled = true;
+      recordBtn.disabled = true;
+      fileInput.disabled = true;
+      setStatus(mediaBatch.sendingStatus(0, items.length));
+      sendAt(items, 0, 0, []);
     });
   }
 
