@@ -497,8 +497,275 @@ async function main(): Promise<number> {
         fbReferralOnly.items[0]?.meta_post_caption === "紅色 Alphard 現貨" &&
         fbReferralOnly.items[0]?.meta_post_permalink == null &&
         fbReferralOnly.items[0]?.external_id === "ref:5555000000000001:1111111111_2222222222" &&
-        fbReferralOnly.items[0]?.meta_sender_id === "5555000000000001"
+        fbReferralOnly.items[0]?.meta_sender_id === "5555000000000001" &&
+        fbReferralOnly.items[0]?.referral_only === true
     );
+
+    const fbAdReferral = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          id: "317388328327472",
+          time: 1731925404000,
+          messaging_referrals: [
+            {
+              sender: { id: "28995155716843684" },
+              recipient: { id: "317388328327472" },
+              timestamp: 1731925404000,
+              referral: {
+                ref: "720s",
+                ad_id: "120248861754570289",
+                source: "ADS",
+                type: "OPEN_THREAD",
+                ads_context_data: {
+                  ad_title: "麥拿侖 720S Spider",
+                  photo_url: "https://scontent.xx.fbcdn.net/ad.jpg",
+                  video_url: "https://scontent.xx.fbcdn.net/ad.mp4",
+                  post_id: "317388328327472_1637506615055558",
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const storedFbAd = fbAdReferral.items[0]
+      ? site.upsertSiteComment(fbAdReferral.items[0])
+      : { ok: false as const, error: "無項目" };
+    check(
+      "Facebook 廣告 messaging_referrals 入庫記住帖文，預覽圖唔當原帖",
+      fbAdReferral.items.length === 1 &&
+        storedFbAd.ok &&
+        storedFbAd.comment.source === "facebook" &&
+        storedFbAd.comment.meta_surface === "message" &&
+        storedFbAd.comment.body === "（由帖文開啟私訊）" &&
+        storedFbAd.comment.meta_post_id === "317388328327472_1637506615055558" &&
+        storedFbAd.comment.meta_post_caption === "麥拿侖 720S Spider" &&
+        storedFbAd.comment.meta_post_permalink == null &&
+        storedFbAd.comment.meta_sender_id === "28995155716843684" &&
+        (fbAdReferral.items[0]?.attachments?.length ?? 0) === 0
+    );
+
+    const fbReel = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "5555000000000094", name: "Reel 客" },
+              recipient: { id: "317388328327472" },
+              message: {
+                mid: "mid.reel",
+                text: "這架怎樣？",
+                referral: {
+                  source: "REEL",
+                  type: "OPEN_THREAD",
+                  ad_id: "120248861754570289",
+                  ads_context_data: { ad_title: "麥拿侖 720S Spider" },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "Facebook Reels referral 記住廣告編號同標題，客戶句子另計",
+      fbReel.items.length === 1 &&
+        fbReel.items[0]?.body === "這架怎樣？" &&
+        fbReel.items[0]?.meta_post_id === "120248861754570289" &&
+        fbReel.items[0]?.meta_post_caption === "麥拿侖 720S Spider" &&
+        fbReel.items[0]?.referral_only !== true
+    );
+
+    const savedPageForEcho = process.env.META_PAGE_ID;
+    process.env.META_PAGE_ID = "317388328327472";
+    const welcome = "你好！請告訴我們該如何為你提供協助。";
+    const echoThenCustomer = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          id: "317388328327472",
+          messaging: [
+            {
+              sender: { id: "317388328327472" },
+              recipient: { id: "5555000000000095" },
+              timestamp: 1731925403000,
+              message: {
+                mid: "mid.welcome",
+                is_echo: true,
+                text: welcome,
+                referral: {
+                  source: "ADS",
+                  type: "OPEN_THREAD",
+                  ad_id: "120248861754570289",
+                  source_url: "https://www.facebook.com/reel/1325272579671228/",
+                  ads_context_data: {
+                    ad_title: "麥拿侖 720S Spider",
+                    post_id: "317388328327472_1637506615055558",
+                    photo_url: "https://lookaside.fbsbx.com/welcome.jpg",
+                  },
+                },
+              },
+            },
+            {
+              sender: { id: "5555000000000095", name: "Raymond Wan" },
+              recipient: { id: "317388328327472" },
+              timestamp: 1731925404000,
+              message: { mid: "mid.customer95", text: "未出牌？" },
+            },
+            {
+              sender: { id: "5555000000000096", name: "普通客" },
+              recipient: { id: "317388328327472" },
+              timestamp: 1731925405000,
+              message: { mid: "mid.plain", text: "普通私訊" },
+            },
+          ],
+        },
+      ],
+    });
+    const echoBodies = echoThenCustomer.items.map((item) => item.body);
+    const echoCustomer = echoThenCustomer.items.find((item) => item.meta_sender_id === "5555000000000095");
+    const echoPlain = echoThenCustomer.items.find((item) => item.meta_sender_id === "5555000000000096");
+    check(
+      "專頁歡迎訊息嘅廣告 referral 併入客戶句子，唔儲存專頁句子",
+      echoThenCustomer.items.length === 2 &&
+        !echoBodies.includes(welcome) &&
+        echoCustomer?.body === "未出牌？" &&
+        echoCustomer.author_name === "Raymond Wan" &&
+        echoCustomer.external_id === "mid.customer95" &&
+        echoCustomer.meta_post_id === "317388328327472_1637506615055558" &&
+        echoCustomer.meta_post_permalink === "https://www.facebook.com/reel/1325272579671228/" &&
+        echoCustomer.meta_post_caption === "麥拿侖 720S Spider" &&
+        echoCustomer.referral_only !== true &&
+        (echoCustomer.attachments?.length ?? 0) === 0 &&
+        echoPlain?.body === "普通私訊" &&
+        echoPlain.meta_post_id == null &&
+        echoPlain.meta_post_caption == null &&
+        echoPlain.meta_post_permalink == null
+    );
+
+    const echoOnly = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "317388328327472" },
+              recipient: { id: "5555000000000097" },
+              timestamp: 1731925406000,
+              message: {
+                mid: "mid.welcome-only",
+                is_echo: true,
+                text: welcome,
+                referral: {
+                  source: "ADS",
+                  type: "OPEN_THREAD",
+                  ad_id: "120248861754570289",
+                  ads_context_data: {
+                    ad_title: "麥拿侖 720S Spider",
+                    post_id: "317388328327472_1637506615055558",
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "只有專頁回聲時保留 referral，正文唔係歡迎訊息",
+      echoOnly.items.length === 1 &&
+        echoOnly.items[0]?.body === "（由帖文開啟私訊）" &&
+        echoOnly.items[0]?.meta_sender_id === "5555000000000097" &&
+        echoOnly.items[0]?.external_id === "ref:5555000000000097:317388328327472_1637506615055558" &&
+        echoOnly.items[0]?.meta_post_id === "317388328327472_1637506615055558" &&
+        echoOnly.items[0]?.referral_only === true &&
+        !echoOnly.items.some((item) => item.external_id === "mid.welcome-only")
+    );
+
+    const echoWithoutReferral = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "317388328327472" },
+              recipient: { id: "5555000000000097" },
+              message: { mid: "mid.echo-plain", is_echo: true, text: welcome },
+            },
+          ],
+        },
+      ],
+    });
+    check(
+      "冇 referral 嘅專頁回聲仍然唔入庫",
+      echoWithoutReferral.ignored && echoWithoutReferral.items.length === 0
+    );
+    if (savedPageForEcho === undefined) delete process.env.META_PAGE_ID;
+    else process.env.META_PAGE_ID = savedPageForEcho;
+
+    const existingDm = site.upsertSiteComment({
+      source: "facebook",
+      external_id: "mid.already",
+      author_name: "Raymond Wan",
+      body: "未出牌？",
+      meta_sender_id: "5555000000000098",
+      meta_surface: "message",
+    });
+    process.env.META_PAGE_ID = "317388328327472";
+    const laterEcho = meta.parseMetaWebhookPayload({
+      object: "page",
+      entry: [
+        {
+          messaging: [
+            {
+              sender: { id: "317388328327472" },
+              recipient: { id: "5555000000000098" },
+              timestamp: 1731925407000,
+              message: {
+                mid: "mid.later-welcome",
+                is_echo: true,
+                text: welcome,
+                referral: {
+                  source: "ADS",
+                  type: "OPEN_THREAD",
+                  ad_id: "120248861754570289",
+                  source_url: "https://www.facebook.com/reel/1325272579671228/",
+                  ads_context_data: {
+                    ad_title: "麥拿侖 720S Spider",
+                    post_id: "317388328327472_1637506615055558",
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const filledExisting = laterEcho.items[0] ? site.upsertSiteComment(laterEcho.items[0]) : null;
+    const existingReplies = existingDm.ok
+      ? (appDb
+          .prepare(`SELECT body FROM comment_replies WHERE comment_id = ?`)
+          .all(existingDm.comment.id) as Array<{ body: string }>)
+      : [];
+    check(
+      "已有私訊再收到回聲 referral，只補帖文，唔加歡迎訊息",
+      existingDm.ok &&
+        filledExisting?.ok === true &&
+        filledExisting.appended === false &&
+        filledExisting.comment.id === existingDm.comment.id &&
+        filledExisting.comment.body === "未出牌？" &&
+        filledExisting.comment.author_name === "Raymond Wan" &&
+        filledExisting.comment.meta_post_id === "317388328327472_1637506615055558" &&
+        filledExisting.comment.meta_post_permalink === "https://www.facebook.com/reel/1325272579671228/" &&
+        filledExisting.comment.meta_post_caption === "麥拿侖 720S Spider" &&
+        filledExisting.comment.assignee_staff_id === existingDm.comment.assignee_staff_id &&
+        existingReplies.length === 0 &&
+        !existingReplies.some((row) => row.body.includes(welcome))
+    );
+    if (savedPageForEcho === undefined) delete process.env.META_PAGE_ID;
+    else process.env.META_PAGE_ID = savedPageForEcho;
 
     const fbPostLink = meta.parseMetaWebhookPayload({
       object: "page",
@@ -1331,6 +1598,143 @@ async function main(): Promise<number> {
         facebookAfter.author_name === facebookBefore.author_name &&
         facebookAfter.body === "Facebook 另一則" &&
         facebookAfter.source === "facebook"
+    );
+
+    const fb95Caption = `麥拿侖 720S Spider
+不止一部超跑，是可以曬住陽光的賽道機器🕷️
+4.0 V8 雙渦輪，720 匹馬力
+11 秒電動硬頂，隨時打開天幕
+蝶翼門一出，全場焦點
+碳纖維打造，輕巧又兇猛
+頂篷關上是猛獸，打開是風的伴侶
+McLaren 720S Spider
+💰 $1,780,000
+現貨在手，等懂它的人`;
+    inboxDb.prepare(`DELETE FROM comments WHERE id IN (94, 95, 96)`).run();
+    insertFixed.run(
+      94,
+      "facebook",
+      "fb-backfill-94",
+      "其他客",
+      "其他帖文私訊",
+      "open",
+      staffId,
+      "5555000000000094",
+      "already-other",
+      "https://www.facebook.com/reel/999/",
+      "唔好郁"
+    );
+    insertFixed.run(
+      96,
+      "facebook",
+      "fb-backfill-96",
+      "空白客",
+      "另一則 Facebook 私訊",
+      "open",
+      staffId,
+      "5555000000000096",
+      null,
+      null,
+      null
+    );
+    insertFixed.run(
+      95,
+      "facebook",
+      "m_customer95",
+      "28995155716843684",
+      "未出牌？",
+      "in_progress",
+      staffId,
+      "28995155716843684",
+      null,
+      null,
+      "唔好留低"
+    );
+    inboxDb.prepare(`UPDATE comments SET updated_at = '2026-11-18 10:23:26' WHERE id = 95`).run();
+    const skipCaption = dbMod.backfillFacebookDmPost95();
+    const captionRow = readBackfill(95);
+    check(
+      "留言 #95 已有 caption 就跳過，唔覆寫",
+      skipCaption === "skipped" &&
+        captionRow.meta_post_id == null &&
+        captionRow.meta_post_permalink == null &&
+        captionRow.meta_post_caption === "唔好留低" &&
+        captionRow.body === "未出牌？" &&
+        captionRow.author_name === "28995155716843684"
+    );
+    inboxDb
+      .prepare(
+        `UPDATE comments
+         SET meta_surface = 'comment', meta_post_id = NULL, meta_post_permalink = NULL, meta_post_caption = NULL
+         WHERE id = 95`
+      )
+      .run();
+    const skipSurface = dbMod.backfillFacebookDmPost95();
+    const surfaceRow = readBackfill(95);
+    check(
+      "留言 #95 唔係私訊就跳過",
+      skipSurface === "skipped" && surfaceRow.meta_post_id == null && surfaceRow.meta_post_caption == null
+    );
+    inboxDb
+      .prepare(
+        `UPDATE comments
+         SET meta_surface = 'message', meta_post_id = NULL, meta_post_permalink = NULL, meta_post_caption = NULL,
+             updated_at = '2026-11-18 10:23:26'
+         WHERE id = 95`
+      )
+      .run();
+    const other95Before = readBackfill(94);
+    const plain95Before = readBackfill(96);
+    const logs95: string[] = [];
+    const log95 = console.log;
+    console.log = (...args: unknown[]) => {
+      logs95.push(args.map((part) => String(part)).join(" "));
+      log95(...args);
+    };
+    let filled95: "updated" | "skipped" = "skipped";
+    let second95: "updated" | "skipped" = "updated";
+    try {
+      filled95 = dbMod.backfillFacebookDmPost95();
+      second95 = dbMod.backfillFacebookDmPost95();
+    } finally {
+      console.log = log95;
+    }
+    const filled95Row = readBackfill(95);
+    const other95After = readBackfill(94);
+    const plain95After = readBackfill(96);
+    check(
+      "空白嘅留言 #95 補上已核對嘅 Facebook 廣告帖文",
+      filled95 === "updated" &&
+        filled95Row.meta_post_id === "317388328327472_1637506615055558" &&
+        filled95Row.meta_post_permalink === "https://www.facebook.com/reel/1325272579671228/" &&
+        filled95Row.meta_post_caption === fb95Caption &&
+        filled95Row.body === "未出牌？" &&
+        filled95Row.author_name === "28995155716843684" &&
+        filled95Row.status === "in_progress" &&
+        filled95Row.assignee_staff_id === staffId &&
+        filled95Row.meta_sender_id === "28995155716843684" &&
+        filled95Row.source === "facebook" &&
+        filled95Row.updated_at === "2026-11-18 10:23:26" &&
+        logs95.some((line) => line.includes("已補回留言 #95"))
+    );
+    check(
+      "第二次補回跳過，唔再改 #95",
+      second95 === "skipped" &&
+        readBackfill(95).meta_post_caption === fb95Caption &&
+        readBackfill(95).meta_post_id === "317388328327472_1637506615055558" &&
+        logs95.some((line) => line.includes("跳過留言 #95"))
+    );
+    check(
+      "補回 #95 唔郁其他 Facebook 私訊",
+      other95After.meta_post_id === other95Before.meta_post_id &&
+        other95After.meta_post_permalink === "https://www.facebook.com/reel/999/" &&
+        other95After.meta_post_caption === "唔好郁" &&
+        other95After.body === "其他帖文私訊" &&
+        plain95After.meta_post_id == null &&
+        plain95After.meta_post_permalink == null &&
+        plain95After.meta_post_caption == null &&
+        plain95After.body === plain95Before.body &&
+        plain95After.author_name === "空白客"
     );
 
     if (failures.length) {

@@ -199,6 +199,32 @@ async function main(): Promise<number> {
       "https://www.instagram.com/p/CxAb12/",
       "白色 Alphard 限量"
     );
+    const fbAdCaption = `麥拿侖 720S Spider
+不止一部超跑，是可以曬住陽光的賽道機器🕷️
+4.0 V8 雙渦輪，720 匹馬力
+11 秒電動硬頂，隨時打開天幕
+蝶翼門一出，全場焦點
+碳纖維打造，輕巧又兇猛
+頂篷關上是猛獸，打開是風的伴侶
+McLaren 720S Spider
+💰 $1,780,000
+現貨在手，等懂它的人`;
+    insert.run(
+      "facebook",
+      "search-fb-ad-dm",
+      "Raymond Wan",
+      "未出牌？",
+      null,
+      "in_progress",
+      wingId,
+      "site_comment",
+      null,
+      null,
+      "message",
+      "317388328327472_1637506615055558",
+      "https://www.facebook.com/reel/1325272579671228/",
+      fbAdCaption
+    );
     appDb
       .prepare(
         `INSERT INTO comment_replies (comment_id, staff_id, direction, body, delivery_status)
@@ -357,6 +383,34 @@ async function main(): Promise<number> {
         igPostListHtml.includes("How much?") &&
         !igPostListHtml.includes("帖文：How much?") &&
         !igPostListHtml.includes('post-hint">私訊')
+    );
+
+    const fbAdDm = await apiComments(wingCookie, "?q=" + encodeURIComponent("未出牌"));
+    const fbAdPage = fbAdDm.comments[0]
+      ? await fetch(`${base}/comments/${fbAdDm.comments[0].id}`, { headers: { cookie: wingCookie } })
+      : null;
+    const fbAdHtml = fbAdPage ? await fbAdPage.text() : "";
+    check(
+      "網頁：Facebook 廣告私訊顯示所屬帖文同開啟原帖",
+      fbAdPage?.status === 200 &&
+        fbAdHtml.includes("所屬Facebook帖文") &&
+        fbAdHtml.includes("麥拿侖 720S Spider") &&
+        fbAdHtml.includes("現貨在手，等懂它的人") &&
+        fbAdHtml.includes("4.0 V8 雙渦輪，720 匹馬力") &&
+        fbAdHtml.includes("317388328327472_1637506615055558") &&
+        fbAdHtml.includes("開啟Facebook原帖") &&
+        fbAdHtml.includes("https://www.facebook.com/reel/1325272579671228/") &&
+        fbAdHtml.includes("未出牌？") &&
+        !fbAdHtml.includes("呢則係Facebook私訊，唔係公開帖文留言。")
+    );
+    const fbAdList = await fetch(`${base}/?q=` + encodeURIComponent("未出牌"), { headers: { cookie: wingCookie } });
+    const fbAdListHtml = await fbAdList.text();
+    check(
+      "網頁：Facebook 廣告私訊列表顯示帖文，唔寫私訊",
+      fbAdList.status === 200 &&
+        fbAdListHtml.includes("帖文：麥拿侖 720S Spider") &&
+        fbAdListHtml.includes("未出牌？") &&
+        !fbAdListHtml.includes('post-hint">私訊')
     );
 
     if (failures.length) {

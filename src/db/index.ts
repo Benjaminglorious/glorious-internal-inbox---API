@@ -309,6 +309,51 @@ export function backfillInstagramDmPost57(): "updated" | "skipped" {
   return "skipped";
 }
 
+/**
+ * 正式庫留言 #95：Raymond Wan 由 Facebook 廣告開 Messenger，第一句「未出牌？」。
+ * Graph 訊息冇 referral；Business Suite（2026-11-18）顯示廣告 120248861754570289，
+ * 同一段 caption 嘅專頁 Reels 係 317388328327472_1637506615055558。
+ * 只補 id=95、source=facebook、meta_surface=message，而且三個帖文欄都仍然係空。
+ * 唔改正文、負責人、狀態、作者，亦唔郁其他列。第二次啟動唔會覆寫。
+ */
+const FB_DM_95_POST_ID = "317388328327472_1637506615055558";
+const FB_DM_95_PERMALINK = "https://www.facebook.com/reel/1325272579671228/";
+const FB_DM_95_CAPTION = `麥拿侖 720S Spider
+不止一部超跑，是可以曬住陽光的賽道機器🕷️
+4.0 V8 雙渦輪，720 匹馬力
+11 秒電動硬頂，隨時打開天幕
+蝶翼門一出，全場焦點
+碳纖維打造，輕巧又兇猛
+頂篷關上是猛獸，打開是風的伴侶
+McLaren 720S Spider
+💰 $1,780,000
+現貨在手，等懂它的人`;
+
+export function backfillFacebookDmPost95(): "updated" | "skipped" {
+  const result = database
+    .prepare(
+      `UPDATE comments
+       SET meta_post_id = ?,
+           meta_post_permalink = ?,
+           meta_post_caption = ?
+       WHERE id = 95
+         AND source = 'facebook'
+         AND meta_surface = 'message'
+         AND (meta_post_id IS NULL OR trim(meta_post_id) = '')
+         AND (meta_post_permalink IS NULL OR trim(meta_post_permalink) = '')
+         AND (meta_post_caption IS NULL OR trim(meta_post_caption) = '')`
+    )
+    .run(FB_DM_95_POST_ID, FB_DM_95_PERMALINK, FB_DM_95_CAPTION);
+  if (result.changes > 0) {
+    console.log(
+      `[inbox] 已補回留言 #95 嘅 Facebook 廣告原帖 ${FB_DM_95_POST_ID} ${FB_DM_95_PERMALINK}`
+    );
+    return "updated";
+  }
+  console.log("[inbox] 跳過留言 #95 嘅 Facebook 廣告原帖補回（唔係空白嘅 Facebook 私訊，或帖文欄已經有值）");
+  return "skipped";
+}
+
 function ensureCommenterKeyColumn(sqlite: DatabaseType): void {
   const cols = columnNames(sqlite, "comments");
   if (!cols.has("commenter_key")) sqlite.exec(`ALTER TABLE comments ADD COLUMN commenter_key TEXT`);
@@ -321,3 +366,4 @@ if (!usingPostgres) ensureCommenterKeyColumn(database as DatabaseType);
 const commenterThreads = require("../services/commenter-thread") as typeof import("../services/commenter-thread");
 commenterThreads.unifyOpenCommenterThreads();
 backfillInstagramDmPost57();
+backfillFacebookDmPost95();

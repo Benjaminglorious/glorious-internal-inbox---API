@@ -59,6 +59,11 @@ export interface UpsertSiteCommentInput {
   meta_post_caption?: string | null;
   /** 私訊或留言附帶嘅媒體。upsert 唔寫入 comments，webhook 另外下載。 */
   attachments?: Array<{ kind: "image" | "video" | "audio"; url: string; isVoice: boolean }>;
+  /**
+   * 冇客戶句子，只係帶帖文或廣告 referral。
+   * 已有未完成對話時只補空白帖文欄，唔加一句假客戶訊息，亦唔改負責人同狀態。
+   */
+  referral_only?: boolean;
 }
 
 export interface UpsertSiteCommentSuccess {
@@ -253,6 +258,31 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
 
       const open = findOpenThread({ source, key: identityKey, authorName });
       if (open) {
+        if (
+          input.referral_only &&
+          metaSurface === "message" &&
+          (metaPostId || metaPostPermalink || metaPostCaption)
+        ) {
+          db.prepare(
+            `UPDATE comments
+             SET meta_sender_id = COALESCE(meta_sender_id, ?),
+                 meta_surface = COALESCE(meta_surface, ?),
+                 meta_post_id = COALESCE(meta_post_id, ?),
+                 meta_post_permalink = COALESCE(meta_post_permalink, ?),
+                 meta_post_caption = COALESCE(meta_post_caption, ?)
+             WHERE id = ?`
+          ).run(metaSenderId, metaSurface, metaPostId, metaPostPermalink, metaPostCaption, open.id);
+          const comment = getComment(open.id);
+          if (!comment) return { ok: false, error: "更新後讀唔返留言" };
+          return {
+            ok: true,
+            comment,
+            created: false,
+            appended: false,
+            inboundReplyId: null,
+            assigneeStaffId: comment.assignee_staff_id,
+          };
+        }
         const appended = appendInboundMessage({
           commentId: open.id,
           source,
