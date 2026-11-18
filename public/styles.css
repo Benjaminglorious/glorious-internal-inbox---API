@@ -129,6 +129,34 @@ input, select {
 .bubble-media audio { width: min(100%, 420px); }
 .media-error { color: #b91c1c; font-size: 13px; margin: 6px 0 0; }
 .media-status:empty { display: none; }
+.picked-files { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 4px; }
+.picked-files:empty { display: none; }
+.picked-files figure { margin: 0; width: 84px; }
+.picked-files img,
+.picked-files .picked-kind {
+  width: 84px;
+  height: 84px;
+  border-radius: 8px;
+  display: block;
+  object-fit: cover;
+  background: #f1f5f9;
+  border: 1px solid var(--line);
+}
+.picked-files .picked-kind {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+.picked-files figcaption {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 label.btn input[type="file"] { display: none; }
 .topbar .btn.ghost { color: #fff; }
 .error { color: #b91c1c; background: #fef2f2; padding: 8px 10px; border-radius: 8px; }
