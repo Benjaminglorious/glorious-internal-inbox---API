@@ -10,6 +10,7 @@ import type { AddressInfo } from "net";
 import os from "os";
 import path from "path";
 import { REPLY_SLA_FIRST_SUSPEND_MS, REPLY_SLA_LATER_SUSPEND_MS } from "../reply-sla-config";
+import { insertReturningId, translateSql } from "../db/sql-compat";
 import { computeReplyDeadline, formatUtcTimestamp } from "../services/reply-sla-clock";
 import { parseStoredTimestamp } from "../time";
 
@@ -50,6 +51,19 @@ function deadlineOf(wall: string, notBefore?: string): { due: string; start: str
 }
 
 function clockCases(): void {
+  const staffStateInsert =
+    "INSERT INTO staff_reply_sla (staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(staff_id) DO UPDATE SET delay_count = excluded.delay_count";
+  const wrapped = translateSql(insertReturningId(staffStateInsert));
+  check(
+    "同事逾時狀態的表冇 id 欄，Postgres 包裝唔會再補 RETURNING id",
+    insertReturningId(staffStateInsert) === staffStateInsert &&
+      wrapped.includes("$1") &&
+      wrapped.includes("staff_reply_sla") &&
+      !/\breturning\s+id\b/i.test(wrapped) &&
+      insertReturningId("INSERT INTO reply_sla (comment_id) VALUES (?)").endsWith("RETURNING id"),
+    wrapped
+  );
+
   const backlog = deadlineOf("2026-11-01 10:00:00", "2026-11-17 11:30:00");
   check(
     "舊訊息由上線一刻重新計，唔用已經等咗的日子",
@@ -302,6 +316,144 @@ async function dbCases(): Promise<void> {
       )
       .run(staffId, count, until ? PAST : null, until, PAST);
   };
+
+  try {
+  const recoveryNow = parseStoredTimestamp("2026-11-19 02:00:00", "utc") as Date;
+  const recoveryMid = parseStoredTimestamp("2026-11-19 03:30:00", "utc") as Date;
+  const recoveryLate = parseStoredTimestamp("2026-11-19 04:30:00", "utc") as Date;
+  const crashedDue = "2026-11-17 05:30:00";
+  appDb.prepare(`INSERT INTO reply_sla_epoch (id, effective_at) VALUES (1, ?)`).run(GO_LIVE);
+  const insertOpened = (commentId: number, inboundAt: string, countStart: string, dueAt: string, limit = 7200) => {
+    appDb
+      .prepare(
+        `INSERT INTO reply_sla (
+           comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds
+         ) VALUES (?, NULL, ?, ?, ?, ?)`
+      )
+      .run(commentId, inboundAt, countStart, dueAt, limit);
+  };
+  const missed = [
+    addComment(idOf("wing"), "2026-10-01 01:00:00"),
+    addComment(idOf("wing"), "2026-10-01 02:00:00"),
+    addComment(idOf("wing"), "2026-10-01 03:00:00"),
+  ];
+  for (const commentId of missed) insertOpened(commentId, "2026-10-01 01:00:00", GO_LIVE, crashedDue);
+  const repliedLate = addComment(idOf("wing"), "2026-10-02 01:00:00");
+  insertOpened(repliedLate, "2026-10-02 01:00:00", GO_LIVE, crashedDue);
+  addOutbound(repliedLate, idOf("wing"), "2026-11-17 08:00:00");
+  const stillOpen = addComment(idOf("jason"), "2026-11-19 00:00:00");
+  insertOpened(stillOpen, "2026-11-19 00:00:00", "2026-11-19 00:00:00", "2026-11-19 06:00:00");
+  const wrappedUpsert = translateSql(insertReturningId(slaMod.STAFF_REPLY_SLA_UPSERT_SQL));
+  check(
+    "檢查器寫同事逾時狀態的 SQL，Postgres 唔會再查 id 欄",
+    wrappedUpsert.includes("INSERT INTO staff_reply_sla") &&
+      wrappedUpsert.includes("ON CONFLICT(staff_id)") &&
+      wrappedUpsert.includes("$6") &&
+      !/\breturning\b/i.test(wrappedUpsert),
+    wrappedUpsert
+  );
+  let firstRecovery: ReturnType<typeof slaMod.scanReplySla> | null = null;
+  let recoveryError = "";
+  try {
+    firstRecovery = slaMod.scanReplySla(recoveryNow);
+  } catch (err) {
+    recoveryError = err instanceof Error ? err.message : String(err);
+  }
+  const restarted = computeReplyDeadline(
+    parseStoredTimestamp("2026-10-01 01:00:00", "utc") as Date,
+    recoveryNow
+  );
+  const restartedStart = formatUtcTimestamp(restarted.countStart);
+  const restartedDue = formatUtcTimestamp(restarted.due);
+  const epochDuringRecovery = appDb.prepare(`SELECT effective_at FROM reply_sla_epoch WHERE id = 1`).get() as {
+    effective_at: string;
+  };
+  const liveRow = appDb.prepare(`SELECT settlement_live_at AS at FROM reply_sla_epoch WHERE id = 1`).get() as {
+    at: string | null;
+  };
+  check(
+    "檢查失敗期間已開期限，第一次成功檢查唔再因為缺少 id 欄而中斷",
+    firstRecovery != null && firstRecovery.delays === 0 && recoveryError === "",
+    recoveryError || JSON.stringify(firstRecovery)
+  );
+  check(
+    "失敗期間仍未回覆、期限已過的舊訊息，按上線規則由呢次重新計，未即時逾時或暫停",
+    missed.every((commentId) => {
+      const row = opening(commentId);
+      return (
+        row != null &&
+        row.delay_recorded_at == null &&
+        row.met_at == null &&
+        row.count_start_at === restartedStart &&
+        row.due_at === restartedDue &&
+        Number(row.limit_seconds) === restarted.limitSeconds
+      );
+    }) &&
+      restartedStart === "2026-11-19 02:00:00" &&
+      restartedDue === "2026-11-19 04:00:00" &&
+      restarted.limitSeconds === 7200 &&
+      stateOf(idOf("wing")).delay_count === 0 &&
+      stateOf(idOf("wing")).suspended_until == null &&
+      noticeBodies(missed[0]).length === 0 &&
+      epochDuringRecovery.effective_at === GO_LIVE &&
+      liveRow.at === "2026-11-19 02:00:00",
+    JSON.stringify({ opening: opening(missed[0]), wing: stateOf(idOf("wing")), epoch: epochDuringRecovery, live: liveRow.at })
+  );
+  check(
+    "失敗期間已經遲咗先回覆的，補跑唔會當逾時，亦唔會計入次數",
+    opening(repliedLate)?.met_at === "2026-11-17 08:00:00" &&
+      opening(repliedLate)?.delay_recorded_at == null &&
+      noticeBodies(repliedLate).length === 0 &&
+      stateOf(idOf("wing")).delay_count === 0
+  );
+  check(
+    "失敗期間尚未到期的期限唔會被改寫",
+    opening(stillOpen)?.due_at === "2026-11-19 06:00:00" &&
+      opening(stillOpen)?.count_start_at === "2026-11-19 00:00:00" &&
+      opening(stillOpen)?.delay_recorded_at == null
+  );
+  const heldDue = opening(missed[0])?.due_at;
+  slaMod.scanReplySla(recoveryMid);
+  check(
+    "重新計之後、新期限未到之前再檢查，仍然未逾時，亦唔會再改期限",
+    opening(missed[0])?.due_at === heldDue &&
+      opening(missed[0])?.delay_recorded_at == null &&
+      stateOf(idOf("wing")).delay_count === 0 &&
+      stateOf(idOf("wing")).suspended_until == null
+  );
+  const marked = slaMod.scanReplySla(recoveryLate);
+  const wingAfter = stateOf(idOf("wing"));
+  const wingStarted = appDb
+    .prepare(`SELECT suspensions_started AS n FROM staff_reply_sla WHERE staff_id = ?`)
+    .get(idOf("wing")) as { n: number };
+  const pauseUntil = formatUtcTimestamp(new Date(recoveryLate.getTime() + REPLY_SLA_FIRST_SUSPEND_MS));
+  const thirdBodies = noticeBodies(missed[2]);
+  const thirdOwn = thirdBodies.find((body) => body.includes("你的回覆已逾時")) || "";
+  check(
+    "重新計的期限過咗先算逾時，三次就暫停公司線自動派單三日",
+    marked.delays === 3 &&
+      missed.every((commentId) => opening(commentId)?.delay_recorded_at === "2026-11-19 04:30:00") &&
+      wingAfter.delay_count === 0 &&
+      wingAfter.suspended_until === pauseUntil &&
+      wingAfter.active === 1 &&
+      Number(wingStarted.n) === 1 &&
+      thirdBodies.some((body) => body.includes("暫停自動派單三日")) &&
+      thirdOwn.includes("你的回覆已逾時") &&
+      thirdOwn.includes("暫停三日") &&
+      opening(stillOpen)?.delay_recorded_at == null,
+    JSON.stringify({ wing: wingAfter, started: wingStarted.n, own: thirdOwn, delays: marked.delays })
+  );
+  } finally {
+    pushes.length = 0;
+    appDb.exec(
+      `DELETE FROM staff_notices;
+       DELETE FROM staff_reply_sla;
+       DELETE FROM reply_sla;
+       DELETE FROM reply_sla_epoch;
+       DELETE FROM comment_replies;
+       DELETE FROM comments;`
+    );
+  }
 
   const oldUnanswered = addComment(idOf("eddie"), "2026-11-01 02:00:00");
   const oldAnswered = addComment(idOf("eddie"), "2026-11-02 03:00:00");

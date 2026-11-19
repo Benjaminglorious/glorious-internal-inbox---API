@@ -274,9 +274,13 @@ CREATE INDEX IF NOT EXISTS idx_reply_sla_due
   WHERE delay_recorded_at IS NULL AND met_at IS NULL AND skipped_at IS NULL;
 
 -- 部署後檢查器第一次跑的 UTC 時間。重啟唔改，避免舊訊息的鐘被重設。
+-- settlement_live_at：第一次可以成功寫入同事逾時狀態的 UTC 時間。只寫一次。
+-- 在這之前已過期、但從未記低結果的未覆訊息，會由該次檢查按同一套計時規則重新計，
+-- 唔會因為中間每次寫入都失敗而即時逾時或暫停派單。已經記低的結果唔會重開。
 CREATE TABLE IF NOT EXISTS reply_sla_epoch (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   effective_at TEXT NOT NULL,
+  settlement_live_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

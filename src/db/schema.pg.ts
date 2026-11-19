@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS "session" (
   "expire" timestamp(6) NOT NULL
 );
 CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
+-- reply_sla_epoch already exists on the live database. CREATE TABLE IF NOT EXISTS will not add columns.
+ALTER TABLE reply_sla_epoch ADD COLUMN IF NOT EXISTS settlement_live_at TEXT;
 COMMIT;
 `;
 }

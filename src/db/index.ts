@@ -41,6 +41,7 @@ function openDatabase(): SqlDatabase {
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   sqlite.exec(SCHEMA_SQL);
+  ensureReplySlaSettlementColumn(sqlite);
   migrateCommentsTable(sqlite);
   ensureWhatsAppPhoneColumns(sqlite);
   ensureEntryPathColumn(sqlite);
@@ -49,6 +50,13 @@ function openDatabase(): SqlDatabase {
   backfillWhatsAppThreadPhones(sqlite);
   migrateCommentReplies(sqlite);
   return sqlite;
+}
+
+function ensureReplySlaSettlementColumn(sqlite: DatabaseType): void {
+  const cols = columnNames(sqlite, "reply_sla_epoch");
+  if (cols.size > 0 && !cols.has("settlement_live_at")) {
+    sqlite.exec(`ALTER TABLE reply_sla_epoch ADD COLUMN settlement_live_at TEXT`);
+  }
 }
 
 function columnNames(sqlite: DatabaseType, table: string): Set<string> {
