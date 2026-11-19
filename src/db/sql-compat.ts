@@ -46,9 +46,12 @@ export function translateSql(sql: string): string {
  * Skip tables whose key is not a column named id. Postgres raises 42703
  * (column "id" does not exist) and aborts the statement, including the
  * boot-time fold into comment_message_keys.
+ * staff_reply_sla is keyed by staff_id. The reply-time checker upserts it
+ * when a colleague's late reply is recorded; RETURNING id made that write
+ * throw on every check.
  */
 const INSERT_WITHOUT_ID_COLUMN =
-  /^insert\s+into\s+(?:car_sync_state|comment_message_keys|email_sync_state)\b/i;
+  /^insert\s+into\s+(?:car_sync_state|comment_message_keys|email_sync_state|staff_reply_sla)\b/i;
 
 export function insertReturningId(sql: string): string {
   const trimmed = sql.trim();

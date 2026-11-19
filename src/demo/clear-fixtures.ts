@@ -49,8 +49,19 @@ async function main(): Promise<number> {
         insertReturningId("INSERT INTO comment_replies (comment_id, body) VALUES (?, ?)").endsWith("RETURNING id") &&
         insertReturningId("INSERT INTO car_sync_state (source) VALUES (?)") ===
           "INSERT INTO car_sync_state (source) VALUES (?)" &&
+        insertReturningId(
+          "INSERT INTO staff_reply_sla (staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+        ) ===
+          "INSERT INTO staff_reply_sla (staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at) VALUES (?, ?, ?, ?, ?, ?)" &&
         insertReturningId(messageKeyInsert) === messageKeyInsert &&
-        !/\breturning\s+id\b/i.test(translateSql(insertReturningId(messageKeyInsert)))
+        !/\breturning\s+id\b/i.test(translateSql(insertReturningId(messageKeyInsert))) &&
+        !/\breturning\s+id\b/i.test(
+          translateSql(
+            insertReturningId(
+              "INSERT INTO staff_reply_sla (staff_id, delay_count) VALUES (?, ?) ON CONFLICT(staff_id) DO UPDATE SET delay_count = excluded.delay_count"
+            )
+          )
+        )
     );
 
     // eslint-disable-next-line @typescript-eslint/no-require-imports

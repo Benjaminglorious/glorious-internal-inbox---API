@@ -17,8 +17,13 @@ import { formatStaffTimestamp, parseStoredTimestamp } from "../time";
  * 每則未完成對話入面、尚未有同事回覆的客戶入站（新留言，或者之後嘅 inbound 再留言）
  * 都要現任負責人回覆。已完成（done）的對話唔計。已經有較後同事回覆的維持達標，唔當逾時。
  * 上線前送到的訊息由檢查器第一次跑的瞬間重新計時（reply_sla_epoch），
- * 唔計之前等咗幾多日，亦唔會一上線就當逾時。重啟唔改呢個瞬間，亦唔會重開已有期限。
- * 上線後的新訊息由送到開始計。夜晚窗 23:00–09:00 一樣暫停。
+ * 唔計之前等咗幾多日，亦唔會一上線就當逾時。重啟唔改呢個瞬間。
+ * 已經記低的達標、逾時或跳過唔會重開。上線後的新訊息由送到開始計。
+ * 夜晚窗 23:00–09:00 一樣暫停。
+ * 如果開了期限但每次寫入同事狀態都失敗，那些在第一次可以寫入
+ * （reply_sla_epoch.settlement_live_at）之前已過期、又未曾有結果的個案：
+ * 已經有同事回覆或已完成就關閉，唔補記逾時；仍未回覆就按同一套計時規則
+ * 由呢次檢查重新計，唔會即時逾時或暫停派單。之後先到期的期限照正常記。
  * 期限一過又未有同事 outbound，就記一次逾時。同一則入站只記一次。
  * 逾時計喺期限到期嗰刻嘅負責人；之後改派唔會再計多次。
  * 未有負責人就唔計入任何同事，但仍然通知管理員。
@@ -491,16 +496,8 @@ function assigneeOverdueText(input: {
   return `${lead}你而家累積 ${input.delayCount}/${REPLY_SLA_STRIKES} 次逾時。`;
 }
 
-function upsertStaffState(
-  staffId: number,
-  delayCount: number,
-  suspendedFrom: string | null,
-  suspendedUntil: string | null,
-  suspensionsStarted: number,
-  stamp: string
-): void {
-  db.prepare(
-    `INSERT INTO staff_reply_sla (
+/** staff_reply_sla 的主鍵係 staff_id，冇 id 欄。Postgres 包裝唔可以再補 RETURNING id。 */
+export const STAFF_REPLY_SLA_UPSERT_SQL = `INSERT INTO staff_reply_sla (
        staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at
      )
      VALUES (?, ?, ?, ?, ?, ?)
@@ -509,8 +506,24 @@ function upsertStaffState(
        suspended_from = excluded.suspended_from,
        suspended_until = excluded.suspended_until,
        suspensions_started = excluded.suspensions_started,
-       updated_at = excluded.updated_at`
-  ).run(staffId, delayCount, suspendedFrom, suspendedUntil, suspensionsStarted, stamp);
+       updated_at = excluded.updated_at`;
+
+function upsertStaffState(
+  staffId: number,
+  delayCount: number,
+  suspendedFrom: string | null,
+  suspendedUntil: string | null,
+  suspensionsStarted: number,
+  stamp: string
+): void {
+  db.prepare(STAFF_REPLY_SLA_UPSERT_SQL).run(
+    staffId,
+    delayCount,
+    suspendedFrom,
+    suspendedUntil,
+    suspensionsStarted,
+    stamp
+  );
 }
 
 function settleOne(caseId: number, now: Date, allowDelay: boolean): "met" | "delay" | "skip" | "open" {
@@ -658,6 +671,121 @@ function settleOne(caseId: number, now: Date, allowDelay: boolean): "met" | "del
   return settled.kind;
 }
 
+/**
+ * 第一次可以成功寫入同事逾時狀態的 UTC 時間。只寫一次，重啟唔改。
+ * 在這之前的失敗檢查可能已經開了期限，但逾時次數同暫停從未提交。
+ */
+function ensureSettlementLive(now: Date): Date {
+  const existing = db.prepare(`SELECT settlement_live_at FROM reply_sla_epoch WHERE id = 1`).get() as
+    | { settlement_live_at: string | null }
+    | undefined;
+  if (!existing) throw new Error("reply_sla_epoch 缺少生效時間");
+  if (existing.settlement_live_at) {
+    const parsed = parseUtc(existing.settlement_live_at);
+    if (!parsed) throw new Error("reply_sla_epoch 可寫入時間無法解析");
+    return parsed;
+  }
+  const stamp = formatUtcTimestamp(now);
+  db.prepare(
+    `UPDATE reply_sla_epoch SET settlement_live_at = ? WHERE id = 1 AND settlement_live_at IS NULL`
+  ).run(stamp);
+  const row = db.prepare(`SELECT settlement_live_at FROM reply_sla_epoch WHERE id = 1`).get() as
+    | { settlement_live_at: string | null }
+    | undefined;
+  if (!row?.settlement_live_at) throw new Error("reply_sla_epoch 缺少可寫入時間");
+  console.log(
+    `[sla] 由 ${row.settlement_live_at} UTC 開始先會寫入逾時結果。在這之前已過期、但檢查失敗未記低的個案，唔會因為補跑而即時逾時或暫停派單。`
+  );
+  const parsed = parseUtc(row.settlement_live_at);
+  if (!parsed) throw new Error("reply_sla_epoch 可寫入時間無法解析");
+  return parsed;
+}
+
+/**
+ * 寫入同事狀態之前已經失敗的檢查，唔好喺第一次成功時一次過追討。
+ * 只處理期限早於或剛好等於 settlement_live_at、而且尚未有結果的個案：
+ * 已完成就跳過；已經有同事回覆就當達標，唔補記一次逾時；
+ * 仍未回覆就用同一套計時規則由呢次檢查重新計，今次唔當逾時。
+ * settlement_live_at 之後先到期的期限唔會改。
+ */
+function releaseCasesMissedWhileCheckerFailed(liveAt: Date, now: Date): { rebased: number; answered: number; skipped: number } {
+  const live = formatUtcTimestamp(liveAt);
+  const rows = db
+    .prepare(
+      `SELECT id, comment_id, inbound_reply_id, inbound_at, due_at, met_at, delay_recorded_at
+       FROM reply_sla
+       WHERE met_at IS NULL
+         AND delay_recorded_at IS NULL
+         AND skipped_at IS NULL
+         AND due_at <= ?`
+    )
+    .all(live) as SlaCaseRow[];
+  if (!rows.length) return { rebased: 0, answered: 0, skipped: 0 };
+  const notBefore = now.getTime() > liveAt.getTime() ? now : liveAt;
+  const notBeforeStamp = formatUtcTimestamp(notBefore);
+  let rebased = 0;
+  let answered = 0;
+  let skipped = 0;
+  for (const row of rows) {
+    const comment = db.prepare(`SELECT status FROM comments WHERE id = ?`).get(row.comment_id) as
+      | { status: string }
+      | undefined;
+    if (!comment || comment.status === "done") {
+      const result = db
+        .prepare(
+          `UPDATE reply_sla
+           SET skipped_at = ?
+           WHERE id = ? AND met_at IS NULL AND delay_recorded_at IS NULL AND skipped_at IS NULL`
+        )
+        .run(notBeforeStamp, row.id);
+      if (result.changes === 1) skipped += 1;
+      continue;
+    }
+    const reply = firstStaffReply(row);
+    if (reply) {
+      const marked = db
+        .prepare(
+          `UPDATE reply_sla
+           SET met_at = ?, met_reply_id = ?
+           WHERE id = ? AND met_at IS NULL AND delay_recorded_at IS NULL AND skipped_at IS NULL`
+        )
+        .run(reply.created_at, reply.id, row.id);
+      if (marked.changes === 1) answered += 1;
+      continue;
+    }
+    const inbound = parseUtc(row.inbound_at);
+    if (!inbound) {
+      console.error(`[sla] 留言 #${row.comment_id} 的時間無法解析，跳過重計`);
+      continue;
+    }
+    const deadline = computeReplyDeadline(inbound, notBefore);
+    const updated = db
+      .prepare(
+        `UPDATE reply_sla
+         SET count_start_at = ?, due_at = ?, limit_seconds = ?
+         WHERE id = ?
+           AND met_at IS NULL
+           AND delay_recorded_at IS NULL
+           AND skipped_at IS NULL
+           AND due_at <= ?`
+      )
+      .run(
+        formatUtcTimestamp(deadline.countStart),
+        formatUtcTimestamp(deadline.due),
+        deadline.limitSeconds,
+        row.id,
+        live
+      );
+    if (updated.changes === 1) rebased += 1;
+  }
+  if (rebased > 0 || answered > 0 || skipped > 0) {
+    console.log(
+      `[sla] 檢查先前未能寫入逾時。${answered} 則已有同事回覆，不當逾時；${skipped} 則已完成，已跳過；${rebased} 則仍未回覆，由 ${notBeforeStamp} UTC 按原有計時規則重新計。今次未記逾時，亦未暫停派單。`
+    );
+  }
+  return { rebased, answered, skipped };
+}
+
 function reconcileOpenCases(now: Date): { met: number } {
   const rows = db
     .prepare(
@@ -703,7 +831,9 @@ function settleDueCases(now: Date): { met: number; delays: number } {
 export function scanReplySla(now = new Date()): ReplySlaScanResult {
   const restored = restoreExpiredSuspensions(now);
   const effective = ensureReplySlaEpoch(now);
+  const liveAt = ensureSettlementLive(now);
   const opened = discoverCases(effective);
+  releaseCasesMissedWhileCheckerFailed(liveAt, now);
   const reconciled = reconcileOpenCases(now);
   const settled = settleDueCases(now);
   return { restored, opened, met: reconciled.met + settled.met, delays: settled.delays };
