@@ -212,7 +212,7 @@ async function dbCases(): Promise<void> {
     ["tony", "Tony Chan", 1],
     ["benjamin", "Benjamin", 1],
     ["vivian", "Vivian", 1],
-    ["ken", "Ken Kan", 1],
+    ["ken", "Ken Kan", 0],
   ];
   for (const [username, displayName, isAdmin] of people) {
     const info = appDb
@@ -316,6 +316,136 @@ async function dbCases(): Promise<void> {
       )
       .run(staffId, count, until ? PAST : null, until, PAST);
   };
+  const slaRow = (staffId: number) =>
+    appDb
+      .prepare(
+        `SELECT delay_count, suspended_until, suspensions_started AS n
+         FROM staff_reply_sla WHERE staff_id = ?`
+      )
+      .get(staffId) as { delay_count: number; suspended_until: string | null; n: number } | undefined;
+
+  const patId = Number(
+    appDb
+      .prepare(
+        `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
+         VALUES ('pat', 'Pat Ho', ?, 0, 1)`
+      )
+      .run(hash).lastInsertRowid
+  );
+  const untouched = addComment(idOf("eddie"), "2026-10-01 01:00:00");
+  const untouchedBody = (appDb.prepare(`SELECT body FROM comments WHERE id = ?`).get(untouched) as { body: string }).body;
+  appDb
+    .prepare(
+      `INSERT INTO reply_sla (comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds)
+       VALUES (?, NULL, '2026-10-01 01:00:00', ?, ?, 7200)`
+    )
+    .run(untouched, GO_LIVE, OLD_DUE);
+  appDb
+    .prepare(
+      `INSERT INTO staff_reply_sla (staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at)
+       VALUES (?, 2, ?, ?, 0, ?)`
+    )
+    .run(idOf("wing"), PAST, FUTURE, PAST);
+  appDb
+    .prepare(
+      `INSERT INTO staff_reply_sla (staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at)
+       VALUES (?, 1, NULL, NULL, 0, ?)`
+    )
+    .run(idOf("sam"), PAST);
+  appDb
+    .prepare(
+      `INSERT INTO staff_reply_sla (staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at)
+       VALUES (?, 4, ?, ?, 3, ?)`
+    )
+    .run(idOf("jason"), PAST, FUTURE, PAST);
+  const commentsBeforeReset = (appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n;
+  const firstReset = slaMod.resetStaffReplySlaOnce(parseStoredTimestamp("2026-11-20 01:00:00", "utc") as Date);
+  const wingCleared = slaRow(idOf("wing"));
+  const samCleared = slaRow(idOf("sam"));
+  const jasonKept = slaRow(idOf("jason"));
+  const patMarked = slaRow(patId);
+  const heldCase = appDb
+    .prepare(`SELECT due_at, delay_recorded_at, met_at FROM reply_sla WHERE comment_id = ?`)
+    .get(untouched) as { due_at: string; delay_recorded_at: string | null; met_at: string | null };
+  const epochAfterReset = (appDb.prepare(`SELECT COUNT(*) AS n FROM reply_sla_epoch`).get() as { n: number }).n;
+  check(
+    "一次過重置清走暫停同本輪次數，未滿一輪的人標記成下次 7 日，已有輪次保留",
+    firstReset.applied === true &&
+      firstReset.staff === 9 &&
+      wingCleared?.delay_count === 0 &&
+      wingCleared.suspended_until == null &&
+      Number(wingCleared.n) === 1 &&
+      samCleared?.delay_count === 0 &&
+      samCleared.suspended_until == null &&
+      Number(samCleared.n) === 1 &&
+      jasonKept?.delay_count === 0 &&
+      jasonKept.suspended_until == null &&
+      Number(jasonKept.n) === 3 &&
+      patMarked?.delay_count === 0 &&
+      Number(patMarked.n) === 1,
+    JSON.stringify({ firstReset, wing: wingCleared, sam: samCleared, jason: jasonKept, pat: patMarked })
+  );
+  check(
+    "重置唔會重開舊訊息時限，亦唔改留言",
+    heldCase.due_at === OLD_DUE &&
+      heldCase.delay_recorded_at == null &&
+      heldCase.met_at == null &&
+      epochAfterReset === 0 &&
+      commentsBeforeReset === (appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n &&
+      (appDb.prepare(`SELECT body FROM comments WHERE id = ?`).get(untouched) as { body: string }).body === untouchedBody
+  );
+  appDb.prepare(`DELETE FROM comments WHERE id = ?`).run(untouched);
+  appDb.prepare(`INSERT INTO reply_sla_epoch (id, effective_at, settlement_live_at) VALUES (1, ?, ?)`).run(GO_LIVE, GO_LIVE);
+  const patCases: number[] = [];
+  for (let i = 0; i < 3; i += 1) {
+    const commentId = addComment(patId, T_IN);
+    appDb
+      .prepare(
+        `INSERT INTO reply_sla (comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds)
+         VALUES (?, NULL, ?, ?, ?, 7200)`
+      )
+      .run(commentId, T_IN, T_IN, T_DUE);
+    patCases.push(commentId);
+  }
+  const strikeNow = parseStoredTimestamp(T_LATE, "utc") as Date;
+  const strike = slaMod.scanReplySla(strikeNow);
+  const patAfter = slaRow(patId);
+  const sevenUntil = formatUtcTimestamp(new Date(strikeNow.getTime() + REPLY_SLA_LATER_SUSPEND_MS));
+  const patThird = noticeBodies(patCases[2]);
+  const epochAfterStrike = appDb.prepare(`SELECT effective_at FROM reply_sla_epoch WHERE id = 1`).get() as {
+    effective_at: string;
+  };
+  check(
+    "重置之後再累積三次暫停 7 日，唔會再當第一次 3 日",
+    strike.delays === 3 &&
+      patAfter?.delay_count === 0 &&
+      patAfter.suspended_until === sevenUntil &&
+      Number(patAfter.n) === 2 &&
+      patThird.some((body) => body.includes("暫停自動派單七日")) &&
+      !patThird.some((body) => body.includes("三日")) &&
+      epochAfterStrike.effective_at === GO_LIVE,
+    JSON.stringify({ strike, pat: patAfter, notice: patThird[0] })
+  );
+  const secondReset = slaMod.resetStaffReplySlaOnce(strikeNow);
+  const patStill = slaRow(patId);
+  check(
+    "重置只跑一次，之後嘅暫停同次數唔會被再清走",
+    secondReset.applied === false &&
+      secondReset.staff === 0 &&
+      patStill?.suspended_until === sevenUntil &&
+      patStill.delay_count === 0 &&
+      Number(patStill.n) === 2
+  );
+  appDb.exec(
+    `DELETE FROM staff_notices;
+     DELETE FROM reply_sla;
+     DELETE FROM reply_sla_epoch;
+     DELETE FROM comment_replies;
+     DELETE FROM comments;
+     DELETE FROM staff_reply_sla;
+     DELETE FROM app_boot_once;
+     DELETE FROM staff WHERE username = 'pat';`
+  );
 
   try {
   const recoveryNow = parseStoredTimestamp("2026-11-19 02:00:00", "utc") as Date;
@@ -646,16 +776,19 @@ async function dbCases(): Promise<void> {
   check("三次暫停的通知唔會重覆", pushes.length === pushesBeforeStrikes + 6 && noticeBodies(wingComments[2]).length === 4);
 
   setCursor(idOf("eddie"), "eddie");
+  appDb.prepare(`UPDATE staff_reply_sla SET suspended_until = ? WHERE staff_id = ?`).run(FUTURE, idOf("wing"));
   const skipped = [
+    assignMod.pickNextAutoAssignStaffId(),
     assignMod.pickNextAutoAssignStaffId(),
     assignMod.pickNextAutoAssignStaffId(),
     assignMod.pickNextAutoAssignStaffId(),
   ];
   check(
-    "暫停中的同事像被排除的管理員一樣跳過",
-    skipped.join(",") === [idOf("jason"), idOf("sam"), idOf("eddie")].join(","),
+    "暫停中的同事會跳過，Ken 排喺 Jason 同 Sam 後面",
+    skipped.join(",") === [idOf("jason"), idOf("sam"), idOf("ken"), idOf("eddie")].join(","),
     skipped.join(",")
   );
+  appDb.prepare(`UPDATE staff_reply_sla SET suspended_until = ? WHERE staff_id = ?`).run(until, idOf("wing"));
 
   const during = addComment(idOf("wing"), T_IN);
   check(
@@ -698,7 +831,7 @@ async function dbCases(): Promise<void> {
     JSON.stringify(renewed)
   );
 
-  const pool = [idOf("eddie"), idOf("wing"), idOf("jason"), idOf("sam")];
+  const pool = [idOf("eddie"), idOf("wing"), idOf("jason"), idOf("sam"), idOf("ken")];
   for (const staffId of pool) setSuspension(staffId, FUTURE, 0);
   setCursor(idOf("eddie"), "eddie");
   const versionBefore = (
@@ -793,20 +926,33 @@ async function dbCases(): Promise<void> {
     child.stderr?.slice(-400) || JSON.stringify(fresh)
   );
 
-  for (const staffId of [idOf("eddie"), idOf("jason"), idOf("sam")]) setSuspension(staffId, null, 0);
+  for (const staffId of [idOf("eddie"), idOf("jason"), idOf("sam"), idOf("ken")]) setSuspension(staffId, null, 0);
   const tonyComments = [addComment(idOf("tony"), T_IN), addComment(idOf("tony"), T_IN), addComment(idOf("tony"), T_IN)];
   slaMod.scanReplySla(lateNow);
   const tonyState = stateOf(idOf("tony"));
+  const tonyAdmin = appDb.prepare(`SELECT is_admin FROM staff WHERE username = 'tony'`).get() as { is_admin: number };
+  const kenRole = appDb.prepare(`SELECT is_admin FROM staff WHERE username = 'ken'`).get() as { is_admin: number };
   check(
     "已排除的管理員逾時會通知，但不會暫停派單",
     tonyState.delay_count === 3 &&
       tonyState.suspended_until == null &&
+      tonyAdmin.is_admin === 1 &&
       !noticeBodies(tonyComments[2])[0].includes("暫停") &&
       noticeBodies(tonyComments[2])[0].includes("Tony Chan"),
     JSON.stringify(tonyState)
   );
   setCursor(idOf("sam"), "sam");
-  check("Tony 仍然不在自動派單", assignMod.pickNextAutoAssignStaffId() === idOf("eddie"));
+  const afterSam = assignMod.pickNextAutoAssignStaffId();
+  check(
+    "Tony、Benjamin、Vivian 仍然不在自動派單，Ken 會接到",
+    afterSam === idOf("ken") &&
+      kenRole.is_admin === 0 &&
+      assignMod.isAutoAssignExcluded("ken") === false &&
+      assignMod.isAutoAssignExcluded("tony") === true &&
+      assignMod.isAutoAssignExcluded("benjamin") === true &&
+      assignMod.isAutoAssignExcluded("vivian") === true,
+    String(afterSam)
+  );
 
   appDb.prepare(`UPDATE staff SET username = ? WHERE id = ?`).run("lau.eddie", idOf("eddie"));
   const lookedUp = addComment(idOf("eddie"), T_IN);

@@ -148,12 +148,26 @@ async function main(): Promise<number> {
     const tony = appDb.prepare(`SELECT id FROM staff WHERE username = 'tony'`).get() as { id: number };
     const benjamin = appDb.prepare(`SELECT id FROM staff WHERE username = 'benjamin'`).get() as { id: number };
     const vivian = appDb.prepare(`SELECT id FROM staff WHERE username = 'vivian'`).get() as { id: number };
-    const ken = appDb.prepare(`SELECT id FROM staff WHERE username = 'ken'`).get() as { id: number };
+    const ken = appDb.prepare(`SELECT id, is_admin FROM staff WHERE username = 'ken'`).get() as {
+      id: number;
+      is_admin: number;
+    };
     const picked = assignMod.pickNextAutoAssignStaffId();
+    const pickedName = appDb.prepare(`SELECT username FROM staff WHERE id = ?`).get(picked) as
+      | { username: string }
+      | undefined;
     check(
-      "自動派單唔係 Tony、Benjamin、Vivian 或 Ken",
-      picked != null && picked !== tony.id && picked !== benjamin.id && picked !== vivian.id && picked !== ken.id,
-      String(picked)
+      "自動派單可以係 Ken，但唔係 Tony、Benjamin、Vivian",
+      ken.is_admin === 0 &&
+        picked != null &&
+        picked !== tony.id &&
+        picked !== benjamin.id &&
+        picked !== vivian.id &&
+        !!pickedName &&
+        ["eddie", "wing", "jason", "ken"].includes(pickedName.username) &&
+        assignMod.isAutoAssignExcluded("ken") === false &&
+        assignMod.isAutoAssignExcluded("tony") === true,
+      pickedName?.username ?? String(picked)
     );
 
     process.env.NODE_ENV = "production";
