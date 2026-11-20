@@ -2,7 +2,7 @@
  * 同事角色同留言可見範圍煙霧測試。
  * 用臨時 SQLite，唔會郁到正式 data/inbox.db。
  *
- * 覆蓋：seed 姓名／角色、Ken 係同事而且會自動派單、Tony／Benjamin／Vivian 仍然係管理員而且唔自動派單、
+ * 覆蓋：seed 姓名／角色、Ken 係同事而且會自動派單、Tony／Benjamin／Vivian／Raymond Chan 仍然係管理員而且唔自動派單、
  * 正式庫形狀嘅 staff.id 5–13 會刪、受保護同事喺呢個範圍就唔刪、
  * 自動派單只計 active=1、
  * 在職同事唔可以經 API 或網頁睇／回覆／改狀態其他人或未派留言、
@@ -118,6 +118,7 @@ async function main(): Promise<number> {
     expectRow("tony", "Tony Chan", 1, 1);
     expectRow("benjamin", "Benjamin", 1, 1);
     expectRow("vivian", "Vivian", 1, 1);
+    expectRow("raymond", "Raymond Chan", 1, 1);
     expectRow("ken", "Ken Kan", 0, 1);
     expectRow("eddie", "Eddie Lau", 1, 1);
     expectRow("wing", "Wing Cheng", 0, 1);
@@ -130,16 +131,17 @@ async function main(): Promise<number> {
       .prepare(`SELECT username FROM staff WHERE id BETWEEN 5 AND 13 ORDER BY id ASC`)
       .all() as Array<{ username: string }>;
     check(
-      "全新 seed 嘅 id 5–13 係 Benjamin、Vivian、Ken，所以唔刪",
+      "全新 seed 嘅 id 5–13 係 Benjamin、Vivian、Ken、Raymond，所以唔刪",
       freshGuard.skipped === true &&
         freshGuard.removed.length === 0 &&
         freshGuard.withheld.length === 0 &&
-        protectedIds.map((row) => row.username).join(",") === "benjamin,vivian,ken"
+        protectedIds.map((row) => row.username).join(",") === "benjamin,vivian,ken,raymond"
     );
 
     const tony = byName.get("tony")!;
     const benjamin = byName.get("benjamin")!;
     const vivian = byName.get("vivian")!;
+    const raymond = byName.get("raymond")!;
     const ken = byName.get("ken")!;
     const eddie = byName.get("eddie")!;
     const wing = byName.get("wing")!;
@@ -169,12 +171,12 @@ async function main(): Promise<number> {
       cycle.push(row.username);
     }
     check(
-      "自動派單係 Eddie → Wing → Jason → Ken，然後返 Eddie；Tony、Benjamin、Vivian 唔參與",
+      "自動派單係 Eddie → Wing → Jason → Ken，然後返 Eddie；Tony、Benjamin、Vivian、Raymond 唔參與",
       cycle.join(",") === "eddie,wing,jason,ken,eddie",
       cycle.join(",")
     );
     check(
-      "Ken 係在職同事；Tony、Benjamin、Vivian、Eddie 仍然係在職管理員",
+      "Ken 係在職同事；Tony、Benjamin、Vivian、Raymond、Eddie 仍然係在職管理員",
       ken.is_admin === 0 &&
         ken.active === 1 &&
         ken.display_name === "Ken Kan" &&
@@ -182,6 +184,9 @@ async function main(): Promise<number> {
         vivian.active === 1 &&
         benjamin.is_admin === 1 &&
         benjamin.active === 1 &&
+        raymond.is_admin === 1 &&
+        raymond.active === 1 &&
+        raymond.display_name === "Raymond Chan" &&
         tony.is_admin === 1 &&
         tony.active === 1 &&
         eddie.is_admin === 1 &&
@@ -189,7 +194,9 @@ async function main(): Promise<number> {
         assignApi.isAutoAssignExcluded("ken") === false &&
         assignApi.isAutoAssignExcluded("tony") === true &&
         assignApi.isAutoAssignExcluded("benjamin") === true &&
-        assignApi.isAutoAssignExcluded("vivian") === true
+        assignApi.isAutoAssignExcluded("vivian") === true &&
+        assignApi.isAutoAssignExcluded("raymond") === true &&
+        assignApi.isAutoAssignExcluded("Raymond") === true
     );
 
     check(
@@ -282,6 +289,8 @@ async function main(): Promise<number> {
     const tonyLogin = await login(base, "tony");
     const benjaminLogin = await login(base, "benjamin");
     const vivianLogin = await login(base, "vivian");
+    const raymondLogin = await login(base, "raymond");
+    const raymondCaseLogin = await login(base, "Raymond");
     const eddieLogin = await login(base, "eddie");
     const jasonLogin = await login(base, "jason");
     const kenLogin = await login(base, "ken");
@@ -290,6 +299,11 @@ async function main(): Promise<number> {
     check("Tony 可以登入", tonyLogin.status === 302 && tonyLogin.cookie.includes("connect.sid="));
     check("Benjamin 可以登入", benjaminLogin.status === 302 && benjaminLogin.cookie.includes("connect.sid="));
     check("Vivian 可以登入", vivianLogin.status === 302 && vivianLogin.cookie.includes("connect.sid="));
+    check("Raymond 可以用小寫 raymond 登入", raymondLogin.status === 302 && raymondLogin.cookie.includes("connect.sid="));
+    check(
+      "登入比對儲低嘅用戶名，Raymond 呢個大小寫登入唔到",
+      raymondCaseLogin.status === 302 && raymondCaseLogin.location.includes("error") && !raymondCaseLogin.cookie
+    );
     check("Ken 可以登入", kenLogin.status === 302 && kenLogin.cookie.includes("connect.sid="));
     const kenHome = await fetch(`${base}/`, { headers: { cookie: kenLogin.cookie } });
     const kenHomeHtml = await kenHome.text();
@@ -310,9 +324,9 @@ async function main(): Promise<number> {
     const linesPage = await fetch(`${base}/whatsapp-lines`, { headers: { cookie: tonyLogin.cookie } });
     const linesHtml = await linesPage.text();
     check(
-      "WhatsApp 線路頁寫明 Tony、Benjamin、Vivian 唔參與自動派單，Ken 會參與",
+      "WhatsApp 線路頁寫明 Tony、Benjamin、Vivian、Raymond 唔參與自動派單，Ken 會參與",
       linesPage.status === 200 &&
-        linesHtml.includes("Tony、Benjamin、Vivian 唔參與自動派單") &&
+        linesHtml.includes("Tony、Benjamin、Vivian、Raymond 唔參與自動派單") &&
         linesHtml.includes("Ken 會參與") &&
         !linesHtml.includes("Tony、Benjamin、Vivian、Ken 唔參與自動派單") &&
         linesHtml.includes("Eddie → Wing → Jason")
@@ -646,9 +660,10 @@ async function main(): Promise<number> {
     const staffPage = await fetch(`${base}/staff`, { headers: { cookie: vivianLogin.cookie } });
     const staffHtml = await staffPage.text();
     check(
-      "Vivian 可以開同事名單：自己係管理員，Ken 係同事／啟用；舊收藏種子唔喺表",
+      "Vivian 可以開同事名單：自己同 Raymond 係管理員，Ken 係同事／啟用；舊收藏種子唔喺表",
       staffPage.status === 200 &&
         /<code>vivian<\/code><\/td>\s*<td>管理員<\/td>\s*<td>啟用<\/td>/.test(staffHtml) &&
+        /<code>raymond<\/code><\/td>\s*<td>管理員<\/td>\s*<td>啟用<\/td>/.test(staffHtml) &&
         /<code>ken<\/code><\/td>\s*<td>同事<\/td>\s*<td>啟用<\/td>/.test(staffHtml) &&
         /<code>tony<\/code><\/td>\s*<td>管理員<\/td>\s*<td>啟用<\/td>/.test(staffHtml) &&
         !staffHtml.includes("kaixin") &&
@@ -660,6 +675,39 @@ async function main(): Promise<number> {
       body: JSON.stringify({ staff_id: jason.id }),
     });
     check("API：Vivian 可以改派", vivianAssign.status === 200);
+
+    const raymondHeaders = { cookie: raymondLogin.cookie, accept: "application/json" };
+    const raymondPage = await fetch(`${base}/`, { headers: { cookie: raymondLogin.cookie } });
+    const raymondHtml = await raymondPage.text();
+    check(
+      "網頁：Raymond 同 Benjamin 一樣見到未派",
+      raymondPage.status === 200 &&
+        raymondHtml.includes("只睇我嘅") &&
+        raymondHtml.includes("· 管理員") &&
+        raymondHtml.includes("Raymond Chan") &&
+        raymondHtml.includes("UNASSIGNED-ONLY-ADMIN")
+    );
+    const raymondDetail = await fetch(`${base}/comments/${unassignedId}`, {
+      headers: { cookie: raymondLogin.cookie },
+    });
+    const raymondDetailHtml = await raymondDetail.text();
+    check(
+      "網頁：Raymond 可以開未派並見到改派",
+      raymondDetail.status === 200 &&
+        raymondDetailHtml.includes("/assign") &&
+        raymondDetailHtml.includes("UNASSIGNED-ONLY-ADMIN")
+    );
+    const raymondLines = await fetch(`${base}/whatsapp-lines`, { headers: { cookie: raymondLogin.cookie } });
+    check("Raymond 可以開 WhatsApp 線路頁", raymondLines.status === 200);
+    const raymondAssign = await fetch(`${base}/api/comments/${jasonId}/assign`, {
+      method: "POST",
+      headers: { ...raymondHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ staff_id: wing.id }),
+    });
+    const assigneeAfterRaymond = appDb.prepare(`SELECT assignee_staff_id AS id FROM comments WHERE id = ?`).get(jasonId) as {
+      id: number;
+    };
+    check("API：Raymond 可以改派", raymondAssign.status === 200 && assigneeAfterRaymond.id === wing.id);
 
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const passwords = require("../auth/passwords") as typeof import("../auth/passwords");
@@ -836,6 +884,72 @@ async function main(): Promise<number> {
         adoptedKenName[0].password_hash === "kept-ken-hash"
     );
 
+    appDb
+      .prepare(
+        `UPDATE staff SET username = 'Raymond', display_name = 'Raymond Chan', is_admin = 0, active = 0, password_hash = 'kept-ray-hash' WHERE username = 'raymond'`
+      )
+      .run();
+    seedMod.applySeedStaff();
+    const adoptedRaymondCase = appDb
+      .prepare(
+        `SELECT username, display_name, is_admin, active, password_hash
+         FROM staff
+         WHERE lower(username) = 'raymond' OR lower(display_name) LIKE 'raymond%'`
+      )
+      .all() as Array<{
+      username: string;
+      display_name: string;
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    }>;
+    check(
+      "用戶名 Raymond 會升級成 raymond 管理員，唔會重複，已有密碼唔改",
+      adoptedRaymondCase.length === 1 &&
+        adoptedRaymondCase[0].username === "raymond" &&
+        adoptedRaymondCase[0].display_name === "Raymond Chan" &&
+        adoptedRaymondCase[0].is_admin === 1 &&
+        adoptedRaymondCase[0].active === 1 &&
+        adoptedRaymondCase[0].password_hash === "kept-ray-hash"
+    );
+
+    appDb
+      .prepare(
+        `UPDATE staff SET username = 'rchan', display_name = 'Raymond Chan', is_admin = 0, active = 0, password_hash = 'kept-ray-hash' WHERE username = 'raymond'`
+      )
+      .run();
+    seedMod.ensureRaymondAdmin();
+    const adoptedRaymondName = appDb
+      .prepare(
+        `SELECT username, display_name, is_admin, active, password_hash
+         FROM staff
+         WHERE lower(username) IN ('raymond', 'rchan') OR lower(trim(display_name)) = 'raymond' OR lower(trim(display_name)) LIKE 'raymond %'`
+      )
+      .all() as Array<{
+      username: string;
+      display_name: string;
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    }>;
+    const kenAfterRaymond = appDb.prepare(`SELECT is_admin, active, display_name FROM staff WHERE username = 'ken'`).get() as {
+      is_admin: number;
+      active: number;
+      display_name: string;
+    };
+    check(
+      "顯示名 Raymond Chan 會升級同一列做管理員，唔會另開帳號，亦唔改 Ken",
+      adoptedRaymondName.length === 1 &&
+        adoptedRaymondName[0].username === "raymond" &&
+        adoptedRaymondName[0].display_name === "Raymond Chan" &&
+        adoptedRaymondName[0].is_admin === 1 &&
+        adoptedRaymondName[0].active === 1 &&
+        adoptedRaymondName[0].password_hash === "kept-ray-hash" &&
+        kenAfterRaymond.is_admin === 0 &&
+        kenAfterRaymond.active === 1 &&
+        kenAfterRaymond.display_name === "Ken Kan"
+    );
+
     const tonyStill = appDb.prepare(`SELECT is_admin, active FROM staff WHERE username = 'tony'`).get() as {
       is_admin: number;
       active: number;
@@ -852,6 +966,10 @@ async function main(): Promise<number> {
     };
     appDb.prepare(`UPDATE staff SET is_admin = 0, active = 0 WHERE username = 'benjamin'`).run();
     appDb.prepare(`DELETE FROM staff WHERE username = 'vivian'`).run();
+    const raymondBeforeBoot = appDb.prepare(`SELECT id FROM staff WHERE username = 'raymond'`).get() as { id: number };
+    appDb.prepare(`UPDATE comments SET assignee_staff_id = NULL WHERE assignee_staff_id = ?`).run(raymondBeforeBoot.id);
+    appDb.prepare(`DELETE FROM staff_reply_sla WHERE staff_id = ?`).run(raymondBeforeBoot.id);
+    appDb.prepare(`DELETE FROM staff WHERE username = 'raymond'`).run();
     const kenBeforeBoot = appDb.prepare(`SELECT id FROM staff WHERE username = 'ken'`).get() as { id: number };
     appDb.prepare(`UPDATE comments SET assignee_staff_id = NULL WHERE assignee_staff_id = ?`).run(kenBeforeBoot.id);
     appDb.prepare(`DELETE FROM staff_reply_sla WHERE staff_id = ?`).run(kenBeforeBoot.id);
@@ -884,6 +1002,9 @@ async function main(): Promise<number> {
     const insertedKen = appDb
       .prepare(`SELECT display_name, is_admin, active, password_hash FROM staff WHERE username = 'ken'`)
       .get() as { display_name: string; is_admin: number; active: number; password_hash: string };
+    const insertedRaymond = appDb
+      .prepare(`SELECT display_name, is_admin, active, password_hash FROM staff WHERE username = 'raymond'`)
+      .get() as { display_name: string; is_admin: number; active: number; password_hash: string };
     const benjaminAfterBoot = appDb
       .prepare(`SELECT is_admin, active, password_hash FROM staff WHERE username = 'benjamin'`)
       .get() as { is_admin: number; active: number; password_hash: string };
@@ -910,7 +1031,16 @@ async function main(): Promise<number> {
         assignApi.isAutoAssignExcluded("ken") === false &&
         assignApi.isAutoAssignExcluded("tony") === true &&
         assignApi.isAutoAssignExcluded("benjamin") === true &&
-        assignApi.isAutoAssignExcluded("vivian") === true
+        assignApi.isAutoAssignExcluded("vivian") === true &&
+        assignApi.isAutoAssignExcluded("raymond") === true
+    );
+    check(
+      "已有同事嘅庫啟動會補 Raymond Chan 管理員，而且唔參與自動派單",
+      insertedRaymond.display_name === "Raymond Chan" &&
+        insertedRaymond.is_admin === 1 &&
+        insertedRaymond.active === 1 &&
+        passwords.verifyPassword(DEMO_PASSWORD, insertedRaymond.password_hash) &&
+        assignApi.isAutoAssignExcluded("raymond") === true
     );
     const slaOf = (username: string) =>
       appDb!
@@ -1079,6 +1209,7 @@ async function main(): Promise<number> {
     }>;
     const liveNames = liveStaff.map((row) => `${row.id}:${row.username}`).join(",");
     const kenLive = liveStaff.find((row) => row.username === "ken");
+    const raymondLive = liveStaff.find((row) => row.username === "raymond");
     const retiredLeft = liveStaff.filter((row) => row.id >= 5 && row.id <= 13);
     const wingStill = appDb.prepare(`SELECT assignee_staff_id FROM comments WHERE id = ?`).get(wingCommentId) as {
       assignee_staff_id: number | null;
@@ -1107,6 +1238,12 @@ async function main(): Promise<number> {
         liveStaff.some((row) => row.id === 4 && row.username === "tony" && row.is_admin === 1) &&
         liveStaff.some((row) => row.id === 14 && row.username === "benjamin" && row.is_admin === 1 && row.password_hash === "kept-live-hash") &&
         liveStaff.some((row) => row.id === 23 && row.username === "vivian" && row.is_admin === 1 && row.password_hash === "kept-live-hash") &&
+        !!raymondLive &&
+        raymondLive.id > 13 &&
+        raymondLive.display_name === "Raymond Chan" &&
+        raymondLive.is_admin === 1 &&
+        raymondLive.active === 1 &&
+        passwords.verifyPassword(DEMO_PASSWORD, raymondLive.password_hash) &&
         wingStill.assignee_staff_id === 2 &&
         hoNow.assignee_staff_id == null &&
         replyLeft == null &&
@@ -1127,8 +1264,12 @@ async function main(): Promise<number> {
       .run();
     const afterLivePick = assignApi.pickNextAutoAssignStaffId();
     check(
-      "正式庫形狀：Jason 之後輪到 Ken，唔會派 Tony、Benjamin、Vivian 或已刪嘅 id 5–13",
-      afterLivePick === kenLive?.id && afterLivePick != null && afterLivePick > 13 && ![4, 14, 23].includes(afterLivePick),
+      "正式庫形狀：Jason 之後輪到 Ken，唔會派 Tony、Benjamin、Vivian、Raymond 或已刪嘅 id 5–13",
+      afterLivePick === kenLive?.id &&
+        afterLivePick != null &&
+        afterLivePick > 13 &&
+        afterLivePick !== raymondLive?.id &&
+        ![4, 14, 23].includes(afterLivePick),
       String(afterLivePick)
     );
 

@@ -1077,7 +1077,7 @@ pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
 
   const note = req.session.isAdmin
     ? `<p class="muted">你係管理員，可以睇全部留言（包括未派）同改派。<a href="/whatsapp-lines">管理 WhatsApp 線路</a></p>
-       <p class="muted">未完成對話入面、尚未有同事回覆的客戶訊息都要計回覆時限，包括上線前已收到但一直未覆的訊息。未覆的舊訊息由第一次檢查重新計時，之前等咗幾多日唔計；如果開始嗰刻係 23:00 至 09:00，就由 09:00 先計。星期一至六 2 小時，星期日 3 小時。上線之後的新訊息由送到開始計，每日 23:00 至 09:00 唔計時。已完成的對話唔計。已經回覆咗的訊息唔當逾時。可派單同事累積 3 次逾時，第一次暫停公司線自動派單 3 日，之後再累積 3 次就暫停 7 日；每次開始暫停都把次數歸零。到期自動恢復輪候，唔使管理員人手恢復，伺服器重啟都一樣。Tony、Benjamin、Vivian 唔參與自動派單，逾時會通知但唔會因此暫停。Ken 係同事，會參與公司線輪流。2026-11-20 這次部署啟動時會一次過清走暫停同本輪逾時次數，下一輪 3 次逾時暫停 7 日，唔再當第一次 3 日；唔會重開舊訊息時限，亦只會跑一次。已派咗嘅留言維持原負責人。</p>`
+       <p class="muted">未完成對話入面、尚未有同事回覆的客戶訊息都要計回覆時限，包括上線前已收到但一直未覆的訊息。未覆的舊訊息由第一次檢查重新計時，之前等咗幾多日唔計；如果開始嗰刻係 23:00 至 09:00，就由 09:00 先計。星期一至六 2 小時，星期日 3 小時。上線之後的新訊息由送到開始計，每日 23:00 至 09:00 唔計時。已完成的對話唔計。已經回覆咗的訊息唔當逾時。可派單同事累積 3 次逾時，第一次暫停公司線自動派單 3 日，之後再累積 3 次就暫停 7 日；每次開始暫停都把次數歸零。到期自動恢復輪候，唔使管理員人手恢復，伺服器重啟都一樣。Tony、Benjamin、Vivian、Raymond 唔參與自動派單，逾時會通知但唔會因此暫停。Ken 係同事，會參與公司線輪流。2026-11-20 這次部署啟動時會一次過清走暫停同本輪逾時次數，下一輪 3 次逾時暫停 7 日，唔再當第一次 3 日；唔會重開舊訊息時限，亦只會跑一次。已派咗嘅留言維持原負責人。</p>`
     : `<p class="muted">你只可以處理派咗畀你嘅留言。改派只限管理員。個人 WhatsApp 由管理員綁定。</p>`;
   const slaHead = sla ? `<th>逾時次數</th><th>自動派單</th>` : "";
 
@@ -1159,7 +1159,7 @@ pagesRouter.get("/whatsapp-lines", requireAuth, (req: Request, res: Response) =>
 
   const body = `
     <div class="page-head"><h1>WhatsApp 線路</h1></div>
-    <p class="muted">客戶打去<strong>同事個人號</strong>會自動派畀該同事。打去<strong>公司總機 85221740001</strong>就按固定輪流：Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）。每次新對話派畀上一位之後嗰位，唔會計未完成（open + in_progress）幾多。Tony、Benjamin、Vivian 唔參與自動派單。Ken 會參與，排喺 Jason 後面（同其他在職同事按 staff id）。未知號碼會入庫但未派。真實 Meta／Glorious 連接尚未啟用。</p>
+    <p class="muted">客戶打去<strong>同事個人號</strong>會自動派畀該同事。打去<strong>公司總機 85221740001</strong>就按固定輪流：Eddie → Wing → Jason → 其餘在職同事（按 staff id，排喺 Jason 後面）。每次新對話派畀上一位之後嗰位，唔會計未完成（open + in_progress）幾多。Tony、Benjamin、Vivian、Raymond 唔參與自動派單。Ken 會參與，排喺 Jason 後面（同其他在職同事按 staff id）。未知號碼會入庫但未派。真實 Meta／Glorious 連接尚未啟用。</p>
     ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
     ${ok ? `<p class="notice">${escapeHtml(ok)}</p>` : ""}
     <h2>綁定同事個人號碼</h2>

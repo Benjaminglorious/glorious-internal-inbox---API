@@ -480,8 +480,8 @@ async function main(): Promise<number> {
       )
       .all() as Array<{ username: string }>;
     check(
-      "自動派單冇派給 Tony、Benjamin、Vivian",
-      excluded.length > 0 && excluded.every((row) => !["tony", "benjamin", "vivian"].includes(row.username))
+      "自動派單冇派給 Tony、Benjamin、Vivian、Raymond",
+      excluded.length > 0 && excluded.every((row) => !["tony", "benjamin", "vivian", "raymond"].includes(row.username))
     );
 
     const companyMail = await email.ingestCompanyEmail({

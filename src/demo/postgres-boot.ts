@@ -84,6 +84,7 @@ async function main(): Promise<number> {
     appDb.prepare(`DELETE FROM staff WHERE username = 'benjamin'`).run();
     appDb.prepare(`DELETE FROM staff WHERE lower(username) = 'vivian'`).run();
     appDb.prepare(`DELETE FROM staff WHERE lower(username) = 'ken'`).run();
+    appDb.prepare(`DELETE FROM staff WHERE lower(username) = 'raymond'`).run();
     appDb
       .prepare(
         `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
@@ -102,6 +103,12 @@ async function main(): Promise<number> {
          VALUES ('Ken', 'Ken Kan', 'kept-ken-hash', 0, 0)`
       )
       .run();
+    appDb
+      .prepare(
+        `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
+         VALUES ('Raymond', 'Raymond Chan', 'kept-ray-hash', 0, 0)`
+      )
+      .run();
     const commentsBeforeBoot = Number((appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n);
     seedMod.syncStaffOnBoot();
     const benjamin = appDb
@@ -115,6 +122,15 @@ async function main(): Promise<number> {
     }>;
     const vivian = appDb
       .prepare(`SELECT username, display_name, is_admin, active, password_hash FROM staff WHERE lower(username) = 'vivian' OR lower(display_name) LIKE 'vivian%'`)
+      .all() as Array<{
+      username: string;
+      display_name: string;
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    }>;
+    const raymond = appDb
+      .prepare(`SELECT username, display_name, is_admin, active, password_hash FROM staff WHERE lower(username) = 'raymond' OR lower(display_name) LIKE 'raymond%'`)
       .all() as Array<{
       username: string;
       display_name: string;
@@ -167,6 +183,15 @@ async function main(): Promise<number> {
         ken[0].active === 1 &&
         ken[0].password_hash === "kept-ken-hash"
     );
+    check(
+      "已有庫啟動會把 Raymond Chan 升做管理員，唔會重複，亦唔改密碼",
+      raymond.length === 1 &&
+        raymond[0].username === "raymond" &&
+        raymond[0].display_name === "Raymond Chan" &&
+        raymond[0].is_admin === 1 &&
+        raymond[0].active === 1 &&
+        raymond[0].password_hash === "kept-ray-hash"
+    );
     check("啟動對齊唔寫留言", Number((appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n) === commentsBeforeBoot);
     check("啟動對齊唔降 Tony", tonyRow.is_admin === 1 && tonyRow.active === 1);
     check(
@@ -203,17 +228,23 @@ async function main(): Promise<number> {
     const tony = appDb.prepare(`SELECT id FROM staff WHERE username = 'tony'`).get() as { id: number };
     const benjaminStaff = appDb.prepare(`SELECT id FROM staff WHERE username = 'benjamin'`).get() as { id: number };
     const vivianStaff = appDb.prepare(`SELECT id FROM staff WHERE username = 'vivian'`).get() as { id: number };
+    const raymondStaff = appDb.prepare(`SELECT id, is_admin FROM staff WHERE username = 'raymond'`).get() as {
+      id: number;
+      is_admin: number;
+    };
     const picked = assignMod.pickNextAutoAssignStaffId();
     const pickedName = appDb.prepare(`SELECT username FROM staff WHERE id = ?`).get(picked) as
       | { username: string }
       | undefined;
     check(
-      "自動派單可以係 Ken，但唔係 Tony、Benjamin、Vivian",
+      "自動派單可以係 Ken，但唔係 Tony、Benjamin、Vivian、Raymond",
       !!pickedName &&
+        raymondStaff.is_admin === 1 &&
         ["eddie", "wing", "jason", "ken"].includes(pickedName.username) &&
         picked !== tony.id &&
         picked !== benjaminStaff.id &&
-        picked !== vivianStaff.id,
+        picked !== vivianStaff.id &&
+        picked !== raymondStaff.id,
       pickedName?.username ?? String(picked)
     );
     if (live.ok) {
@@ -221,12 +252,13 @@ async function main(): Promise<number> {
         | { username: string }
         | undefined;
       check(
-        "新 WhatsApp 派給輪流同事，唔派 Tony、Benjamin、Vivian",
+        "新 WhatsApp 派給輪流同事，唔派 Tony、Benjamin、Vivian、Raymond",
         !!assignedName &&
           ["eddie", "wing", "jason", "ken"].includes(assignedName.username) &&
           live.assigneeStaffId !== tony.id &&
           live.assigneeStaffId !== benjaminStaff.id &&
-          live.assigneeStaffId !== vivianStaff.id,
+          live.assigneeStaffId !== vivianStaff.id &&
+          live.assigneeStaffId !== raymondStaff.id,
         assignedName?.username ?? String(live.assigneeStaffId)
       );
     }

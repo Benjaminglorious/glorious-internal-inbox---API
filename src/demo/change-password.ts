@@ -137,6 +137,17 @@ async function main(): Promise<number> {
       active: number;
     };
     check("新 seed：Ken 係在職同事", kenRow.is_admin === 0 && kenRow.active === 1);
+    const raymondRow = appDb.prepare(`SELECT id, display_name, is_admin, active FROM staff WHERE username = 'raymond'`).get() as {
+      id: number;
+      display_name: string;
+      is_admin: number;
+      active: number;
+    };
+    check(
+      "新 seed：Raymond Chan 係在職管理員，用戶名係 raymond",
+      raymondRow.display_name === "Raymond Chan" && raymondRow.is_admin === 1 && raymondRow.active === 1
+    );
+    check("新 seed：Raymond 可以用示範密碼", verify("raymond", DEMO_PASSWORD));
     const eddieHashAtStart = passwordHash(appDb, "eddie");
     const wingComment = appDb
       .prepare(`SELECT id FROM comments WHERE assignee_staff_id = ? ORDER BY id ASC LIMIT 1`)
@@ -486,6 +497,34 @@ async function main(): Promise<number> {
     check(
       "Ken 係同事仍然可以用改密碼",
       kenChanged.ok === true && verify("ken", "KenNewPass1!") && !verify("ken", DEMO_PASSWORD)
+    );
+    const raymondChanged = changeApi.changeOwnPassword(raymondRow.id, {
+      current_password: DEMO_PASSWORD,
+      new_password: "RaymondNew1!",
+      confirm_password: "RaymondNew1!",
+    });
+    const raymondHashCustom = passwordHash(appDb, "raymond");
+    seedMod.applySeedStaff();
+    const raymondAfterSeed = appDb.prepare(`SELECT display_name, is_admin, active FROM staff WHERE username = 'raymond'`).get() as {
+      display_name: string;
+      is_admin: number;
+      active: number;
+    };
+    const kenStillColleague = appDb.prepare(`SELECT is_admin, active FROM staff WHERE username = 'ken'`).get() as {
+      is_admin: number;
+      active: number;
+    };
+    check(
+      "Raymond 可以用改密碼，再 seed 唔覆寫密碼，而且仍然係管理員",
+      raymondChanged.ok === true &&
+        verify("raymond", "RaymondNew1!") &&
+        !verify("raymond", DEMO_PASSWORD) &&
+        passwordHash(appDb, "raymond") === raymondHashCustom &&
+        raymondAfterSeed.display_name === "Raymond Chan" &&
+        raymondAfterSeed.is_admin === 1 &&
+        raymondAfterSeed.active === 1 &&
+        kenStillColleague.is_admin === 0 &&
+        kenStillColleague.active === 1
     );
 
     const wingRestored = changeApi.changeOwnPassword(wingRow.id, {

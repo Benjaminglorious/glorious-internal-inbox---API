@@ -944,13 +944,14 @@ async function dbCases(): Promise<void> {
   setCursor(idOf("sam"), "sam");
   const afterSam = assignMod.pickNextAutoAssignStaffId();
   check(
-    "Tony、Benjamin、Vivian 仍然不在自動派單，Ken 會接到",
+    "Tony、Benjamin、Vivian、Raymond 仍然不在自動派單，Ken 會接到",
     afterSam === idOf("ken") &&
       kenRole.is_admin === 0 &&
       assignMod.isAutoAssignExcluded("ken") === false &&
       assignMod.isAutoAssignExcluded("tony") === true &&
       assignMod.isAutoAssignExcluded("benjamin") === true &&
-      assignMod.isAutoAssignExcluded("vivian") === true,
+      assignMod.isAutoAssignExcluded("vivian") === true &&
+      assignMod.isAutoAssignExcluded("raymond") === true,
     String(afterSam)
   );
 
