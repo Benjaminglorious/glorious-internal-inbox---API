@@ -1015,10 +1015,15 @@ async function dbCases(): Promise<void> {
     check(
       "管理員看到逾時次數、暫停到期同自動恢復",
       tonyPage.status === 200 &&
-        tonyHtml.includes("逾時次數") &&
-        tonyHtml.includes("未覆的舊訊息由第一次檢查重新計時") &&
-        tonyHtml.includes("第一次暫停公司線自動派單 3 日") &&
-        tonyHtml.includes("唔使管理員人手恢復") &&
+        tonyHtml.includes("<th>逾時次數</th>") &&
+        tonyHtml.includes("重要資訊") &&
+        tonyHtml.includes("早上9時到晚上10:59") &&
+        tonyHtml.includes("第一次會暫停派單3天") &&
+        tonyHtml.includes("第二次便會暫停派單7天") &&
+        tonyHtml.includes("所有已完成的留言不會計算在內") &&
+        !tonyHtml.includes("未覆的舊訊息由第一次檢查重新計時") &&
+        !tonyHtml.includes("2026-11-20") &&
+        !tonyHtml.includes("你係管理員，可以睇全部留言") &&
         tonyHtml.includes("暫停至 2999-01-01 08:00:00 HKT（到期自動恢復輪候，今次 7 日）") &&
         tonyHtml.includes(">2</td>") &&
         tonyHtml.includes("不參與自動派單") &&
@@ -1027,7 +1032,16 @@ async function dbCases(): Promise<void> {
     );
     const wingPage = await fetch(`${base}/staff`, { headers: { cookie: wingCookie } });
     const wingHtml = await wingPage.text();
-    check("同事名單的逾時狀態只給管理員看", wingPage.status === 200 && !wingHtml.includes("逾時次數") && !wingHtml.includes("暫停至"));
+    check(
+      "同事名單的逾時狀態只給管理員看",
+      wingPage.status === 200 &&
+        wingHtml.includes("重要資訊") &&
+        wingHtml.includes("每日晚上11點到翌日早上9點") &&
+        !wingHtml.includes("<th>逾時次數</th>") &&
+        !wingHtml.includes("<th>自動派單</th>") &&
+        !wingHtml.includes("暫停至") &&
+        !wingHtml.includes("你只可以處理派咗畀你嘅留言")
+    );
 
     const visibleLate = addComment(idOf("wing"), "2026-11-01 04:00:00");
     appDb
