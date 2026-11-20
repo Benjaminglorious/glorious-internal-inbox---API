@@ -168,6 +168,21 @@ label.btn input[type="file"] { display: none; }
 .page-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 .page-head h1 { margin: 0; font-size: 1.5rem; }
 
+.staff-policy {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand-2);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px 18px;
+  margin: 12px 0 16px;
+  line-height: 1.65;
+  color: var(--ink);
+}
+.staff-policy h2 { margin: 0 0 8px; font-size: 1.05rem; }
+.staff-policy ul { margin: 0; padding-left: 1.25rem; }
+.staff-policy li + li { margin-top: 6px; }
+
 .filters {
   display: flex;
   flex-wrap: wrap;
