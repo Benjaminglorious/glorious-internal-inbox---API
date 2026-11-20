@@ -148,6 +148,10 @@ async function main(): Promise<number> {
     const tony = appDb.prepare(`SELECT id FROM staff WHERE username = 'tony'`).get() as { id: number };
     const benjamin = appDb.prepare(`SELECT id FROM staff WHERE username = 'benjamin'`).get() as { id: number };
     const vivian = appDb.prepare(`SELECT id FROM staff WHERE username = 'vivian'`).get() as { id: number };
+    const raymond = appDb.prepare(`SELECT id, is_admin FROM staff WHERE username = 'raymond'`).get() as {
+      id: number;
+      is_admin: number;
+    };
     const ken = appDb.prepare(`SELECT id, is_admin FROM staff WHERE username = 'ken'`).get() as {
       id: number;
       is_admin: number;
@@ -157,15 +161,18 @@ async function main(): Promise<number> {
       | { username: string }
       | undefined;
     check(
-      "自動派單可以係 Ken，但唔係 Tony、Benjamin、Vivian",
+      "自動派單可以係 Ken，但唔係 Tony、Benjamin、Vivian、Raymond",
       ken.is_admin === 0 &&
+        raymond.is_admin === 1 &&
         picked != null &&
         picked !== tony.id &&
         picked !== benjamin.id &&
         picked !== vivian.id &&
+        picked !== raymond.id &&
         !!pickedName &&
         ["eddie", "wing", "jason", "ken"].includes(pickedName.username) &&
         assignMod.isAutoAssignExcluded("ken") === false &&
+        assignMod.isAutoAssignExcluded("raymond") === true &&
         assignMod.isAutoAssignExcluded("tony") === true,
       pickedName?.username ?? String(picked)
     );

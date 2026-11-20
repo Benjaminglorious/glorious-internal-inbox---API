@@ -1,6 +1,6 @@
 /**
  * 示範 routeWhatsAppInbound：
- * 公司總機按輪流次序 Eddie → Wing → Jason → 其餘（按 staff id，Tony、Benjamin、Vivian 除外），唔計未完成數；
+ * 公司總機按輪流次序 Eddie → Wing → Jason → 其餘（按 staff id，Tony、Benjamin、Vivian、Raymond 除外），唔計未完成數；
  * 同事個人線路派畀綁定同事；未知線路入庫但未派。
  *
  * 先整一個舊 schema（source 冇 whatsapp）再載入 app，順便確認遷移。
@@ -718,7 +718,7 @@ async function checkLiveWhatsAppWebhook(appDb: Database.Database): Promise<void>
 
 /**
  * 輪流次序係 Eddie → Wing → Jason → 其餘（按 id），唔計未完成數。
- * Tony、Benjamin、Vivian 唔會被派，即使 id 最小而且未完成數係 0。只剩佢哋時回 null。
+ * Tony、Benjamin、Vivian、Raymond 唔會被派，即使 id 最小而且未完成數係 0。只剩佢哋時回 null。
  * Eddie 即使 id 最大、而且已經有未完成，第一輪仍然由佢開始。
  * 用 transaction 回滾，唔影響後面嘅線路示範。
  */
@@ -732,10 +732,11 @@ function checkSequentialRotation(appDb: Database.Database): void {
       `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
        VALUES (?, ?, 'x', ?, 1)`
     );
-    // Tony、Benjamin、Vivian 先插入，staff.id 較小。Eddie 最後插入而且係管理員，輪流仍然由佢開始。
+    // Tony、Benjamin、Vivian、Raymond 先插入，staff.id 較小。Eddie 最後插入而且係管理員，輪流仍然由佢開始。
     const tonyId = Number(insertStaff.run("tony", "Tony Chan", 1).lastInsertRowid);
     const benjaminId = Number(insertStaff.run("benjamin", "Benjamin", 1).lastInsertRowid);
     const vivianId = Number(insertStaff.run("vivian", "Vivian", 1).lastInsertRowid);
+    const raymondId = Number(insertStaff.run("raymond", "Raymond Chan", 1).lastInsertRowid);
     const futureId = Number(insertStaff.run("newbie", "新同事", 0).lastInsertRowid);
     const jasonId = Number(insertStaff.run("jason", "Jason Cheng", 0).lastInsertRowid);
     const wingId = Number(insertStaff.run("wing", "Wing Cheng", 0).lastInsertRowid);
@@ -752,15 +753,15 @@ function checkSequentialRotation(appDb: Database.Database): void {
     for (let i = 0; i < 5; i += 1) {
       const id = pickNextAutoAssignStaffId();
       if (id == null) throw new Error("沒有在職同事");
-      if (id === tonyId || id === benjaminId || id === vivianId) {
-        throw new Error("自動派單唔可以派畀 Tony、Benjamin 或 Vivian");
+      if (id === tonyId || id === benjaminId || id === vivianId || id === raymondId) {
+        throw new Error("自動派單唔可以派畀 Tony、Benjamin、Vivian 或 Raymond");
       }
       picked.push(id);
     }
     const expected = [eddieId, wingId, jasonId, futureId, eddieId];
     if (picked.join(",") !== expected.join(",")) {
       throw new Error(
-        `次序 ${picked.join(",")}，期望 Eddie → Wing → Jason → 新同事 → Eddie（Eddie 有未完成、其餘係 0 都唔改次序；唔包括 Tony ${tonyId}、Benjamin ${benjaminId}、Vivian ${vivianId}）（${expected.join(",")}）`
+        `次序 ${picked.join(",")}，期望 Eddie → Wing → Jason → 新同事 → Eddie（Eddie 有未完成、其餘係 0 都唔改次序；唔包括 Tony ${tonyId}、Benjamin ${benjaminId}、Vivian ${vivianId}、Raymond ${raymondId}）（${expected.join(",")}）`
       );
     }
 
@@ -783,6 +784,7 @@ function checkSequentialRotation(appDb: Database.Database): void {
       afterExcludedCursor === tonyId ||
       afterExcludedCursor === benjaminId ||
       afterExcludedCursor === vivianId ||
+      afterExcludedCursor === raymondId ||
       afterExcludedCursor !== futureId
     ) {
       throw new Error(
@@ -805,13 +807,13 @@ function checkSequentialRotation(appDb: Database.Database): void {
     const cursorBeforeGap = appDb
       .prepare(`SELECT last_staff_id, last_username FROM auto_assign_state WHERE id = 1`)
       .get() as { last_staff_id: number; last_username: string };
-    appDb.prepare(`UPDATE staff SET active = 0 WHERE username NOT IN ('tony', 'benjamin', 'vivian')`).run();
+    appDb.prepare(`UPDATE staff SET active = 0 WHERE username NOT IN ('tony', 'benjamin', 'vivian', 'raymond')`).run();
     const onlyExcluded = pickNextAutoAssignStaffId();
     const cursorAfterGap = appDb
       .prepare(`SELECT last_staff_id, last_username FROM auto_assign_state WHERE id = 1`)
       .get() as { last_staff_id: number; last_username: string };
     if (onlyExcluded != null) {
-      throw new Error(`只剩 Tony、Benjamin 同 Vivian 時唔應派單，實際 ${onlyExcluded}`);
+      throw new Error(`只剩 Tony、Benjamin、Vivian 同 Raymond 時唔應派單，實際 ${onlyExcluded}`);
     }
     if (
       cursorAfterGap.last_staff_id !== cursorBeforeGap.last_staff_id ||
@@ -828,11 +830,11 @@ function checkSequentialRotation(appDb: Database.Database): void {
 
   try {
     probe();
-    check("輪流次序 Eddie → Wing → Jason → 新同事，跳過 Tony、Benjamin 同 Vivian", false, "transaction 冇回滾");
+    check("輪流次序 Eddie → Wing → Jason → 新同事，跳過 Tony、Benjamin、Vivian 同 Raymond", false, "transaction 冇回滾");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     check(
-      "輪流次序 Eddie → Wing → Jason → 新同事，跳過 Tony、Benjamin 同 Vivian（即使 Eddie 有未完成而且 id 最大）",
+      "輪流次序 Eddie → Wing → Jason → 新同事，跳過 Tony、Benjamin、Vivian 同 Raymond（即使 Eddie 有未完成而且 id 最大）",
       message === "__rollback_priority__",
       message === "__rollback_priority__" ? undefined : message
     );

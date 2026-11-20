@@ -15,11 +15,12 @@ import type { CommentSource, EntryPath, IntakeKind, OriginSite } from "../types"
 export const DEMO_PASSWORD = "Glorious2026!";
 
 /**
- * 可登入：四位管理員（eddie、tony、benjamin、vivian）+ 三位在職同事（wing、jason、ken）。
- * 全新資料庫插入次序係 eddie → wing → jason → tony → benjamin → vivian → ken，只影響 staff.id。
- * 自動派單唔包括 tony、benjamin、vivian（見 assign.ts 用戶名名單，唔係因為 is_admin）。
+ * 可登入：五位管理員（eddie、tony、benjamin、vivian、raymond）+ 三位在職同事（wing、jason、ken）。
+ * 全新資料庫插入次序係 eddie → wing → jason → tony → benjamin → vivian → ken → raymond，只影響 staff.id。
+ * 登入係對住儲低嘅用戶名精確比對。同事用戶名一律儲小寫；已有「Raymond」會對齊做 raymond，同 Benjamin 一樣。
+ * 自動派單唔包括 tony、benjamin、vivian、raymond（見 assign.ts 用戶名名單，唔係因為 is_admin）。
  * 輪流次序：Eddie → Wing → Jason → 其餘在職同事（按 staff.id，Ken 排喺 Jason 後面）。唔計未完成數。
- * Eddie 都係管理員，但仍然參與自動派單。Ken 係同事（is_admin=0），會參與自動派單。
+ * Eddie 都係管理員，但仍然參與自動派單。Raymond Chan 係管理員，唔參與自動派單。Ken 係同事（is_admin=0），會參與自動派單。
  * 舊種子收藏同事（kaixin、ming、mei、ho、yan、chun、sze、kit、yuki）唔再寫入。
  * 已有庫如果呢啲人仲喺 staff.id 5–13，啟動時會刪走（見 removeRetiredStaffById）。
  */
@@ -36,11 +37,12 @@ export const SEED_STAFF: Array<{
   { username: "benjamin", display_name: "Benjamin", is_admin: 1, active: 1 },
   { username: "vivian", display_name: "Vivian", is_admin: 1, active: 1 },
   { username: "ken", display_name: "Ken Kan", is_admin: 0, active: 1 },
+  { username: "raymond", display_name: "Raymond Chan", is_admin: 1, active: 1 },
 ];
 
 /**
  * 正式庫舊種子同事而家嘅 id。只刪呢個範圍。
- * 如果範圍入面有受保護同事（包括 Ken），成個範圍唔刪。
+ * 如果範圍入面有受保護同事（包括 Ken、Raymond），成個範圍唔刪。
  */
 export const RETIRED_STAFF_ID_MIN = 5;
 export const RETIRED_STAFF_ID_MAX = 13;
@@ -54,6 +56,7 @@ export const STAFF_DELETE_PROTECTED_USERNAMES = [
   "benjamin",
   "vivian",
   "ken",
+  "raymond",
 ] as const;
 
 export interface RetiredStaffRow {
@@ -429,6 +432,33 @@ function adoptVivianUsername(): void {
 }
 
 /**
+ * 已有「Raymond Chan」但用戶名唔係小寫 raymond（例如 Raymond），或者顯示名係 Raymond／Raymond …，
+ * 而標準帳號未存在：改成 username=raymond，之後 upsert 升做管理員。唔會另開一列，亦唔改密碼。
+ * 標準帳號已經存在就唔改其他列。同 Benjamin 一樣。
+ */
+function adoptRaymondUsername(): void {
+  const row = db
+    .prepare(
+      `
+      SELECT id
+      FROM staff
+      WHERE username != 'raymond'
+        AND NOT EXISTS (SELECT 1 FROM staff WHERE username = 'raymond')
+        AND (
+          lower(username) = 'raymond'
+          OR lower(trim(display_name)) = 'raymond'
+          OR lower(trim(display_name)) LIKE 'raymond %'
+        )
+      ORDER BY CASE WHEN lower(username) = 'raymond' THEN 0 ELSE 1 END, id ASC
+      LIMIT 1
+      `
+    )
+    .get() as { id: number } | undefined;
+  if (!row) return;
+  db.prepare(`UPDATE staff SET username = 'raymond' WHERE id = ?`).run(row.id);
+}
+
+/**
  * 已有「Ken Kan」但用戶名唔係小寫 ken，或者顯示名係 Ken Kan／Ken Kan …，
  * 而標準帳號未存在：改成 username=ken，之後 upsert 做成在職同事。唔會另開一列，亦唔改密碼。
  * 標準帳號已經存在就唔改其他列。
@@ -459,8 +489,8 @@ function adoptKenUsername(): void {
  * 以 username 做 upsert：衝突時更新 display_name、is_admin、active。
  * 密碼只喺新插入嗰陣寫入示範密碼；已存在嘅 password_hash 唔覆寫，
  * 避免同事改咗密碼之後再跑 seed 被重設。
- * 如果 Benjamin、Vivian 或 Ken Kan 已經存在（用戶名大小寫唔同，或顯示名對得上），對齊同一列，唔會重複。
- * Ken 會寫成在職同事（is_admin=0）。Benjamin、Vivian 仍然係管理員。
+ * 如果 Benjamin、Vivian、Raymond Chan 或 Ken Kan 已經存在（用戶名大小寫唔同，或顯示名對得上），對齊同一列，唔會重複。
+ * Ken 會寫成在職同事（is_admin=0）。Benjamin、Vivian、Raymond 仍然係管理員。
  * 跟住嘗試刪走 staff.id 5–13。範圍入面有受保護同事就唔刪。
  */
 export function applySeedStaff(): void {
@@ -470,6 +500,7 @@ export function applySeedStaff(): void {
   const staffTx = db.transaction(() => {
     adoptBenjaminUsername();
     adoptVivianUsername();
+    adoptRaymondUsername();
     adoptKenUsername();
     for (const s of SEED_STAFF) {
       insertStaff.run(s.username, s.display_name, passwordHash, s.is_admin, s.active);
@@ -512,6 +543,22 @@ export function ensureVivianAdmin(): void {
 }
 
 /**
+ * 已有同事嘅庫用：只補或者升級 Raymond Chan 做在職管理員（同 Benjamin 一樣 is_admin=1、active=1）。
+ * 唔改其他同事，唔覆寫已有密碼，唔降 Tony、Benjamin、Vivian、Eddie，亦唔改 Ken。
+ */
+export function ensureRaymondAdmin(): void {
+  const seed = SEED_STAFF.find((s) => s.username === "raymond");
+  if (!seed) return;
+  const insertStaff = db.prepare(UPSERT_STAFF_SQL);
+  const passwordHash = hashPassword(DEMO_PASSWORD);
+  const tx = db.transaction(() => {
+    adoptRaymondUsername();
+    insertStaff.run(seed.username, seed.display_name, passwordHash, seed.is_admin, seed.active);
+  });
+  tx();
+}
+
+/**
  * 已有同事嘅庫用：只補或者將 Ken Kan 對齊做在職同事（is_admin=0、active=1，參與自動派單）。
  * 唔改其他同事，唔覆寫已有密碼，唔降 Tony、Benjamin、Vivian、Eddie。
  * 已有 is_admin=1 會改成 0。新帳號先用示範密碼。
@@ -535,8 +582,8 @@ function placeholders(n: number): string {
 /**
  * 已有庫（包括 Render Postgres）用：刪走 staff.id 5–13，令同事名單唔再顯示呢啲列，亦唔可以登入或被自動派單。
  * 刪之前先解開留言負責人、回覆、推送同個人 WhatsApp。留言本身留低，負責人改做未派。
- * 如果範圍入面有 Eddie、Wing、Jason、Tony、Benjamin、Vivian 或 Ken，成個範圍唔刪。
- * 範圍入面同時有其他人先至寫錯誤日誌。全新 seed 嘅 id 5–7 係 Benjamin、Vivian、Ken，所以會靜靜跳過。
+ * 如果範圍入面有 Eddie、Wing、Jason、Tony、Benjamin、Vivian、Ken 或 Raymond，成個範圍唔刪。
+ * 範圍入面同時有其他人先至寫錯誤日誌。全新 seed 嘅 id 5–8 係 Benjamin、Vivian、Ken、Raymond，所以會靜靜跳過。
  * 舊正式庫呢個範圍係收藏種子同事，先至會刪。
  * 重複呼叫係安全嘅：範圍空咗就唔做。
  */
@@ -601,7 +648,7 @@ export function removeRetiredStaffById(): RetiredStaffRemoval {
 /**
  * 2026-11-20 一次過：清走暫停同本輪逾時次數，下一輪 3 次逾時暫停 7 日。
  * 標記寫入 app_boot_once 之後，重啟唔會再清。唔會重開舊訊息時限。
- * 必須喺同事名單對齊之後先跑，先至包括今次先補上嘅 Ken。
+ * 必須喺同事名單對齊之後先跑，先至包括今次先補上嘅 Ken 同 Raymond。
  */
 function resetReplySlaOnceOnBoot(): void {
   const result = resetStaffReplySlaOnce();
@@ -612,7 +659,7 @@ function resetReplySlaOnceOnBoot(): void {
 }
 
 /**
- * npm start 用。空庫寫入全部同事；已有同事（Render Postgres）確保 Benjamin、Vivian 係管理員，Ken 係同事。
+ * npm start 用。空庫寫入全部同事；已有同事（Render Postgres）確保 Benjamin、Vivian、Raymond Chan 係管理員，Ken 係同事。
  * 兩種情況都唔寫示範留言。新帳號用示範密碼；已有 password_hash 唔覆寫。
  * 已有庫會再嘗試刪走 staff.id 5–13（受保護同事喺範圍內就唔刪）。
  * 同事對齊之後跑一次 SLA 重置（已跑過就跳過）。
@@ -626,10 +673,11 @@ export function syncStaffOnBoot(): void {
     return;
   }
   console.log(
-    "[boot] 確保 Benjamin、Vivian 係在職管理員，Ken Kan 係在職同事（新帳號用示範密碼；已有密碼唔改；唔寫示範留言）"
+    "[boot] 確保 Benjamin、Vivian、Raymond Chan 係在職管理員，Ken Kan 係在職同事（新帳號用示範密碼；已有密碼唔改；唔寫示範留言）"
   );
   ensureBenjaminAdmin();
   ensureVivianAdmin();
+  ensureRaymondAdmin();
   ensureKenColleague();
   ensureCompanyWhatsAppLine();
   removeRetiredStaffById();
