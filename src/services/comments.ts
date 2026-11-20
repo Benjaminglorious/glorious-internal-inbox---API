@@ -124,7 +124,7 @@ const COMMENT_SELECT = `
   FROM comments c
   LEFT JOIN staff s ON s.id = c.assignee_staff_id
   LEFT JOIN (
-    SELECT comment_id, COUNT(*) AS reply_count, MAX(id) AS last_id
+    SELECT comment_id, COUNT(*) AS reply_count, MAX(id) AS last_id, MAX(created_at) AS latest_activity_at
     FROM comment_replies
     GROUP BY comment_id
   ) rc ON rc.comment_id = c.id
@@ -427,13 +427,15 @@ export function listComments(filters: CommentFilters = {}): CommentWithAssignee[
   const query = normalizeInboxQuery(filters.q);
   if (query) appendInboxSearch(where, params, query);
 
-  // 冇搜尋時未處理排前面，方便日常清箱。
-  // 有搜尋時按更新時間，已完成嘅舊對話先搵到。
-  const order = query
-    ? "c.updated_at DESC, c.id DESC"
-    : `CASE c.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,
-      c.created_at DESC,
-      c.id DESC`;
+  // 最新活動排最上面：原留言同任何方向嘅回覆，取 created_at 最新嗰個。
+  // 客戶新訊息同同事新回覆都會抬上去，唔再跟建立時間，亦唔再把未處理固定排前。
+  // 改派、改狀態只會改 updated_at，唔算新訊息。搜尋用同一把尺。
+  // 現有列靠已儲存嘅 created_at，唔使回填。
+  const order = `CASE
+      WHEN rc.latest_activity_at > c.created_at THEN rc.latest_activity_at
+      ELSE c.created_at
+    END DESC,
+    c.id DESC`;
 
   const sql = `
     ${COMMENT_SELECT}

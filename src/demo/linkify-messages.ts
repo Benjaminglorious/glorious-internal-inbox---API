@@ -262,8 +262,8 @@ async function pageCases(): Promise<void> {
     const detailHtml = await detail.text();
     const bubbles = bubbleBodies(detailHtml);
     check("詳情頁有客戶同同事兩段訊息", detail.status === 200 && bubbles.length === 2, `status=${detail.status} bubbles=${bubbles.length}`);
-    check("客戶訊息顯示時先連結", bubbles[0] === linkifyMessageHtml(customerBody), bubbles[0]);
-    check("同事回覆顯示時先連結", bubbles[1] === linkifyMessageHtml(staffBody), bubbles[1]);
+    check("最新同事回覆顯示喺對話最上面", bubbles[0] === linkifyMessageHtml(staffBody), bubbles[0]);
+    check("較早嘅客戶訊息排喺下面", bubbles[1] === linkifyMessageHtml(customerBody), bubbles[1]);
     check(
       "詳情頁網址用新分頁開啟",
       bubbles.every((body) => !body.includes("<a ") || (body.includes('target="_blank"') && body.includes('rel="noopener noreferrer"')))
