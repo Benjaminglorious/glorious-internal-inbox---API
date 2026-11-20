@@ -331,8 +331,8 @@ function renderParentPost(c: CommentWithAssignee): string {
 }
 
 /**
- * 對話由新到舊。原留言同客戶再留言、同事回覆一齊按時間排，最新嗰句喺最上面。
- * 同一秒：較後寫入嘅回覆（較大 id）先；同一秒嘅回覆排喺原留言上面。
+ * 對話由舊到新。原留言固定喺最上面，跟住回覆按寫入次序。
+ * 同一秒：較先寫入嘅回覆（較細 id）先。回覆時間早過原留言都仍然排喺原句下面。
  */
 function renderConversation(
   c: CommentWithAssignee,
@@ -345,42 +345,34 @@ function renderConversation(
     customerMedia.length && isPlaceholderBody(c.body)
       ? ""
       : `<div class="bubble-body">${linkifyMessageHtml(c.body)}</div>`;
-  const items: Array<{ at: string; seq: number; html: string }> = [
-    {
-      at: c.created_at,
-      seq: 0,
-      html: `<article class="bubble customer">
+  const original = `<article class="bubble customer">
         <div class="who">${emailNote}客戶 · ${escapeHtml(c.author_name)} · ${showTime(c.created_at)}</div>
         ${originalBody}
         ${renderMediaBlocks(customerMedia)}
-      </article>`,
-    },
-  ];
-  for (const reply of replies) {
-    const inbound = reply.direction === "inbound";
-    const who = inbound ? `客戶 · ${c.author_name}` : `同事 · ${reply.staff_name || "同事"}`;
-    const errorLine =
-      !inbound && reply.delivery_error ? `<p class="error small">${escapeHtml(reply.delivery_error)}</p>` : "";
-    const replyMedia = mediaByReply.get(reply.id) ?? [];
-    const showBody = reply.body && !(replyMedia.length && isPlaceholderBody(reply.body));
-    const delivery = inbound ? "" : ` · ${escapeHtml(deliveryDetail(reply.delivery_status, c.source))}`;
-    items.push({
-      at: reply.created_at,
-      seq: reply.id,
-      html: `<article class="bubble ${inbound ? "customer" : "staff"}">
+      </article>`;
+  const ordered = [...replies].sort((a, b) => {
+    if (a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1;
+    return a.id - b.id;
+  });
+  const thread = ordered
+    .map((reply) => {
+      const inbound = reply.direction === "inbound";
+      const who = inbound ? `客戶 · ${c.author_name}` : `同事 · ${reply.staff_name || "同事"}`;
+      const errorLine =
+        !inbound && reply.delivery_error ? `<p class="error small">${escapeHtml(reply.delivery_error)}</p>` : "";
+      const replyMedia = mediaByReply.get(reply.id) ?? [];
+      const showBody = reply.body && !(replyMedia.length && isPlaceholderBody(reply.body));
+      const delivery = inbound ? "" : ` · ${escapeHtml(deliveryDetail(reply.delivery_status, c.source))}`;
+      return `<article class="bubble ${inbound ? "customer" : "staff"}">
         <div class="who">${emailNote}${escapeHtml(who)} · ${showTime(reply.created_at)}${delivery}</div>
         ${errorLine}
         ${showBody ? `<div class="bubble-body">${linkifyMessageHtml(reply.body)}</div>` : ""}
         ${renderMediaBlocks(replyMedia)}
-      </article>`,
-    });
-  }
-  items.sort((a, b) => {
-    if (a.at !== b.at) return a.at < b.at ? 1 : -1;
-    return b.seq - a.seq;
-  });
+      </article>`;
+    })
+    .join("");
   const empty = replies.length ? "" : `<p class="muted small">未有同事回覆。</p>`;
-  return items.map((item) => item.html).join("") + empty;
+  return original + thread + empty;
 }
 
 function replyPreview(c: CommentWithAssignee): string {
@@ -755,7 +747,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     </div>
     <p class="muted small">搜尋會搵你睇到嘅留言同回覆：留言者、電話、內容、車輛、來源，以及 Facebook／Instagram 帖文編號、連結同內容。可以同上面嘅篩選一齊用。</p>
     <p class="muted small">同一個留言者未完成（未處理或處理中）嘅新訊息會併入最早嗰個 ID。狀態係已完成之後，下一則先至開新 ID。</p>
-    <p class="muted small">時間欄同留言詳情嘅建立、更新、回覆時間都係香港時間（HKT，UTC+8）。「剛剛」「分鐘前」「昨天」按香港日曆計。資料庫仍然儲存 UTC。留言箱按最新活動排：客戶新訊息或者同事新回覆都會放到最上面。時間欄仍然係建立時間。打開一則留言，最新一句喺對話最上面。</p>
+    <p class="muted small">時間欄同留言詳情嘅建立、更新、回覆時間都係香港時間（HKT，UTC+8）。「剛剛」「分鐘前」「昨天」按香港日曆計。資料庫仍然儲存 UTC。留言箱：未處理同處理中排喺已完成上面。客戶新訊息或者新開嘅留言會放到未處理／處理中最上面；同事回覆唔會。時間欄仍然係建立時間。打開一則留言，由舊到新，第一句喺對話最上面。</p>
     <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。「email 留言」＝公司郵箱 gloriousinformation@gmail.com 入面、同車有關嘅信，畫面會寫「這是email的留言」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。每條留言只展開「回覆」。回覆客戶、公司 WhatsApp、同事 WhatsApp 收喺「更多」。「回覆客戶」會打開你而家登入嘅 WhatsApp 發畀客戶。公司「WhatsApp」同「同事 WhatsApp」係聯絡總機或負責人，唔係發畀客戶。改狀態同改派喺留言頁嘅「更多」。</p>
     <p class="muted small">快捷：${
       viewer.isAdmin ? `<a href="${qs({ mine: "1" })}">我的留言</a> · ` : ""

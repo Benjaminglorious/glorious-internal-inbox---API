@@ -1,6 +1,6 @@
 /**
- * 留言箱按最新活動排，對話頁由新到舊。
- * 客戶新訊息同同事回覆都會抬到最上面；改狀態唔算新訊息。
+ * 留言箱：未處理同處理中排喺已完成上面，組內按客戶最新活動。
+ * 同事回覆唔會抬上去。對話頁由舊到新。
  * 用臨時 SQLite，唔會郁到正式 data/inbox.db。
  */
 import fs from "fs";
@@ -166,21 +166,26 @@ async function main(): Promise<number> {
       )
       .run(olderInboundId);
 
-    const activityOrder = [repliedId, doneId, olderInboundId, openNewId, openOldId];
+    const activeThenDone = [olderInboundId, openNewId, openOldId, repliedId, doneId];
     sameIds(
       comments.listComments().map((row) => row.id),
-      activityOrder,
-      "同事回覆同較新嘅原留言排喺未處理舊建立前面，已完成唔會被壓底"
+      activeThenDone,
+      "未處理同處理中按客戶活動排喺已完成上面；同事回覆唔會抬上去"
     );
     sameIds(
       comments.listComments({ q: "ORDERKEY" }).map((row) => row.id),
-      activityOrder,
-      "搜尋用同一把最新活動時間"
+      activeThenDone,
+      "搜尋用同一把次序"
     );
     sameIds(
       comments.listComments({ status: "open" }).map((row) => row.id),
       [olderInboundId, openNewId, openOldId],
-      "未處理篩選仍然只出未處理，而且跟活動時間"
+      "未處理篩選仍然只出未處理，而且跟客戶活動時間"
+    );
+    const repliedBeforeBump = comments.getComment(repliedId);
+    check(
+      "處理中唔會因為狀態而排喺較新嘅未處理上面",
+      repliedBeforeBump?.status === "in_progress" && activeThenDone.indexOf(repliedId) > activeThenDone.indexOf(openOldId)
     );
 
     const repliedRow = comments.getComment(repliedId);
@@ -196,21 +201,82 @@ async function main(): Promise<number> {
         (olderRow.latest_inbound_at ?? "") < olderRow.created_at
     );
 
+    appDb
+      .prepare(
+        `INSERT INTO comment_replies (comment_id, staff_id, direction, body, delivery_status, created_at)
+         VALUES (?, ?, 'outbound', '同事更遲回覆', 'stub', '2026-11-01 08:00:00')`
+      )
+      .run(openOldId, staffId);
+    sameIds(
+      comments.listComments({ q: "ORDERKEY" }).map((row) => row.id),
+      activeThenDone,
+      "同事回覆唔會把未處理抬到最上面"
+    );
+
     appDb.prepare(`INSERT INTO comment_replies (comment_id, staff_id, direction, body, delivery_status, created_at)
       VALUES (?, NULL, 'inbound', '客戶新訊息', 'stored', '2026-11-01 06:00:00')`).run(openOldId);
-    const afterCustomer = [openOldId, repliedId, doneId, olderInboundId, openNewId];
+    const afterCustomer = [openOldId, olderInboundId, openNewId, repliedId, doneId];
     sameIds(
       comments.listComments({ q: "ORDERKEY" }).map((row) => row.id),
       afterCustomer,
-      "客戶新訊息把舊建立嘅未處理抬到最上面"
+      "客戶新訊息把舊建立嘅未處理抬到未完成組最上面"
     );
 
     comments.updateStatus(repliedId, "done");
     appDb.prepare(`UPDATE comments SET updated_at = '2026-11-01 09:00:00' WHERE id = ?`).run(openNewId);
+    const afterMarkedDone = [openOldId, olderInboundId, openNewId, doneId, repliedId];
+    sameIds(
+      comments.listComments({ q: "ORDERKEY" }).map((row) => row.id),
+      afterMarkedDone,
+      "標已完成會沉到已完成組，組內仍按客戶活動；只改 updated_at 唔當新訊息"
+    );
+    comments.reassign(openNewId, staffId);
+    sameIds(
+      comments.listComments({ q: "ORDERKEY" }).map((row) => row.id),
+      afterMarkedDone,
+      "只改負責人唔會改次序"
+    );
+
+    comments.updateStatus(repliedId, "in_progress");
     sameIds(
       comments.listComments({ q: "ORDERKEY" }).map((row) => row.id),
       afterCustomer,
-      "改狀態同改 updated_at 唔會當新訊息"
+      "重開做處理中會按客戶活動放返未完成組，唔會因為改狀態而跳到最頂"
+    );
+
+    comments.updateStatus(repliedId, "done");
+    appDb.prepare(`INSERT INTO comment_replies (comment_id, staff_id, direction, body, delivery_status, created_at)
+      VALUES (?, NULL, 'inbound', '已完成之後客戶再留言', 'stored', '2026-11-01 07:00:00')`).run(repliedId);
+    const doneAfterCustomer = comments.getComment(repliedId);
+    const doneStaysBottom = [openOldId, olderInboundId, openNewId, repliedId, doneId];
+    sameIds(
+      comments.listComments({ q: "ORDERKEY" }).map((row) => row.id),
+      doneStaysBottom,
+      "已完成收到客戶再留言仍然留喺已完成組，只係組內按客戶活動排前"
+    );
+    check(
+      "已完成收到客戶再留言時，呢次寫入唔會自動改狀態",
+      doneAfterCustomer?.status === "done" && doneAfterCustomer.latest_inbound_body === "已完成之後客戶再留言"
+    );
+
+    const freshId = Number(
+      insert
+        .run("order-fresh", "新開客", "ORDERKEY 全新未回覆", "open", staffId, "2026-11-01 11:00:00", "2026-11-01 11:00:00")
+        .lastInsertRowid
+    );
+    const withFresh = [freshId, openOldId, olderInboundId, openNewId, repliedId, doneId];
+    sameIds(
+      comments.listComments({ q: "ORDERKEY" }).map((row) => row.id),
+      withFresh,
+      "未有回覆嘅新留言排喺未完成組最上面"
+    );
+    const allIds = comments.listComments().map((row) => row.id);
+    const searchIds = comments.listComments({ q: "ORDERKEY" }).map((row) => row.id);
+    const searchSet = new Set(searchIds);
+    sameIds(
+      allIds.filter((id) => searchSet.has(id)),
+      searchIds,
+      "主列表入面相符留言嘅相對次序同搜尋一樣"
     );
 
     const tieLowId = Number(
@@ -277,25 +343,52 @@ async function main(): Promise<number> {
 
     const inbox = await fetch(`${base}/?q=` + encodeURIComponent("ORDERKEY"), { headers: { cookie } });
     const inboxHtml = await inbox.text();
-    sameIds(listedIds(inboxHtml), afterCustomer, "留言箱網頁搜尋結果跟最新活動");
-    check("留言箱說明最新活動會放到最上面", inboxHtml.includes("留言箱按最新活動排"));
+    sameIds(listedIds(inboxHtml), withFresh, "留言箱網頁搜尋結果跟主列表次序");
+    check(
+      "留言箱說明未完成排前，同事回覆唔會抬上去，對話由舊到新",
+      inboxHtml.includes("未處理同處理中排喺已完成上面") &&
+        inboxHtml.includes("同事回覆唔會") &&
+        inboxHtml.includes("由舊到新，第一句喺對話最上面") &&
+        !inboxHtml.includes("同事新回覆都會放到最上面") &&
+        !inboxHtml.includes("最新一句喺對話最上面")
+    );
     const repliedHtml = rowHtml(inboxHtml, repliedId);
     const whenCell = repliedHtml.match(/<td class="when">([\s\S]*?)<\/td>/)?.[1] ?? "";
     const preview = repliedHtml.match(/<span class="content-preview">([\s\S]*?)<\/span>/)?.[1] ?? "";
     check(
-      "時間欄仍然係建立時間，唔係同事回覆時間",
-      whenCell.includes(`datetime="2026-11-01T08:00:00+08:00"`) && !whenCell.includes("13:00:00"),
+      "時間欄仍然係建立時間，唔係同事回覆或客戶再留言時間",
+      whenCell.includes(`datetime="2026-11-01T08:00:00+08:00"`) &&
+        !whenCell.includes("13:00:00") &&
+        !whenCell.includes("15:00:00") &&
+        !whenCell.includes("16:00:00"),
       whenCell
     );
-    check("網頁列標題仍然係客戶那句", preview === "ORDERKEY 舊建立", preview);
+    check(
+      "網頁列標題仍然係客戶最新一句，唔係同事回覆",
+      preview === "已完成之後客戶再留言" && !repliedHtml.includes("同事新回覆") && !repliedHtml.includes("同事更遲回覆"),
+      preview
+    );
+    const freshHtml = rowHtml(inboxHtml, freshId);
+    const freshWhen = freshHtml.match(/<td class="when">([\s\S]*?)<\/td>/)?.[1] ?? "";
+    const freshPreview = freshHtml.match(/<span class="content-preview">([\s\S]*?)<\/span>/)?.[1] ?? "";
+    check(
+      "新留言時間欄係建立時間，內容係客戶原句",
+      freshWhen.includes(`datetime="2026-11-01T19:00:00+08:00"`) && freshPreview === "ORDERKEY 全新未回覆",
+      `${freshWhen} ${freshPreview}`
+    );
+
+    const home = await fetch(`${base}/`, { headers: { cookie } });
+    const homeHtml = await home.text();
+    const homeOrderKey = listedIds(homeHtml).filter((id) => withFresh.includes(id));
+    sameIds(homeOrderKey, withFresh, "主列表入面相符留言嘅相對次序同搜尋頁一樣");
 
     const detail = await fetch(`${base}/comments/${threadId}`, { headers: { cookie } });
     const detailHtml = await detail.text();
     const bubbles = bubbleBodies(detailHtml);
     check(
-      "對話頁最新一句喺最上面，包括同一秒較後寫入，原句唔會固定排頭",
+      "對話頁由舊到新，原句喺最上面，同一秒較先寫入先",
       detail.status === 200 &&
-        bubbles.join("|") === ["同一秒後寫", "同一秒先寫", "同事最新", "客戶再留言", "主體句", "比主體更舊"].join("|"),
+        bubbles.join("|") === ["主體句", "比主體更舊", "客戶再留言", "同事最新", "同一秒先寫", "同一秒後寫"].join("|"),
       bubbles.join("|")
     );
     check("有回覆時唔再寫未有同事回覆", !detailHtml.includes("未有同事回覆"));
@@ -315,8 +408,8 @@ async function main(): Promise<number> {
     const apiJson = (await apiList.json()) as { comments?: Array<{ id: number }> };
     sameIds(
       (apiJson.comments ?? []).map((row) => row.id),
-      afterCustomer,
-      "API 留言列表跟最新活動"
+      withFresh,
+      "API 留言列表跟主列表次序"
     );
 
     const apiThread = await fetch(`${base}/api/comments/${threadId}/replies`, {
@@ -350,7 +443,7 @@ async function main(): Promise<number> {
     console.error(`\n${failures.length} 項失敗`);
     return 1;
   }
-  console.log("\n留言箱最新活動排序通過");
+  console.log("\n留言箱次序通過");
   return 0;
 }
 
