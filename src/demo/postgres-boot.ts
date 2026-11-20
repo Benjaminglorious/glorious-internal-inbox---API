@@ -159,11 +159,11 @@ async function main(): Promise<number> {
         vivian[0].password_hash === "kept-viv-hash"
     );
     check(
-      "已有庫啟動會把 Ken Kan 升做管理員，唔會重複",
+      "已有庫啟動會把 Ken Kan 對齊做同事，唔會重複，亦唔改密碼",
       ken.length === 1 &&
         ken[0].username === "ken" &&
         ken[0].display_name === "Ken Kan" &&
-        ken[0].is_admin === 1 &&
+        ken[0].is_admin === 0 &&
         ken[0].active === 1 &&
         ken[0].password_hash === "kept-ken-hash"
     );
@@ -203,25 +203,31 @@ async function main(): Promise<number> {
     const tony = appDb.prepare(`SELECT id FROM staff WHERE username = 'tony'`).get() as { id: number };
     const benjaminStaff = appDb.prepare(`SELECT id FROM staff WHERE username = 'benjamin'`).get() as { id: number };
     const vivianStaff = appDb.prepare(`SELECT id FROM staff WHERE username = 'vivian'`).get() as { id: number };
-    const kenStaff = appDb.prepare(`SELECT id FROM staff WHERE username = 'ken'`).get() as { id: number };
     const picked = assignMod.pickNextAutoAssignStaffId();
+    const pickedName = appDb.prepare(`SELECT username FROM staff WHERE id = ?`).get(picked) as
+      | { username: string }
+      | undefined;
     check(
-      "自動派單跳過 Tony、Benjamin、Vivian 同 Ken",
-      picked != null &&
+      "自動派單可以係 Ken，但唔係 Tony、Benjamin、Vivian",
+      !!pickedName &&
+        ["eddie", "wing", "jason", "ken"].includes(pickedName.username) &&
         picked !== tony.id &&
         picked !== benjaminStaff.id &&
-        picked !== vivianStaff.id &&
-        picked !== kenStaff.id,
-      String(picked)
+        picked !== vivianStaff.id,
+      pickedName?.username ?? String(picked)
     );
     if (live.ok) {
+      const assignedName = appDb.prepare(`SELECT username FROM staff WHERE id = ?`).get(live.assigneeStaffId) as
+        | { username: string }
+        | undefined;
       check(
-        "新 WhatsApp 都唔派 Tony、Benjamin、Vivian 或 Ken",
-        live.assigneeStaffId !== tony.id &&
+        "新 WhatsApp 派給輪流同事，唔派 Tony、Benjamin、Vivian",
+        !!assignedName &&
+          ["eddie", "wing", "jason", "ken"].includes(assignedName.username) &&
+          live.assigneeStaffId !== tony.id &&
           live.assigneeStaffId !== benjaminStaff.id &&
-          live.assigneeStaffId !== vivianStaff.id &&
-          live.assigneeStaffId !== kenStaff.id,
-        String(live.assigneeStaffId)
+          live.assigneeStaffId !== vivianStaff.id,
+        assignedName?.username ?? String(live.assigneeStaffId)
       );
     }
 

@@ -37,6 +37,9 @@ import { formatStaffTimestamp, parseStoredTimestamp } from "../time";
  *
  * 第一次累積 3 次逾時暫停公司線自動派單 3 日；之後每次再累積 3 次暫停 7 日。
  * suspensions_started 記已經開過幾次，重啟都記得。每次開始暫停都把本輪次數歸零。
+ * 2026-11-20 一次過重置（resetStaffReplySlaOnce）會清走而家嘅暫停同本輪次數，
+ * 並把 suspensions_started 未滿 1 的人設成 1，所以重置之後下一輪係 7 日，唔會再當第一次 3 日。
+ * 呢次重置唔會郁 reply_sla、reply_sla_epoch 或留言內容。標記喺 app_boot_once，只跑一次。
  * 暫停只係唔再入公司線輪流。登入同已派咗嘅留言唔會收。
  * 七日到期靠資料庫嘅 suspended_until 同而家時間比較，唔靠記憶體旗標。
  * 清理欄位失敗都唔會擋住派單。伺服器喺暫停期間重啟，到期一樣自動回到輪流。
@@ -494,6 +497,57 @@ function assigneeOverdueText(input: {
     return `${lead}你已累積 ${REPLY_SLA_STRIKES} 次逾時，自動派單暫停${pausePhrase(input.suspendDays)}，到期自動恢復。`;
   }
   return `${lead}你而家累積 ${input.delayCount}/${REPLY_SLA_STRIKES} 次逾時。`;
+}
+
+/**
+ * 一次過重置的標記。唔好改：改 key 會令下次啟動再清一次本輪次數。
+ * 只代表「2026-11-20 清走暫停，並把第一輪當已用過」。
+ */
+export const STAFF_SLA_RESET_ONCE_KEY = "staff_reply_sla_clear_20261120";
+
+export interface StaffSlaResetResult {
+  applied: boolean;
+  /** 今次寫入嘅同事列數。已經跑過就係 0。 */
+  staff: number;
+}
+
+/**
+ * 清走全部同事而家嘅暫停同本輪逾時次數，並保證下次 3 次逾時暫停 7 日。
+ * suspensions_started 未滿 1 的人設成 1；已經大過或等於 1 的輪次保留，唔會倒退成第一次 3 日。
+ * 唔會開新期限、唔會改 reply_sla／reply_sla_epoch、唔會改留言或補記逾時。
+ * 標記同更新同一筆交易：失敗會一齊回滾，下次啟動先再試。標記寫入之後唔會再清。
+ */
+export function resetStaffReplySlaOnce(now = new Date()): StaffSlaResetResult {
+  const stamp = formatUtcTimestamp(now);
+  return db.transaction((): StaffSlaResetResult => {
+    const claim = db
+      .prepare(`INSERT INTO app_boot_once (key, applied_at) VALUES (?, ?) ON CONFLICT(key) DO NOTHING`)
+      .run(STAFF_SLA_RESET_ONCE_KEY, stamp);
+    if (claim.changes !== 1) return { applied: false, staff: 0 };
+    const result = db
+      .prepare(
+        `INSERT INTO staff_reply_sla (
+           staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at
+         )
+         SELECT
+           s.id,
+           0,
+           NULL,
+           NULL,
+           CASE WHEN COALESCE(sla.suspensions_started, 0) < 1 THEN 1 ELSE sla.suspensions_started END,
+           ?
+         FROM staff s
+         LEFT JOIN staff_reply_sla sla ON sla.staff_id = s.id
+         ON CONFLICT(staff_id) DO UPDATE SET
+           delay_count = 0,
+           suspended_from = NULL,
+           suspended_until = NULL,
+           suspensions_started = excluded.suspensions_started,
+           updated_at = excluded.updated_at`
+      )
+      .run(stamp);
+    return { applied: true, staff: result.changes };
+  })();
 }
 
 /** staff_reply_sla 的主鍵係 staff_id，冇 id 欄。Postgres 包裝唔可以再補 RETURNING id。 */

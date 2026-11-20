@@ -2,7 +2,7 @@
  * 同事角色同留言可見範圍煙霧測試。
  * 用臨時 SQLite，唔會郁到正式 data/inbox.db。
  *
- * 覆蓋：seed 姓名／角色、Ken 同 Vivian 一樣係管理員而且唔自動派單、
+ * 覆蓋：seed 姓名／角色、Ken 係同事而且會自動派單、Tony／Benjamin／Vivian 仍然係管理員而且唔自動派單、
  * 正式庫形狀嘅 staff.id 5–13 會刪、受保護同事喺呢個範圍就唔刪、
  * 自動派單只計 active=1、
  * 在職同事唔可以經 API 或網頁睇／回覆／改狀態其他人或未派留言、
@@ -118,7 +118,7 @@ async function main(): Promise<number> {
     expectRow("tony", "Tony Chan", 1, 1);
     expectRow("benjamin", "Benjamin", 1, 1);
     expectRow("vivian", "Vivian", 1, 1);
-    expectRow("ken", "Ken Kan", 1, 1);
+    expectRow("ken", "Ken Kan", 0, 1);
     expectRow("eddie", "Eddie Lau", 1, 1);
     expectRow("wing", "Wing Cheng", 0, 1);
     expectRow("jason", "Jason Cheng", 0, 1);
@@ -155,21 +155,27 @@ async function main(): Promise<number> {
         .run(passwordsEarly.hashPassword("ArchiveOnly1")).lastInsertRowid
     );
 
-    const picked = assignApi.pickNextAutoAssignStaffId();
-    const pickedRow = staff.find((row) => row.id === picked);
+    appDb.prepare(`DELETE FROM auto_assign_state`).run();
+    const cycle: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const id = assignApi.pickNextAutoAssignStaffId();
+      const row = appDb.prepare(`SELECT username, active FROM staff WHERE id = ?`).get(id) as
+        | { username: string; active: number }
+        | undefined;
+      if (!row || row.active !== 1) {
+        cycle.push(row ? `${row.username}:inactive` : "none");
+        continue;
+      }
+      cycle.push(row.username);
+    }
     check(
-      "自動派單只計 active=1，而且唔會揀 Tony、Benjamin、Vivian 或 Ken",
-      !!pickedRow &&
-        pickedRow.active === 1 &&
-        pickedRow.username !== "tony" &&
-        pickedRow.username !== "benjamin" &&
-        pickedRow.username !== "vivian" &&
-        pickedRow.username !== "ken",
-      pickedRow ? pickedRow.username : "沒有人選"
+      "自動派單係 Eddie → Wing → Jason → Ken，然後返 Eddie；Tony、Benjamin、Vivian 唔參與",
+      cycle.join(",") === "eddie,wing,jason,ken,eddie",
+      cycle.join(",")
     );
     check(
-      "Ken 同 Vivian、Benjamin、Tony 一樣係在職管理員",
-      ken.is_admin === 1 &&
+      "Ken 係在職同事；Tony、Benjamin、Vivian、Eddie 仍然係在職管理員",
+      ken.is_admin === 0 &&
         ken.active === 1 &&
         ken.display_name === "Ken Kan" &&
         vivian.is_admin === 1 &&
@@ -179,7 +185,11 @@ async function main(): Promise<number> {
         tony.is_admin === 1 &&
         tony.active === 1 &&
         eddie.is_admin === 1 &&
-        eddie.active === 1
+        eddie.active === 1 &&
+        assignApi.isAutoAssignExcluded("ken") === false &&
+        assignApi.isAutoAssignExcluded("tony") === true &&
+        assignApi.isAutoAssignExcluded("benjamin") === true &&
+        assignApi.isAutoAssignExcluded("vivian") === true
     );
 
     check(
@@ -281,15 +291,30 @@ async function main(): Promise<number> {
     check("Benjamin 可以登入", benjaminLogin.status === 302 && benjaminLogin.cookie.includes("connect.sid="));
     check("Vivian 可以登入", vivianLogin.status === 302 && vivianLogin.cookie.includes("connect.sid="));
     check("Ken 可以登入", kenLogin.status === 302 && kenLogin.cookie.includes("connect.sid="));
+    const kenHome = await fetch(`${base}/`, { headers: { cookie: kenLogin.cookie } });
+    const kenHomeHtml = await kenHome.text();
+    const kenUnassignedPage = await fetch(`${base}/comments/${unassignedId}`, {
+      headers: { cookie: kenLogin.cookie },
+    });
+    check(
+      "網頁：Ken 係同事，頁頂冇管理員，亦見唔到未派",
+      kenHome.status === 200 &&
+        kenHomeHtml.includes("你只會見到派咗畀你嘅留言") &&
+        !kenHomeHtml.includes("· 管理員") &&
+        !kenHomeHtml.includes("UNASSIGNED-ONLY-ADMIN") &&
+        kenUnassignedPage.status === 404
+    );
     check("Eddie 可以登入", eddieLogin.status === 302 && eddieLogin.cookie.includes("connect.sid="));
     check("收藏帳號 archive 登入唔到", archiveLogin.status === 302 && archiveLogin.location.includes("error") && !archiveLogin.cookie);
 
     const linesPage = await fetch(`${base}/whatsapp-lines`, { headers: { cookie: tonyLogin.cookie } });
     const linesHtml = await linesPage.text();
     check(
-      "WhatsApp 線路頁寫明 Tony、Benjamin、Vivian、Ken 唔參與自動派單",
+      "WhatsApp 線路頁寫明 Tony、Benjamin、Vivian 唔參與自動派單，Ken 會參與",
       linesPage.status === 200 &&
-        linesHtml.includes("Tony、Benjamin、Vivian、Ken 唔參與自動派單") &&
+        linesHtml.includes("Tony、Benjamin、Vivian 唔參與自動派單") &&
+        linesHtml.includes("Ken 會參與") &&
+        !linesHtml.includes("Tony、Benjamin、Vivian、Ken 唔參與自動派單") &&
         linesHtml.includes("Eddie → Wing → Jason")
     );
 
@@ -621,10 +646,11 @@ async function main(): Promise<number> {
     const staffPage = await fetch(`${base}/staff`, { headers: { cookie: vivianLogin.cookie } });
     const staffHtml = await staffPage.text();
     check(
-      "Vivian 同 Ken 可以開同事名單，而且自己係管理員／啟用；舊收藏種子唔喺表",
+      "Vivian 可以開同事名單：自己係管理員，Ken 係同事／啟用；舊收藏種子唔喺表",
       staffPage.status === 200 &&
         /<code>vivian<\/code><\/td>\s*<td>管理員<\/td>\s*<td>啟用<\/td>/.test(staffHtml) &&
-        /<code>ken<\/code><\/td>\s*<td>管理員<\/td>\s*<td>啟用<\/td>/.test(staffHtml) &&
+        /<code>ken<\/code><\/td>\s*<td>同事<\/td>\s*<td>啟用<\/td>/.test(staffHtml) &&
+        /<code>tony<\/code><\/td>\s*<td>管理員<\/td>\s*<td>啟用<\/td>/.test(staffHtml) &&
         !staffHtml.includes("kaixin") &&
         !staffHtml.includes("yuki")
     );
@@ -754,7 +780,7 @@ async function main(): Promise<number> {
 
     appDb
       .prepare(
-        `UPDATE staff SET username = 'Ken', display_name = 'Ken Kan', is_admin = 0, active = 0, password_hash = 'kept-ken-hash' WHERE username = 'ken'`
+        `UPDATE staff SET username = 'Ken', display_name = 'Ken Kan', is_admin = 1, active = 0, password_hash = 'kept-ken-hash' WHERE username = 'ken'`
       )
       .run();
     seedMod.applySeedStaff();
@@ -772,21 +798,21 @@ async function main(): Promise<number> {
       password_hash: string;
     }>;
     check(
-      "用戶名 Ken 會升級成 ken 管理員，唔會重複",
+      "用戶名 Ken 會對齊成 ken 同事，唔會重複，已有密碼唔改",
       adoptedKenCase.length === 1 &&
         adoptedKenCase[0].username === "ken" &&
         adoptedKenCase[0].display_name === "Ken Kan" &&
-        adoptedKenCase[0].is_admin === 1 &&
+        adoptedKenCase[0].is_admin === 0 &&
         adoptedKenCase[0].active === 1 &&
         adoptedKenCase[0].password_hash === "kept-ken-hash"
     );
 
     appDb
       .prepare(
-        `UPDATE staff SET username = 'kchan', display_name = 'Ken Kan', is_admin = 0, active = 0, password_hash = 'kept-ken-hash' WHERE username = 'ken'`
+        `UPDATE staff SET username = 'kchan', display_name = 'Ken Kan', is_admin = 1, active = 0, password_hash = 'kept-ken-hash' WHERE username = 'ken'`
       )
       .run();
-    seedMod.ensureKenAdmin();
+    seedMod.ensureKenColleague();
     const adoptedKenName = appDb
       .prepare(
         `SELECT username, display_name, is_admin, active, password_hash
@@ -801,11 +827,11 @@ async function main(): Promise<number> {
       password_hash: string;
     }>;
     check(
-      "顯示名 Ken Kan 會升級同一列，唔會另開帳號",
+      "顯示名 Ken Kan 會對齊同一列做同事，唔會另開帳號",
       adoptedKenName.length === 1 &&
         adoptedKenName[0].username === "ken" &&
         adoptedKenName[0].display_name === "Ken Kan" &&
-        adoptedKenName[0].is_admin === 1 &&
+        adoptedKenName[0].is_admin === 0 &&
         adoptedKenName[0].active === 1 &&
         adoptedKenName[0].password_hash === "kept-ken-hash"
     );
@@ -826,7 +852,29 @@ async function main(): Promise<number> {
     };
     appDb.prepare(`UPDATE staff SET is_admin = 0, active = 0 WHERE username = 'benjamin'`).run();
     appDb.prepare(`DELETE FROM staff WHERE username = 'vivian'`).run();
+    const kenBeforeBoot = appDb.prepare(`SELECT id FROM staff WHERE username = 'ken'`).get() as { id: number };
+    appDb.prepare(`UPDATE comments SET assignee_staff_id = NULL WHERE assignee_staff_id = ?`).run(kenBeforeBoot.id);
+    appDb.prepare(`DELETE FROM staff_reply_sla WHERE staff_id = ?`).run(kenBeforeBoot.id);
     appDb.prepare(`DELETE FROM staff WHERE username = 'ken'`).run();
+    appDb
+      .prepare(
+        `INSERT INTO staff_reply_sla (staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at)
+         VALUES (?, 2, '2000-01-01 00:00:00', '2999-01-01 00:00:00', 0, '2000-01-01 00:00:00')`
+      )
+      .run(eddie.id);
+    appDb
+      .prepare(
+        `INSERT INTO staff_reply_sla (staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at)
+         VALUES (?, 1, '2000-01-01 00:00:00', '2999-01-01 00:00:00', 4, '2000-01-01 00:00:00')`
+      )
+      .run(wing.id);
+    appDb
+      .prepare(
+        `INSERT INTO reply_sla (comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds)
+         VALUES (?, NULL, '2026-11-01 02:00:00', '2026-11-17 03:30:00', '2026-11-17 05:30:00', 7200)`
+      )
+      .run(jasonId);
+    const heldBody = (appDb.prepare(`SELECT body FROM comments WHERE id = ?`).get(jasonId) as { body: string }).body;
     const commentsBefore = (appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n;
     seedMod.syncStaffOnBoot();
     const commentsAfter = (appDb.prepare(`SELECT COUNT(*) AS n FROM comments`).get() as { n: number }).n;
@@ -854,11 +902,59 @@ async function main(): Promise<number> {
         passwords.verifyPassword(DEMO_PASSWORD, inserted.password_hash)
     );
     check(
-      "已有同事嘅庫啟動會補 Ken Kan 管理員",
+      "已有同事嘅庫啟動會補 Ken Kan 同事，而且可以自動派單",
       insertedKen.display_name === "Ken Kan" &&
-        insertedKen.is_admin === 1 &&
+        insertedKen.is_admin === 0 &&
         insertedKen.active === 1 &&
-        passwords.verifyPassword(DEMO_PASSWORD, insertedKen.password_hash)
+        passwords.verifyPassword(DEMO_PASSWORD, insertedKen.password_hash) &&
+        assignApi.isAutoAssignExcluded("ken") === false &&
+        assignApi.isAutoAssignExcluded("tony") === true &&
+        assignApi.isAutoAssignExcluded("benjamin") === true &&
+        assignApi.isAutoAssignExcluded("vivian") === true
+    );
+    const slaOf = (username: string) =>
+      appDb!
+        .prepare(
+          `SELECT sla.delay_count AS delay_count, sla.suspended_until AS until, sla.suspensions_started AS n
+           FROM staff_reply_sla sla JOIN staff s ON s.id = sla.staff_id WHERE s.username = ?`
+        )
+        .get(username) as { delay_count: number; until: string | null; n: number } | undefined;
+    const heldCase = appDb
+      .prepare(
+        `SELECT due_at, delay_recorded_at FROM reply_sla WHERE comment_id = ? AND inbound_reply_id IS NULL`
+      )
+      .get(jasonId) as { due_at: string; delay_recorded_at: string | null } | undefined;
+    const epochCount = (appDb.prepare(`SELECT COUNT(*) AS n FROM reply_sla_epoch`).get() as { n: number }).n;
+    const eddieSla = slaOf("eddie");
+    const wingSla = slaOf("wing");
+    const kenSla = slaOf("ken");
+    check(
+      "啟動一次過清走暫停同本輪次數，未用過第一輪的人下次當 7 日，已有輪次保留",
+      eddieSla?.delay_count === 0 &&
+        eddieSla.until == null &&
+        Number(eddieSla.n) === 1 &&
+        wingSla?.delay_count === 0 &&
+        wingSla.until == null &&
+        Number(wingSla.n) === 4 &&
+        kenSla?.delay_count === 0 &&
+        kenSla.until == null &&
+        Number(kenSla.n) === 1,
+      JSON.stringify({ eddie: eddieSla, wing: wingSla, ken: kenSla })
+    );
+    check(
+      "重置唔會重開舊訊息時限，亦唔改留言",
+      heldCase?.due_at === "2026-11-17 05:30:00" &&
+        heldCase.delay_recorded_at == null &&
+        epochCount === 0 &&
+        (appDb.prepare(`SELECT body FROM comments WHERE id = ?`).get(jasonId) as { body: string }).body === heldBody
+    );
+    appDb.prepare(`UPDATE staff_reply_sla SET delay_count = 2 WHERE staff_id = ?`).run(eddie.id);
+    seedMod.syncStaffOnBoot();
+    const eddieAfterSecondBoot = slaOf("eddie");
+    check(
+      "同一次重置唔會喺下次啟動再清本輪次數",
+      eddieAfterSecondBoot?.delay_count === 2 && Number(eddieAfterSecondBoot.n) === 1,
+      JSON.stringify(eddieAfterSecondBoot)
     );
     check("啟動對齊唔寫新留言", commentsAfter === commentsBefore);
     check(
@@ -997,12 +1093,12 @@ async function main(): Promise<number> {
       .prepare(`SELECT reply_id FROM comment_message_keys WHERE external_id = 'live-shape-ho-key'`)
       .get() as { reply_id: number | null };
     check(
-      "正式庫形狀：刪走 id 5–13 收藏種子，Ken 用示範密碼補做管理員，受保護同事留低",
+      "正式庫形狀：刪走 id 5–13 收藏種子，Ken 用示範密碼補做同事，受保護同事留低",
       retiredLeft.length === 0 &&
         !!kenLive &&
         kenLive.id > 13 &&
         kenLive.display_name === "Ken Kan" &&
-        kenLive.is_admin === 1 &&
+        kenLive.is_admin === 0 &&
         kenLive.active === 1 &&
         passwords.verifyPassword(DEMO_PASSWORD, kenLive.password_hash) &&
         liveStaff.some((row) => row.id === 1 && row.username === "eddie" && row.password_hash === "kept-live-hash") &&
@@ -1019,13 +1115,20 @@ async function main(): Promise<number> {
         keyNow.reply_id == null,
       liveNames
     );
+    appDb
+      .prepare(
+        `INSERT INTO auto_assign_state (id, last_staff_id, last_username, version)
+         VALUES (1, 3, 'jason', 0)
+         ON CONFLICT(id) DO UPDATE SET
+           last_staff_id = 3,
+           last_username = 'jason',
+           version = 0`
+      )
+      .run();
     const afterLivePick = assignApi.pickNextAutoAssignStaffId();
     check(
-      "正式庫形狀：自動派單唔會派 Ken，亦唔會派已刪嘅 id 5–13",
-      afterLivePick != null &&
-        afterLivePick !== kenLive?.id &&
-        (afterLivePick < 5 || afterLivePick > 13) &&
-        ![14, 23].includes(afterLivePick),
+      "正式庫形狀：Jason 之後輪到 Ken，唔會派 Tony、Benjamin、Vivian 或已刪嘅 id 5–13",
+      afterLivePick === kenLive?.id && afterLivePick != null && afterLivePick > 13 && ![4, 14, 23].includes(afterLivePick),
       String(afterLivePick)
     );
 

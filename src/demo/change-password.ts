@@ -136,7 +136,7 @@ async function main(): Promise<number> {
       is_admin: number;
       active: number;
     };
-    check("新 seed：Ken 係在職管理員", kenRow.is_admin === 1 && kenRow.active === 1);
+    check("新 seed：Ken 係在職同事", kenRow.is_admin === 0 && kenRow.active === 1);
     const eddieHashAtStart = passwordHash(appDb, "eddie");
     const wingComment = appDb
       .prepare(`SELECT id FROM comments WHERE assignee_staff_id = ? ORDER BY id ASC LIMIT 1`)
@@ -400,7 +400,7 @@ async function main(): Promise<number> {
     const tonyHashCustom = passwordHash(appDb, "tony");
     const kenHashBefore = passwordHash(appDb, "ken");
     appDb.prepare(`UPDATE staff SET display_name = '已改名', is_admin = 1, active = 0 WHERE username = 'wing'`).run();
-    appDb.prepare(`UPDATE staff SET display_name = 'Temp Ken', is_admin = 0, active = 0 WHERE username = 'ken'`).run();
+    appDb.prepare(`UPDATE staff SET display_name = 'Temp Ken', is_admin = 1, active = 0 WHERE username = 'ken'`).run();
     const archiveHash = passwords.hashPassword(ARCHIVE_PASSWORD);
     const archiveInsert = appDb
       .prepare(
@@ -430,9 +430,9 @@ async function main(): Promise<number> {
         !verify("wing", DEMO_PASSWORD)
     );
     check(
-      "再 seed：Ken 恢復做在職管理員，已有密碼唔變",
+      "再 seed：Ken 對齊做在職同事，已有密碼唔變",
       kenAfterSeed.display_name === "Ken Kan" &&
-        kenAfterSeed.is_admin === 1 &&
+        kenAfterSeed.is_admin === 0 &&
         kenAfterSeed.active === 1 &&
         kenAfterSeed.password_hash === kenHashBefore &&
         verify("ken", DEMO_PASSWORD)
@@ -462,6 +462,7 @@ async function main(): Promise<number> {
     );
 
     appDb.prepare(`UPDATE staff SET password_hash = ? WHERE username = 'ken'`).run(passwords.hashPassword("KenCustom1!"));
+    appDb.prepare(`UPDATE comments SET assignee_staff_id = NULL WHERE assignee_staff_id = ?`).run(kenRow.id);
     appDb.prepare(`DELETE FROM staff WHERE username = 'ken'`).run();
     seedMod.applySeedStaff();
     const kenReinserted = appDb.prepare(`SELECT id, is_admin, active FROM staff WHERE username = 'ken'`).get() as {
@@ -470,12 +471,21 @@ async function main(): Promise<number> {
       active: number;
     };
     check(
-      "新插入 Ken 先至寫示範密碼，而且係管理員",
-      kenReinserted.is_admin === 1 &&
+      "新插入 Ken 先至寫示範密碼，而且係同事",
+      kenReinserted.is_admin === 0 &&
         kenReinserted.active === 1 &&
         kenReinserted.id !== kenRow.id &&
         verify("ken", DEMO_PASSWORD) &&
         !verify("ken", "KenCustom1!")
+    );
+    const kenChanged = changeApi.changeOwnPassword(kenReinserted.id, {
+      current_password: DEMO_PASSWORD,
+      new_password: "KenNewPass1!",
+      confirm_password: "KenNewPass1!",
+    });
+    check(
+      "Ken 係同事仍然可以用改密碼",
+      kenChanged.ok === true && verify("ken", "KenNewPass1!") && !verify("ken", DEMO_PASSWORD)
     );
 
     const wingRestored = changeApi.changeOwnPassword(wingRow.id, {

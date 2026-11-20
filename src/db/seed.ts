@@ -4,6 +4,7 @@ import { looksLikeRenderPostgres, readPostgresUrl } from "./pg-config";
 import { db, getDbPath, shutdownDatabase, usingPostgres } from "./index";
 import { hashPassword } from "../auth/passwords";
 import { autoAssignUnassigned } from "../services/assign";
+import { resetStaffReplySlaOnce } from "../services/reply-sla";
 import { notifyNewComment } from "../services/push";
 import { createStaffReply } from "../services/replies";
 import { upsertObservedDealerListings } from "../services/twentyeightcar";
@@ -14,11 +15,11 @@ import type { CommentSource, EntryPath, IntakeKind, OriginSite } from "../types"
 export const DEMO_PASSWORD = "Glorious2026!";
 
 /**
- * 可登入：五位管理員（eddie、tony、benjamin、vivian、ken）+ 兩位在職同事。
+ * 可登入：四位管理員（eddie、tony、benjamin、vivian）+ 三位在職同事（wing、jason、ken）。
  * 全新資料庫插入次序係 eddie → wing → jason → tony → benjamin → vivian → ken，只影響 staff.id。
- * 自動派單唔包括 tony、benjamin、vivian、ken（見 assign.ts 用戶名名單，唔係因為 is_admin）。
- * 輪流次序：Eddie → Wing → Jason → 其餘在職同事（按 staff.id）。唔計未完成數。
- * Eddie 都係管理員，但仍然參與自動派單。Ken 同 Vivian 一樣係管理員，唔參與自動派單。
+ * 自動派單唔包括 tony、benjamin、vivian（見 assign.ts 用戶名名單，唔係因為 is_admin）。
+ * 輪流次序：Eddie → Wing → Jason → 其餘在職同事（按 staff.id，Ken 排喺 Jason 後面）。唔計未完成數。
+ * Eddie 都係管理員，但仍然參與自動派單。Ken 係同事（is_admin=0），會參與自動派單。
  * 舊種子收藏同事（kaixin、ming、mei、ho、yan、chun、sze、kit、yuki）唔再寫入。
  * 已有庫如果呢啲人仲喺 staff.id 5–13，啟動時會刪走（見 removeRetiredStaffById）。
  */
@@ -34,7 +35,7 @@ export const SEED_STAFF: Array<{
   { username: "tony", display_name: "Tony Chan", is_admin: 1, active: 1 },
   { username: "benjamin", display_name: "Benjamin", is_admin: 1, active: 1 },
   { username: "vivian", display_name: "Vivian", is_admin: 1, active: 1 },
-  { username: "ken", display_name: "Ken Kan", is_admin: 1, active: 1 },
+  { username: "ken", display_name: "Ken Kan", is_admin: 0, active: 1 },
 ];
 
 /**
@@ -429,8 +430,8 @@ function adoptVivianUsername(): void {
 
 /**
  * 已有「Ken Kan」但用戶名唔係小寫 ken，或者顯示名係 Ken Kan／Ken Kan …，
- * 而標準帳號未存在：改成 username=ken，之後 upsert 升做管理員。唔會另開一列，亦唔改密碼。
- * 標準帳號已經存在就唔改其他列。同 Vivian 一樣。
+ * 而標準帳號未存在：改成 username=ken，之後 upsert 做成在職同事。唔會另開一列，亦唔改密碼。
+ * 標準帳號已經存在就唔改其他列。
  */
 function adoptKenUsername(): void {
   const row = db
@@ -458,7 +459,8 @@ function adoptKenUsername(): void {
  * 以 username 做 upsert：衝突時更新 display_name、is_admin、active。
  * 密碼只喺新插入嗰陣寫入示範密碼；已存在嘅 password_hash 唔覆寫，
  * 避免同事改咗密碼之後再跑 seed 被重設。
- * 如果 Benjamin、Vivian 或 Ken Kan 已經存在（用戶名大小寫唔同，或顯示名對得上），升級同一列，唔會重複。
+ * 如果 Benjamin、Vivian 或 Ken Kan 已經存在（用戶名大小寫唔同，或顯示名對得上），對齊同一列，唔會重複。
+ * Ken 會寫成在職同事（is_admin=0）。Benjamin、Vivian 仍然係管理員。
  * 跟住嘗試刪走 staff.id 5–13。範圍入面有受保護同事就唔刪。
  */
 export function applySeedStaff(): void {
@@ -510,10 +512,11 @@ export function ensureVivianAdmin(): void {
 }
 
 /**
- * 已有同事嘅庫用：只補或者升級 Ken Kan 做在職管理員（同 Vivian 一樣 is_admin=1、active=1，唔參與自動派單）。
+ * 已有同事嘅庫用：只補或者將 Ken Kan 對齊做在職同事（is_admin=0、active=1，參與自動派單）。
  * 唔改其他同事，唔覆寫已有密碼，唔降 Tony、Benjamin、Vivian、Eddie。
+ * 已有 is_admin=1 會改成 0。新帳號先用示範密碼。
  */
-export function ensureKenAdmin(): void {
+export function ensureKenColleague(): void {
   const seed = SEED_STAFF.find((s) => s.username === "ken");
   if (!seed) return;
   const insertStaff = db.prepare(UPSERT_STAFF_SQL);
@@ -596,25 +599,41 @@ export function removeRetiredStaffById(): RetiredStaffRemoval {
 }
 
 /**
- * npm start 用。空庫寫入全部同事；已有同事（Render Postgres）只確保 Benjamin、Vivian 同 Ken 係管理員。
+ * 2026-11-20 一次過：清走暫停同本輪逾時次數，下一輪 3 次逾時暫停 7 日。
+ * 標記寫入 app_boot_once 之後，重啟唔會再清。唔會重開舊訊息時限。
+ * 必須喺同事名單對齊之後先跑，先至包括今次先補上嘅 Ken。
+ */
+function resetReplySlaOnceOnBoot(): void {
+  const result = resetStaffReplySlaOnce();
+  if (!result.applied) return;
+  console.log(
+    `[boot] 已一次過清除 ${result.staff} 位同事嘅回覆逾時暫停同本輪次數。下一輪累積 3 次逾時會暫停 7 日，唔會再當第一次 3 日。唔會重開舊訊息的時限，亦唔會補記逾時。呢次重置唔會再跑。`
+  );
+}
+
+/**
+ * npm start 用。空庫寫入全部同事；已有同事（Render Postgres）確保 Benjamin、Vivian 係管理員，Ken 係同事。
  * 兩種情況都唔寫示範留言。新帳號用示範密碼；已有 password_hash 唔覆寫。
  * 已有庫會再嘗試刪走 staff.id 5–13（受保護同事喺範圍內就唔刪）。
+ * 同事對齊之後跑一次 SLA 重置（已跑過就跳過）。
  */
 export function syncStaffOnBoot(): void {
   const row = db.prepare(`SELECT COUNT(*) AS n FROM staff`).get() as { n: number };
   if (Number(row.n) === 0) {
     console.log("[boot] staff 表係空，寫入同事同公司 WhatsApp 總機（唔寫示範留言）");
     seedStaff();
+    resetReplySlaOnceOnBoot();
     return;
   }
   console.log(
-    "[boot] 確保 Benjamin、Vivian 同 Ken Kan 係在職管理員（新帳號用示範密碼；已有密碼唔改；唔寫示範留言）"
+    "[boot] 確保 Benjamin、Vivian 係在職管理員，Ken Kan 係在職同事（新帳號用示範密碼；已有密碼唔改；唔寫示範留言）"
   );
   ensureBenjaminAdmin();
   ensureVivianAdmin();
-  ensureKenAdmin();
+  ensureKenColleague();
   ensureCompanyWhatsAppLine();
   removeRetiredStaffById();
+  resetReplySlaOnceOnBoot();
 }
 
 function logStaffRoster(companyLine: { phone_e164: string; display_label: string; kind: string; is_active: number | boolean }): void {
