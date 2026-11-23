@@ -40,6 +40,8 @@ import { formatStaffTimestamp, parseStoredTimestamp } from "../time";
  * 2026-11-20 一次過重置（resetStaffReplySlaOnce）會清走而家嘅暫停同本輪次數，
  * 並把 suspensions_started 未滿 1 的人設成 1，所以重置之後下一輪係 7 日，唔會再當第一次 3 日。
  * 呢次重置唔會郁 reply_sla、reply_sla_epoch 或留言內容。標記喺 app_boot_once，只跑一次。
+ * 2026-11-23 只再清 Ken Kan（resetKenReplySlaOnce）：次數、暫停同輪次都歸零，下次 3 次先至再係 3 日。
+ * 佢未記結果的未覆個案由之後第一次檢查重新計，唔會即時補記逾時。其他同事唔會改。
  * 暫停只係唔再入公司線輪流。登入同已派咗嘅留言唔會收。
  * 七日到期靠資料庫嘅 suspended_until 同而家時間比較，唔靠記憶體旗標。
  * 清理欄位失敗都唔會擋住派單。伺服器喺暫停期間重啟，到期一樣自動回到輪流。
@@ -505,6 +507,18 @@ function assigneeOverdueText(input: {
  */
 export const STAFF_SLA_RESET_ONCE_KEY = "staff_reply_sla_clear_20261120";
 
+/**
+ * 只代表「2026-11-23 清走 Ken Kan 的暫停、本輪次數同暫停輪次」。
+ * 唔好改：改 key 會令下次啟動再清一次 Ken。
+ */
+export const KEN_SLA_RESET_ONCE_KEY = "staff_reply_sla_clear_ken_20261123";
+
+/**
+ * Ken 歸零之後，第一次回覆時限檢查先重計佢未覆個案。
+ * 唔好改：改 key 會令下次檢查再把未覆時限推前一次。
+ */
+export const KEN_SLA_REBASELINE_ONCE_KEY = "staff_reply_sla_rebaseline_ken_20261123";
+
 export interface StaffSlaResetResult {
   applied: boolean;
   /** 今次寫入嘅同事列數。已經跑過就係 0。 */
@@ -546,6 +560,28 @@ export function resetStaffReplySlaOnce(now = new Date()): StaffSlaResetResult {
            updated_at = excluded.updated_at`
       )
       .run(stamp);
+    return { applied: true, staff: result.changes };
+  })();
+}
+
+/**
+ * 只清 Ken Kan（username=ken）而家的暫停、本輪逾時次數，以及暫停輪次。
+ * suspensions_started 設回 0，所以下一次累積 3 次逾時再當第一次，暫停 3 日；之後的循環先至 7 日。
+ * 唔改密碼、角色、在職或派單次序，亦唔改其他同事。
+ * 唔會喺呢度改 reply_sla 或 reply_sla_epoch。未記結果的未覆個案由之後第一次檢查重新計，
+ * 唔會即時補記逾時。已經記低的達標、逾時或跳過維持原紀錄。
+ * 標記同更新同一筆交易：失敗會一齊回滾，下次啟動先再試。標記寫入之後唔會再清。
+ */
+export function resetKenReplySlaOnce(now = new Date()): StaffSlaResetResult {
+  const stamp = formatUtcTimestamp(now);
+  return db.transaction((): StaffSlaResetResult => {
+    const claim = db
+      .prepare(`INSERT INTO app_boot_once (key, applied_at) VALUES (?, ?) ON CONFLICT(key) DO NOTHING`)
+      .run(KEN_SLA_RESET_ONCE_KEY, stamp);
+    if (claim.changes !== 1) return { applied: false, staff: 0 };
+    const ken = db.prepare(`SELECT id FROM staff WHERE lower(username) = 'ken'`).get() as { id: number } | undefined;
+    if (!ken) return { applied: true, staff: 0 };
+    const result = db.prepare(STAFF_REPLY_SLA_UPSERT_SQL).run(ken.id, 0, null, null, 0, stamp);
     return { applied: true, staff: result.changes };
   })();
 }
@@ -881,6 +917,125 @@ function settleDueCases(now: Date): { met: number; delays: number } {
   return { met, delays };
 }
 
+/**
+ * Ken 歸零之後的第一次檢查：佢而家負責、仍未有結果的個案由呢次重新計。
+ * 已經有同事回覆就當達標，唔補記逾時；仍未回覆就用同一套計時規則由呢次檢查起計，
+ * 包括尚未到期的期限，今次唔當逾時。已完成、已記逾時、已達標或已跳過的維持原紀錄。
+ * 其他同事的期限唔會改。標記寫入之後，之後的檢查照正常記逾時。
+ * 必須喺 resetKenReplySlaOnce 寫低標記之後先會跑。
+ */
+function rebaselineKenOpenCasesOnce(now: Date): { claimed: boolean; rebased: number; answered: number } {
+  const cleared = db.prepare(`SELECT 1 AS ok FROM app_boot_once WHERE key = ?`).get(KEN_SLA_RESET_ONCE_KEY) as
+    | { ok: number }
+    | undefined;
+  if (!cleared) return { claimed: false, rebased: 0, answered: 0 };
+  const stamp = formatUtcTimestamp(now);
+  const outcome = db.transaction((): { claimed: boolean; rebased: number; answered: number } => {
+    const claim = db
+      .prepare(`INSERT INTO app_boot_once (key, applied_at) VALUES (?, ?) ON CONFLICT(key) DO NOTHING`)
+      .run(KEN_SLA_REBASELINE_ONCE_KEY, stamp);
+    if (claim.changes !== 1) return { claimed: false, rebased: 0, answered: 0 };
+    const ken = db.prepare(`SELECT id FROM staff WHERE lower(username) = 'ken'`).get() as { id: number } | undefined;
+    if (!ken) return { claimed: true, rebased: 0, answered: 0 };
+    const rows = db
+      .prepare(
+        `SELECT s.id, s.comment_id, s.inbound_reply_id, s.inbound_at, s.due_at, s.met_at, s.delay_recorded_at
+         FROM reply_sla s
+         JOIN comments c ON c.id = s.comment_id
+         WHERE c.assignee_staff_id = ?
+           AND c.status != 'done'
+           AND s.met_at IS NULL
+           AND s.delay_recorded_at IS NULL
+           AND s.skipped_at IS NULL`
+      )
+      .all(ken.id) as SlaCaseRow[];
+    let rebased = 0;
+    let answered = 0;
+    for (const row of rows) {
+      const reply = firstStaffReply(row);
+      if (reply) {
+        const marked = db
+          .prepare(
+            `UPDATE reply_sla
+             SET met_at = ?, met_reply_id = ?
+             WHERE id = ? AND met_at IS NULL AND delay_recorded_at IS NULL AND skipped_at IS NULL`
+          )
+          .run(reply.created_at, reply.id, row.id);
+        if (marked.changes === 1) answered += 1;
+        continue;
+      }
+      const inbound = parseUtc(row.inbound_at);
+      if (!inbound) {
+        console.error(`[sla] Ken Kan 的留言 #${row.comment_id} 時間無法解析，跳過重計`);
+        continue;
+      }
+      const deadline = computeReplyDeadline(inbound, now);
+      const updated = db
+        .prepare(
+          `UPDATE reply_sla
+           SET count_start_at = ?, due_at = ?, limit_seconds = ?
+           WHERE id = ?
+             AND met_at IS NULL
+             AND delay_recorded_at IS NULL
+             AND skipped_at IS NULL`
+        )
+        .run(
+          formatUtcTimestamp(deadline.countStart),
+          formatUtcTimestamp(deadline.due),
+          deadline.limitSeconds,
+          row.id
+        );
+      if (updated.changes === 1) rebased += 1;
+    }
+    const missingOpenings = db
+      .prepare(
+        `SELECT c.id, c.created_at
+         FROM comments c
+         WHERE c.assignee_staff_id = ?
+           AND c.status != 'done'
+           AND NOT EXISTS (
+             SELECT 1 FROM reply_sla s
+             WHERE s.comment_id = c.id AND s.inbound_reply_id IS NULL
+           )`
+      )
+      .all(ken.id) as Array<{ id: number; created_at: string }>;
+    for (const row of missingOpenings) {
+      const inbound = parseUtc(row.created_at);
+      if (!inbound) {
+        console.error(`[sla] Ken Kan 的留言 #${row.id} 時間無法解析，跳過重計`);
+        continue;
+      }
+      if (insertCase(row.id, null, row.created_at, inbound, now)) rebased += 1;
+    }
+    const missingFollowUps = db
+      .prepare(
+        `SELECT r.id, r.comment_id, r.created_at
+         FROM comment_replies r
+         JOIN comments c ON c.id = r.comment_id
+         WHERE c.assignee_staff_id = ?
+           AND c.status != 'done'
+           AND r.direction = 'inbound'
+           AND NOT EXISTS (SELECT 1 FROM reply_sla s WHERE s.inbound_reply_id = r.id)`
+      )
+      .all(ken.id) as Array<{ id: number; comment_id: number; created_at: string }>;
+    for (const row of missingFollowUps) {
+      const inbound = parseUtc(row.created_at);
+      if (!inbound) {
+        console.error(`[sla] Ken Kan 的客戶訊息 #${row.id} 時間無法解析，跳過重計`);
+        continue;
+      }
+      if (insertCase(row.comment_id, row.id, row.created_at, inbound, now)) rebased += 1;
+    }
+    return { claimed: true, rebased, answered };
+  })();
+  if (outcome.claimed) {
+    console.log(
+      `[sla] Ken Kan 的逾時次數已在啟動時歸零。今次檢查重新計未覆個案：${outcome.answered} 則已有同事回覆，不當逾時；${outcome.rebased} 則仍未回覆，由 ${stamp} UTC 按原有計時規則重新計。今次未記逾時，亦未暫停派單。`
+    );
+  }
+  return outcome;
+}
+
 /** 開新期限、記準時回覆、記逾時、清走到期暫停。可以重入，同一則入站唔會通知兩次。 */
 export function scanReplySla(now = new Date()): ReplySlaScanResult {
   const restored = restoreExpiredSuspensions(now);
@@ -888,6 +1043,7 @@ export function scanReplySla(now = new Date()): ReplySlaScanResult {
   const liveAt = ensureSettlementLive(now);
   const opened = discoverCases(effective);
   releaseCasesMissedWhileCheckerFailed(liveAt, now);
+  rebaselineKenOpenCasesOnce(now);
   const reconciled = reconcileOpenCases(now);
   const settled = settleDueCases(now);
   return { restored, opened, met: reconciled.met + settled.met, delays: settled.delays };

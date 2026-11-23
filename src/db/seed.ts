@@ -4,7 +4,7 @@ import { looksLikeRenderPostgres, readPostgresUrl } from "./pg-config";
 import { db, getDbPath, shutdownDatabase, usingPostgres } from "./index";
 import { hashPassword } from "../auth/passwords";
 import { autoAssignUnassigned } from "../services/assign";
-import { resetStaffReplySlaOnce } from "../services/reply-sla";
+import { resetKenReplySlaOnce, resetStaffReplySlaOnce } from "../services/reply-sla";
 import { notifyNewComment } from "../services/push";
 import { createStaffReply } from "../services/replies";
 import { upsertObservedDealerListings } from "../services/twentyeightcar";
@@ -649,12 +649,32 @@ export function removeRetiredStaffById(): RetiredStaffRemoval {
  * 2026-11-20 一次過：清走暫停同本輪逾時次數，下一輪 3 次逾時暫停 7 日。
  * 標記寫入 app_boot_once 之後，重啟唔會再清。唔會重開舊訊息時限。
  * 必須喺同事名單對齊之後先跑，先至包括今次先補上嘅 Ken 同 Raymond。
+ * 跟住先至跑 Ken 的一次過歸零，所以 11 月 20 日嗰次唔會把 Ken 的輪次留喺「下次 7 日」。
  */
 function resetReplySlaOnceOnBoot(): void {
   const result = resetStaffReplySlaOnce();
+  if (result.applied) {
+    console.log(
+      `[boot] 已一次過清除 ${result.staff} 位同事嘅回覆逾時暫停同本輪次數。下一輪累積 3 次逾時會暫停 7 日，唔會再當第一次 3 日。唔會重開舊訊息的時限，亦唔會補記逾時。呢次重置唔會再跑。`
+    );
+  }
+  resetKenReplySlaOnceOnBoot();
+}
+
+/**
+ * 2026-11-23 一次過：只清 Ken Kan 的逾時次數、自動派單暫停同暫停輪次。
+ * 標記寫入 app_boot_once 之後，重啟唔會再清。其他同事唔會改。
+ * 未記結果的未覆留言由之後第一次檢查重新計，唔會喺啟動時改 reply_sla。
+ */
+function resetKenReplySlaOnceOnBoot(): void {
+  const result = resetKenReplySlaOnce();
   if (!result.applied) return;
+  if (result.staff === 0) {
+    console.log("[boot] Ken Kan 的逾時歸零已標記，但搵唔到 username=ken，未改任何同事。");
+    return;
+  }
   console.log(
-    `[boot] 已一次過清除 ${result.staff} 位同事嘅回覆逾時暫停同本輪次數。下一輪累積 3 次逾時會暫停 7 日，唔會再當第一次 3 日。唔會重開舊訊息的時限，亦唔會補記逾時。呢次重置唔會再跑。`
+    "[boot] 已一次過清走 Ken Kan 的回覆逾時次數、自動派單暫停同暫停輪次。同事名單會顯示逾時次數 0、自動派單輪候中。下一次累積 3 次先暫停 3 日。佢而家未記結果的未覆留言，會由之後第一次檢查重新計時，唔會即時補記逾時。其他同事唔會改。呢次歸零唔會再跑。"
   );
 }
 
