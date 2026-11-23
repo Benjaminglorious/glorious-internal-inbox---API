@@ -1059,7 +1059,7 @@ async function main(): Promise<number> {
     const wingSla = slaOf("wing");
     const kenSla = slaOf("ken");
     check(
-      "啟動一次過清走暫停同本輪次數，未用過第一輪的人下次當 7 日，已有輪次保留；Ken 的輪次回到第一次 3 日",
+      "啟動一次過清走暫停同本輪次數，未滿一輪的人 suspensions_started 設成 1，已有輪次保留；Ken 的輪次回到 0",
       eddieSla?.delay_count === 0 &&
         eddieSla.until == null &&
         Number(eddieSla.n) === 1 &&

@@ -15,12 +15,9 @@ export const REPLY_SLA_NIGHT_START_HOUR = 23;
 export const REPLY_SLA_DAY_START_HOUR = 9;
 
 export const REPLY_SLA_STRIKES = 3;
-/** 第一次累積 3 次逾時。 */
-export const REPLY_SLA_FIRST_SUSPEND_DAYS = 3;
-/** 已經有過一次 3 次暫停之後，再累積 3 次。 */
-export const REPLY_SLA_LATER_SUSPEND_DAYS = 7;
-export const REPLY_SLA_FIRST_SUSPEND_MS = REPLY_SLA_FIRST_SUSPEND_DAYS * 24 * 60 * 60 * 1000;
-export const REPLY_SLA_LATER_SUSPEND_MS = REPLY_SLA_LATER_SUSPEND_DAYS * 24 * 60 * 60 * 1000;
+/** 每次累積 3 次逾時都暫停公司線自動派單 3 日。再犯都係 3 日，唔再有 7 日。 */
+export const REPLY_SLA_SUSPEND_DAYS = 3;
+export const REPLY_SLA_SUSPEND_MS = REPLY_SLA_SUSPEND_DAYS * 24 * 60 * 60 * 1000;
 
 /** 逾時即時通知。用用戶名搵 staff，唔好寫死 id。 */
 export const REPLY_SLA_NOTIFY_USERNAMES = ["tony", "eddie", "benjamin"] as const;
