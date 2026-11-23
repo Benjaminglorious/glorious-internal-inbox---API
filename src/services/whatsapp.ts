@@ -28,6 +28,7 @@ import {
 import { findStaffById, getComment } from "./comments";
 import { notifyNewComment } from "./push";
 import { cleanMetaPostCaption, cleanMetaPostId, cleanMetaPostPermalink } from "./site-comments";
+import { pinnedSourceAssigneeStaffId } from "./source-assign";
 
 const MIN_PHONE_DIGITS = 8;
 const MAX_PHONE_DIGITS = 15;
@@ -469,7 +470,9 @@ function resolveAssignment(
   from: string,
   externalId: string,
   existing: ExistingCommentRow | undefined,
-  claimAutoAssign = true
+  claimAutoAssign = true,
+  pinnedStaffId: number | null = null,
+  nextStatus: CommentStatus | null = null
 ): { outcome: WhatsAppRouteOutcome; assigneeStaffId: number | null; line: WhatsAppLine | null } {
   const row = findLineByPhone(to, true);
   const line = row ? mapLine(row) : null;
@@ -504,6 +507,13 @@ function resolveAssignment(
     return { outcome: "staff", assigneeStaffId: staff.id, line };
   }
 
+  // 公司總機：指定帖文／Reel 直接派，唔推進輪流，亦唔睇逾時暫停。同事個人線路唔經呢度。
+  // 已完成保持原負責人。呼叫方如果已經決定重開，nextStatus 會係 open，先至改派。
+  const status = nextStatus ?? existing?.status ?? "open";
+  if (pinnedStaffId != null && status !== "done") {
+    return { outcome: "company", assigneeStaffId: pinnedStaffId, line };
+  }
+
   if (existing?.assignee_staff_id != null) {
     return { outcome: "company", assigneeStaffId: existing.assignee_staff_id, line };
   }
@@ -524,7 +534,16 @@ function resolveAssignment(
   return { outcome: "company", assigneeStaffId: staffId, line };
 }
 
-/** 只填空白帖文欄。重試已經併入嘅訊息時用，唔改派、唔改正文。 */
+/** 公司總機上，未完成對話收到指定來源時改派。已完成唔郁。同事個人線路唔叫呢個。 */
+function storePinnedAssignee(commentId: number, staffId: number): void {
+  db.prepare(
+    `UPDATE comments
+     SET assignee_staff_id = ?, updated_at = datetime('now')
+     WHERE id = ? AND status <> 'done'`
+  ).run(staffId, commentId);
+}
+
+/** 只填空白帖文欄。重試已經併入嘅訊息時用，唔改正文。指定來源先至可能改派未完成對話。 */
 function rememberReferralPost(
   commentId: number,
   metaPostId: string | null,
@@ -546,13 +565,15 @@ function rememberReferralPost(
  *
  * - 同事個人線路 → 派畀綁定同事
  * - 公司總機 → pickNextAutoAssignStaffId（輪流：Eddie → Wing → Jason → 其餘按 staff id；唔計未完成數。Tony、Benjamin、Vivian、Raymond 唔參與。Ken 會參與）
+ * - 公司總機如果 referral 係指定帖文／Reel，就派畀對照同事，唔經輪流，亦唔睇逾時暫停。同事個人線路仍然派畀綁定同事。
  * - 未知／已停用線路 → 入庫為未派，並寫 log
  *
  * 有 externalId 時以佢做冪等鍵。冇則用 wa:{to}:{from} 合成一條對話，新內容會附加，
- * 公司總機唔會因為後續訊息而改派。同事線路每次都會對齊綁定同事。
+ * 公司總機一般唔會因為後續訊息而改派。指定來源的新 referral 會把未完成對話改派畀對照同事。
+ * 同事線路每次都會對齊綁定同事。
  * 另外把寄件 wa_id 同收件線路寫入 wa_from_phone／wa_to_phone，畀公司線出站用。
- * 同一個客戶電話如果已經有未完成對話，新嘅 wamid 會併入嗰個 ID，唔會改派。
- * 狀態係已完成先至開新 ID。
+ * 同一個客戶電話如果已經有未完成對話，新嘅 wamid 會併入嗰個 ID。
+ * 狀態係已完成先至開新 ID。已完成唔會為咗指定來源而重開；跟進如果產品本身會重開，重開之後先至改派。
  * 帖文或廣告 referral 會寫入 meta_post_*（只填空白）。冇 referral 就留空，訊息仍然入庫。
  */
 export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWhatsAppInboundResult {
@@ -598,6 +619,7 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
   const metaPostId = cleanMetaPostId(input.metaPostId);
   const metaPostPermalink = cleanMetaPostPermalink(input.metaPostPermalink);
   const metaPostCaption = cleanMetaPostCaption(input.metaPostCaption);
+  const pinnedStaffId = pinnedSourceAssigneeStaffId(metaPostId, metaPostPermalink);
 
   const run = db.transaction((): RouteWhatsAppInboundResult => {
     const existing = db
@@ -625,14 +647,30 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
             status: comment.status,
             author_name: comment.author_name,
           },
-          false
+          false,
+          pinnedStaffId,
+          comment.status
         );
+        let assigneeStaffId = comment.assignee_staff_id;
+        let stored = comment;
+        if (
+          routed.line?.kind === "company" &&
+          pinnedStaffId != null &&
+          comment.status !== "done" &&
+          assigneeStaffId !== pinnedStaffId
+        ) {
+          storePinnedAssignee(comment.id, pinnedStaffId);
+          const fresh = getComment(comment.id);
+          if (!fresh) return { ok: false, error: "更新後讀唔返留言" };
+          stored = fresh;
+          assigneeStaffId = fresh.assignee_staff_id;
+        }
         return {
           ok: true,
           outcome: routed.outcome,
           line: routed.line,
-          assigneeStaffId: comment.assignee_staff_id,
-          comment,
+          assigneeStaffId,
+          comment: stored,
           created: false,
           appended: false,
           inboundReplyId: folded.replyId,
@@ -671,14 +709,30 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
             status: open.status,
             author_name: open.author_name,
           },
-          false
+          false,
+          pinnedStaffId,
+          open.status
         );
+        let assigneeStaffId = comment.assignee_staff_id;
+        let stored = comment;
+        if (
+          routed.line?.kind === "company" &&
+          pinnedStaffId != null &&
+          comment.status !== "done" &&
+          assigneeStaffId !== pinnedStaffId
+        ) {
+          storePinnedAssignee(comment.id, pinnedStaffId);
+          const fresh = getComment(comment.id);
+          if (!fresh) return { ok: false, error: "更新後讀唔返留言" };
+          stored = fresh;
+          assigneeStaffId = fresh.assignee_staff_id;
+        }
         return {
           ok: true,
           outcome: routed.outcome,
           line: routed.line,
-          assigneeStaffId: comment.assignee_staff_id,
-          comment,
+          assigneeStaffId,
+          comment: stored,
           created: false,
           appended: !appended.duplicate,
           inboundReplyId: appended.replyId,
@@ -686,7 +740,6 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
       }
     }
 
-    const { outcome, assigneeStaffId, line } = resolveAssignment(to, from, externalId, existing);
     const nextBody = existing ? mergeBody(existing.body, body, explicitExternalId == null) : body;
     let status: CommentStatus = existing?.status ?? "open";
     if (existing && nextBody !== existing.body && status === "done") {
@@ -698,6 +751,15 @@ export function routeWhatsAppInbound(input: RouteWhatsAppInboundInput): RouteWha
       });
       if (!otherOpen) status = "open";
     }
+    const { outcome, assigneeStaffId, line } = resolveAssignment(
+      to,
+      from,
+      externalId,
+      existing,
+      true,
+      pinnedStaffId,
+      status
+    );
     const keyToStore = existing ? keySafeToStore("whatsapp", existing.id, identityKey, status) : identityKey;
 
     if (!existing) {

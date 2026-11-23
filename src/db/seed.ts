@@ -5,6 +5,7 @@ import { db, getDbPath, shutdownDatabase, usingPostgres } from "./index";
 import { hashPassword } from "../auth/passwords";
 import { autoAssignUnassigned } from "../services/assign";
 import { resetKenReplySlaOnce, resetStaffReplySlaOnce } from "../services/reply-sla";
+import { assignPinnedSourceThreadsOnce } from "../services/source-assign";
 import { notifyNewComment } from "../services/push";
 import { createStaffReply } from "../services/replies";
 import { upsertObservedDealerListings } from "../services/twentyeightcar";
@@ -662,6 +663,19 @@ function resetReplySlaOnceOnBoot(): void {
 }
 
 /**
+ * 2026-11-23 一次過：未完成、而且來源係指定帖文或 Reel 的對話改派畀對照同事。
+ * 標記寫入 app_boot_once 之後，重啟唔會再改派。已完成唔會改，亦唔會重開。
+ * 唔改回覆逾時次數或暫停。指定同事未在職就唔寫標記，下次啟動再試。
+ */
+function assignPinnedSourcesOnceOnBoot(): void {
+  const result = assignPinnedSourceThreadsOnce();
+  if (!result.applied) return;
+  console.log(
+    `[boot] 已一次過將 ${result.reassigned} 則未完成、來源係指定帖文或 Reel 的對話改派畀指定同事。${result.already} 則本來已經係該同事。已完成的對話唔會改派，亦唔會重開。唔會改回覆逾時次數或暫停。呢次改派唔會再跑。`
+  );
+}
+
+/**
  * 2026-11-23 一次過：只清 Ken Kan 的逾時次數、自動派單暫停同暫停輪次。
  * 標記寫入 app_boot_once 之後，重啟唔會再清。其他同事唔會改。
  * 未記結果的未覆留言由之後第一次檢查重新計，唔會喺啟動時改 reply_sla。
@@ -682,7 +696,7 @@ function resetKenReplySlaOnceOnBoot(): void {
  * npm start 用。空庫寫入全部同事；已有同事（Render Postgres）確保 Benjamin、Vivian、Raymond Chan 係管理員，Ken 係同事。
  * 兩種情況都唔寫示範留言。新帳號用示範密碼；已有 password_hash 唔覆寫。
  * 已有庫會再嘗試刪走 staff.id 5–13（受保護同事喺範圍內就唔刪）。
- * 同事對齊之後跑一次 SLA 重置（已跑過就跳過）。
+ * 同事對齊之後跑一次 SLA 重置（已跑過就跳過），再一次過把指定帖文／Reel 的未完成對話改派（已跑過就跳過）。
  */
 export function syncStaffOnBoot(): void {
   const row = db.prepare(`SELECT COUNT(*) AS n FROM staff`).get() as { n: number };
@@ -690,6 +704,7 @@ export function syncStaffOnBoot(): void {
     console.log("[boot] staff 表係空，寫入同事同公司 WhatsApp 總機（唔寫示範留言）");
     seedStaff();
     resetReplySlaOnceOnBoot();
+    assignPinnedSourcesOnceOnBoot();
     return;
   }
   console.log(
@@ -702,6 +717,7 @@ export function syncStaffOnBoot(): void {
   ensureCompanyWhatsAppLine();
   removeRetiredStaffById();
   resetReplySlaOnceOnBoot();
+  assignPinnedSourcesOnceOnBoot();
 }
 
 function logStaffRoster(companyLine: { phone_e164: string; display_label: string; kind: string; is_active: number | boolean }): void {

@@ -309,6 +309,7 @@ CREATE INDEX IF NOT EXISTS idx_staff_reply_sla_until ON staff_reply_sla(suspende
 -- staff_reply_sla_clear_20261120：清走暫停同本輪次數，並把 suspensions_started 提到至少 1。
 -- staff_reply_sla_clear_ken_20261123：只清 Ken 的次數、暫停同輪次（suspensions_started=0）。
 -- staff_reply_sla_rebaseline_ken_20261123：Ken 歸零之後，第一次檢查先重計佢未覆個案的時限。
+-- assign_ferrari_360_cs_reel_ken_20261123：未完成、來源係 2026-11-23 Ferrari 360 Challenge Stradale Reel 的對話改派畀 ken。已完成唔改、唔重開。
 CREATE TABLE IF NOT EXISTS app_boot_once (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   key TEXT NOT NULL UNIQUE,
