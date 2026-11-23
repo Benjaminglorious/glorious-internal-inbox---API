@@ -94,6 +94,12 @@ export function hktDateKey(instant: Date): string {
   return `${p.year}-${p.month}-${p.day}`;
 }
 
+/** Hong Kong calendar month, `YYYY-MM`. The 1st starts at 00:00 Asia/Hong_Kong. */
+export function hktYearMonth(instant: Date): string {
+  const p = hktParts(instant);
+  return `${p.year}-${p.month}`;
+}
+
 /** Absolute Hong Kong wall clock, `YYYY-MM-DD HH:mm:ss`. */
 export function formatHktClock(instant: Date): string {
   const p = hktParts(instant);

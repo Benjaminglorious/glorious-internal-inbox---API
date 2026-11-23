@@ -1,6 +1,7 @@
 /**
- * 回覆時限：香港星期同夜晚窗、逾時只記一次、三次暫停、
- * 七日後自動回到公司線輪流（包括暫停中途重啟），管理員只通知一次。
+ * 回覆時限：香港星期同夜晚窗、逾時只記一次、三次暫停三日、
+ * 暫停結束次數歸零、再犯都係三日、每月 1 日歸零同月報。
+ * 三日後自動回到公司線輪流（包括暫停中途重啟），管理員只通知一次。
  * 用臨時 SQLite，唔會郁到正式 data/inbox.db。
  */
 import { spawnSync } from "child_process";
@@ -9,10 +10,10 @@ import type { Server } from "http";
 import type { AddressInfo } from "net";
 import os from "os";
 import path from "path";
-import { REPLY_SLA_FIRST_SUSPEND_MS, REPLY_SLA_LATER_SUSPEND_MS } from "../reply-sla-config";
+import { REPLY_SLA_SUSPEND_MS } from "../reply-sla-config";
 import { insertReturningId, translateSql } from "../db/sql-compat";
-import { computeReplyDeadline, formatUtcTimestamp } from "../services/reply-sla-clock";
-import { parseStoredTimestamp } from "../time";
+import { computeReplyDeadline, formatUtcTimestamp, hktMonthRangeUtc } from "../services/reply-sla-clock";
+import { hktYearMonth, parseStoredTimestamp } from "../time";
 
 const failures: string[] = [];
 const DEMO_PASSWORD = "Glorious2026!";
@@ -155,6 +156,23 @@ function clockCases(): void {
     "跨年夜晚窗由下一日 09:00 再計",
     yearEnd.start === "2027-01-01 01:00:00" && yearEnd.limit === 7200 && yearEnd.due === "2027-01-01 03:00:00",
     JSON.stringify(yearEnd)
+  );
+  check(
+    "香港時間每月1日 00:00 先至進入新曆月，前一秒仍屬上個月",
+    hktYearMonth(atHkt("2026-12-01 00:00:00")) === "2026-12" &&
+      hktYearMonth(atHkt("2026-11-30 23:59:59")) === "2026-11"
+  );
+  const november = hktMonthRangeUtc("2026-11");
+  check(
+    "逾時月報的香港曆月由當月1日 00:00 起，到下月1日 00:00 止",
+    november.start === "2026-10-31 16:00:00" && november.end === "2026-11-30 16:00:00",
+    JSON.stringify(november)
+  );
+  check(
+    "正正 23:00 到翌日 09:00 之前都係夜晚窗，09:00 先開始計",
+    deadlineOf("2026-11-18 23:00:00").start === "2026-11-19 01:00:00" &&
+      deadlineOf("2026-11-19 08:59:00").start === "2026-11-19 01:00:00" &&
+      deadlineOf("2026-11-19 09:00:00").start === "2026-11-19 01:00:00"
   );
 }
 
@@ -369,7 +387,7 @@ async function dbCases(): Promise<void> {
     .get(untouched) as { due_at: string; delay_recorded_at: string | null; met_at: string | null };
   const epochAfterReset = (appDb.prepare(`SELECT COUNT(*) AS n FROM reply_sla_epoch`).get() as { n: number }).n;
   check(
-    "一次過重置清走暫停同本輪次數，未滿一輪的人標記成下次 7 日，已有輪次保留",
+    "一次過重置清走暫停同本輪次數，未滿一輪的人 suspensions_started 設成 1，已有輪次保留",
     firstReset.applied === true &&
       firstReset.staff === 9 &&
       wingCleared?.delay_count === 0 &&
@@ -410,19 +428,19 @@ async function dbCases(): Promise<void> {
   const strikeNow = parseStoredTimestamp(T_LATE, "utc") as Date;
   const strike = slaMod.scanReplySla(strikeNow);
   const patAfter = slaRow(patId);
-  const sevenUntil = formatUtcTimestamp(new Date(strikeNow.getTime() + REPLY_SLA_LATER_SUSPEND_MS));
+  const threeUntil = formatUtcTimestamp(new Date(strikeNow.getTime() + REPLY_SLA_SUSPEND_MS));
   const patThird = noticeBodies(patCases[2]);
   const epochAfterStrike = appDb.prepare(`SELECT effective_at FROM reply_sla_epoch WHERE id = 1`).get() as {
     effective_at: string;
   };
   check(
-    "重置之後再累積三次暫停 7 日，唔會再當第一次 3 日",
+    "重置之後再累積三次仍然暫停 3 日，唔會因為舊輪次用 7 日",
     strike.delays === 3 &&
       patAfter?.delay_count === 0 &&
-      patAfter.suspended_until === sevenUntil &&
+      patAfter.suspended_until === threeUntil &&
       Number(patAfter.n) === 2 &&
-      patThird.some((body) => body.includes("暫停自動派單七日")) &&
-      !patThird.some((body) => body.includes("三日")) &&
+      patThird.some((body) => body.includes("暫停自動派單三日")) &&
+      !patThird.some((body) => body.includes("七日")) &&
       epochAfterStrike.effective_at === GO_LIVE,
     JSON.stringify({ strike, pat: patAfter, notice: patThird[0] })
   );
@@ -432,7 +450,7 @@ async function dbCases(): Promise<void> {
     "重置只跑一次，之後嘅暫停同次數唔會被再清走",
     secondReset.applied === false &&
       secondReset.staff === 0 &&
-      patStill?.suspended_until === sevenUntil &&
+      patStill?.suspended_until === threeUntil &&
       patStill.delay_count === 0 &&
       Number(patStill.n) === 2
   );
@@ -556,7 +574,7 @@ async function dbCases(): Promise<void> {
   const wingStarted = appDb
     .prepare(`SELECT suspensions_started AS n FROM staff_reply_sla WHERE staff_id = ?`)
     .get(idOf("wing")) as { n: number };
-  const pauseUntil = formatUtcTimestamp(new Date(recoveryLate.getTime() + REPLY_SLA_FIRST_SUSPEND_MS));
+  const pauseUntil = formatUtcTimestamp(new Date(recoveryLate.getTime() + REPLY_SLA_SUSPEND_MS));
   const thirdBodies = noticeBodies(missed[2]);
   const thirdOwn = thirdBodies.find((body) => body.includes("你的回覆已逾時")) || "";
   check(
@@ -817,7 +835,7 @@ async function dbCases(): Promise<void> {
     for (const commentId of cycle) insertOpened(commentId, T_IN, T_IN, "2026-11-23 03:00:00");
     const cycleAt = parseStoredTimestamp("2026-11-23 03:30:00", "utc") as Date;
     const cycleScan = slaMod.scanReplySla(cycleAt);
-    const pauseUntil = formatUtcTimestamp(new Date(cycleAt.getTime() + REPLY_SLA_FIRST_SUSPEND_MS));
+    const pauseUntil = formatUtcTimestamp(new Date(cycleAt.getTime() + REPLY_SLA_SUSPEND_MS));
     const kenPaused = slaRow(idOf("ken"));
     const thirdBodies = noticeBodies(cycle[2]);
     check(
@@ -1024,7 +1042,7 @@ async function dbCases(): Promise<void> {
   ];
   const pushesBeforeStrikes = pushes.length;
   slaMod.scanReplySla(lateNow);
-  const until = formatUtcTimestamp(new Date(lateNow.getTime() + REPLY_SLA_FIRST_SUSPEND_MS));
+  const until = formatUtcTimestamp(new Date(lateNow.getTime() + REPLY_SLA_SUSPEND_MS));
   const wing = stateOf(idOf("wing"));
   const wingStarted = appDb
     .prepare(`SELECT suspensions_started AS n FROM staff_reply_sla WHERE staff_id = ?`)
@@ -1095,21 +1113,23 @@ async function dbCases(): Promise<void> {
   );
   const cycle = [addComment(idOf("wing"), T_IN), addComment(idOf("wing"), T_IN)];
   slaMod.scanReplySla(duringNow);
-  const renewedUntil = formatUtcTimestamp(new Date(duringNow.getTime() + REPLY_SLA_LATER_SUSPEND_MS));
+  const renewedUntil = formatUtcTimestamp(new Date(duringNow.getTime() + REPLY_SLA_SUSPEND_MS));
   const renewed = stateOf(idOf("wing"));
   const renewedStarted = appDb
     .prepare(`SELECT suspensions_started AS n FROM staff_reply_sla WHERE staff_id = ?`)
     .get(idOf("wing")) as { n: number };
   const renewedOwn = noticeBodies(cycle[1]).find((body) => body.includes("你的回覆已逾時")) || "";
   check(
-    "之後再累積三次會暫停七日，次數再歸零",
+    "之後再累積三次同樣暫停三日，唔會變七日，次數再歸零",
     renewed.delay_count === 0 &&
       renewed.suspended_until === renewedUntil &&
       renewed.active === 1 &&
       Number(renewedStarted.n) === 2 &&
       !noticeBodies(cycle[0])[0].includes("暫停") &&
-      noticeBodies(cycle[1])[0].includes("暫停自動派單七日") &&
-      renewedOwn.includes("暫停七日"),
+      noticeBodies(cycle[1])[0].includes("暫停自動派單三日") &&
+      !noticeBodies(cycle[1])[0].includes("七日") &&
+      renewedOwn.includes("暫停三日") &&
+      !renewedOwn.includes("七日"),
     JSON.stringify(renewed)
   );
 
@@ -1150,15 +1170,15 @@ async function dbCases(): Promise<void> {
   appDb.prepare(`UPDATE staff_reply_sla SET suspended_until = ?, delay_count = 1 WHERE staff_id = ?`).run(PAST, idOf("wing"));
   const restoredPick = assignMod.pickNextAutoAssignStaffId();
   check(
-    "七日到期自動回到輪流，清理函數未跑都派得中",
+    "三日到期自動回到輪流，清理函數未跑都派得中",
     restoredPick === idOf("wing") && stateOf(idOf("wing")).suspended_until === PAST && stateOf(idOf("wing")).active === 1,
     `pick=${restoredPick}`
   );
 
   const restored = slaMod.scanReplySla(parseStoredTimestamp("2026-11-17 09:00:00", "utc") as Date);
   check(
-    "檢查器清走到期暫停，但保留下一輪次數",
-    restored.restored >= 1 && stateOf(idOf("wing")).suspended_until == null && stateOf(idOf("wing")).delay_count === 1,
+    "檢查器清走到期暫停，並把本輪次數歸零",
+    restored.restored >= 1 && stateOf(idOf("wing")).suspended_until == null && stateOf(idOf("wing")).delay_count === 0,
     JSON.stringify(stateOf(idOf("wing")))
   );
 
@@ -1300,13 +1320,17 @@ async function dbCases(): Promise<void> {
         tonyHtml.includes("<th>逾時次數</th>") &&
         tonyHtml.includes("重要資訊") &&
         tonyHtml.includes("早上9時到晚上10:59") &&
-        tonyHtml.includes("第一次會暫停派單3天") &&
-        tonyHtml.includes("第二次便會暫停派單7天") &&
+        tonyHtml.includes("會暫停公司線自動派單3天") &&
+        tonyHtml.includes("不會暫停7天") &&
+        tonyHtml.includes("每月1日凌晨0時") &&
+        tonyHtml.includes("管理員可以查看") &&
         tonyHtml.includes("所有已完成的留言不會計算在內") &&
+        tonyHtml.includes("逾時月報") &&
+        !tonyHtml.includes("第二次便會暫停派單7天") &&
         !tonyHtml.includes("未覆的舊訊息由第一次檢查重新計時") &&
         !tonyHtml.includes("2026-11-20") &&
         !tonyHtml.includes("你係管理員，可以睇全部留言") &&
-        tonyHtml.includes("暫停至 2999-01-01 08:00:00 HKT（到期自動恢復輪候，今次 7 日）") &&
+        tonyHtml.includes("暫停至 2999-01-01 08:00:00 HKT（到期自動恢復輪候，今次 3 日）") &&
         tonyHtml.includes(">2</td>") &&
         tonyHtml.includes("不參與自動派單") &&
         !tonyHtml.includes("手動恢復"),
@@ -1319,8 +1343,11 @@ async function dbCases(): Promise<void> {
       wingPage.status === 200 &&
         wingHtml.includes("重要資訊") &&
         wingHtml.includes("每日晚上11點到翌日早上9點") &&
+        wingHtml.includes("不會暫停7天") &&
+        wingHtml.includes("管理員可以查看") &&
         !wingHtml.includes("<th>逾時次數</th>") &&
         !wingHtml.includes("<th>自動派單</th>") &&
+        !wingHtml.includes("逾時月報") &&
         !wingHtml.includes("暫停至") &&
         !wingHtml.includes("你只可以處理派咗畀你嘅留言")
     );
@@ -1349,11 +1376,11 @@ async function dbCases(): Promise<void> {
       wingInbox.status === 200 &&
         wingInboxHtml.includes("已逾時") &&
         wingInboxHtml.includes("你已累積 3 次逾時回覆") &&
-        wingInboxHtml.includes("自動派單已暫停七日") &&
+        wingInboxHtml.includes("自動派單已暫停三日") &&
         wingInboxHtml.includes("到期自動恢復") &&
         wingLiveJson.sla_self?.suspended === true &&
-        wingLiveJson.sla_self.suspend_days === 7 &&
-        (wingLiveJson.sla_self.banner || "").includes("暫停七日"),
+        wingLiveJson.sla_self.suspend_days === 3 &&
+        (wingLiveJson.sla_self.banner || "").includes("暫停三日"),
       wingLiveJson.sla_self?.banner || String(wingInbox.status)
     );
 
@@ -1418,6 +1445,289 @@ async function dbCases(): Promise<void> {
         }) &&
         bad.status === 400,
       JSON.stringify(updatesJson.sla_notices)
+    );
+
+    const ruleNow = parseStoredTimestamp("2026-11-23 04:00:00", "utc") as Date;
+    const setFullSuspension = (
+      staffId: number,
+      from: string | null,
+      until: string | null,
+      count: number,
+      started: number
+    ) => {
+      appDb.prepare(slaMod.STAFF_REPLY_SLA_UPSERT_SQL).run(staffId, count, from, until, started, ruleNow.toISOString());
+    };
+    setFullSuspension(idOf("jason"), "2026-11-22 00:00:00", "2026-11-29 00:00:00", 2, 2);
+    setFullSuspension(idOf("sam"), "2026-11-18 00:00:00", "2026-11-25 00:00:00", 1, 4);
+    setFullSuspension(idOf("eddie"), "2026-11-22 00:00:00", "2026-11-25 00:00:00", 1, 1);
+    setFullSuspension(idOf("ken"), "2000-01-01 00:00:00", PAST, 4, 3);
+    const firstShorten = slaMod.applyPause3MonthlyOnce(ruleNow);
+    const jasonShort = slaRow(idOf("jason"));
+    const samShort = slaRow(idOf("sam"));
+    const eddieShort = slaRow(idOf("eddie"));
+    const kenExpired = slaRow(idOf("ken"));
+    check(
+      "仍在生效的 7 日暫停改為由開始起計 3 日；已滿 3 日就結束並歸零；3 日暫停同已到期的唔郁",
+      firstShorten.applied === true &&
+        firstShorten.shortened === 1 &&
+        firstShorten.ended === 1 &&
+        slaMod.STAFF_SLA_PAUSE3_MONTHLY_ONCE_KEY === "staff_reply_sla_pause3_monthly_20261123" &&
+        jasonShort?.suspended_until === "2026-11-25 00:00:00" &&
+        jasonShort.delay_count === 2 &&
+        Number(jasonShort.n) === 2 &&
+        samShort?.suspended_until == null &&
+        samShort?.delay_count === 0 &&
+        Number(samShort.n) === 4 &&
+        eddieShort?.suspended_until === "2026-11-25 00:00:00" &&
+        eddieShort.delay_count === 1 &&
+        Number(eddieShort.n) === 1 &&
+        kenExpired?.suspended_until === PAST &&
+        kenExpired.delay_count === 4,
+      JSON.stringify({ firstShorten, jason: jasonShort, sam: samShort, eddie: eddieShort, ken: kenExpired })
+    );
+    const secondShorten = slaMod.applyPause3MonthlyOnce(ruleNow);
+    check(
+      "7 日改 3 日的標記只跑一次",
+      secondShorten.applied === false &&
+        secondShorten.shortened === 0 &&
+        secondShorten.ended === 0 &&
+        slaRow(idOf("jason"))?.suspended_until === "2026-11-25 00:00:00" &&
+        slaRow(idOf("jason"))?.delay_count === 2
+    );
+
+    const caughtUp = addComment(idOf("wing"), "2026-11-20 02:00:00");
+    appDb
+      .prepare(
+        `INSERT INTO reply_sla (comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds)
+         VALUES (?, NULL, '2026-11-20 02:00:00', '2026-11-20 02:00:00', '2026-11-20 04:00:00', 7200)`
+      )
+      .run(caughtUp);
+    const notYet = addComment(idOf("wing"), "2026-11-23 05:00:00");
+    appDb
+      .prepare(
+        `INSERT INTO reply_sla (comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds)
+         VALUES (?, NULL, '2026-11-23 05:00:00', '2026-11-23 05:00:00', '2026-11-23 07:00:00', 7200)`
+      )
+      .run(notYet);
+    const doneLate = addComment(idOf("wing"), "2026-11-20 03:00:00");
+    appDb.prepare(`UPDATE comments SET status = 'done' WHERE id = ?`).run(doneLate);
+    appDb
+      .prepare(
+        `INSERT INTO reply_sla (comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds)
+         VALUES (?, NULL, '2026-11-20 03:00:00', '2026-11-20 03:00:00', '2026-11-20 05:00:00', 7200)`
+      )
+      .run(doneLate);
+    const wingBeforeGoLive = stateOf(idOf("wing")).delay_count;
+    const goLiveScan = slaMod.scanReplySla(ruleNow);
+    const restarted = computeReplyDeadline(parseStoredTimestamp("2026-11-20 02:00:00", "utc") as Date, ruleNow);
+    const caughtRow = opening(caughtUp);
+    check(
+      "規則上線第一次檢查唔會把已到期未覆個案補記逾時，已完成亦唔計",
+      goLiveScan.delays === 0 &&
+        caughtRow?.delay_recorded_at == null &&
+        caughtRow?.count_start_at === formatUtcTimestamp(restarted.countStart) &&
+        caughtRow?.due_at === formatUtcTimestamp(restarted.due) &&
+        opening(notYet)?.due_at === "2026-11-23 07:00:00" &&
+        opening(notYet)?.delay_recorded_at == null &&
+        opening(doneLate)?.delay_recorded_at == null &&
+        stateOf(idOf("wing")).delay_count === wingBeforeGoLive &&
+        noticeBodies(caughtUp).length === 0 &&
+        (
+          appDb.prepare(`SELECT COUNT(*) AS n FROM staff_reply_sla_events WHERE comment_id = ?`).get(caughtUp) as {
+            n: number;
+          }
+        ).n === 0 &&
+        (
+          appDb.prepare(`SELECT COUNT(*) AS n FROM staff_reply_sla_events WHERE comment_id = ?`).get(doneLate) as {
+            n: number;
+          }
+        ).n === 0,
+      JSON.stringify({ goLiveScan, caught: caughtRow, notYet: opening(notYet), done: opening(doneLate) })
+    );
+    const heldGoLiveDue = opening(caughtUp)?.due_at;
+    slaMod.scanReplySla(parseStoredTimestamp("2026-11-23 04:30:00", "utc") as Date);
+    check(
+      "上線重計之後再檢查，未到新期限就唔會再推前，亦未補記逾時",
+      opening(caughtUp)?.due_at === heldGoLiveDue && opening(caughtUp)?.delay_recorded_at == null
+    );
+
+    appDb
+      .prepare(
+        `UPDATE reply_sla
+         SET due_at = '2999-01-01 00:00:00'
+         WHERE met_at IS NULL AND delay_recorded_at IS NULL AND skipped_at IS NULL`
+      )
+      .run();
+    appDb.prepare(`DELETE FROM staff_reply_sla_events`).run();
+    const novemberEvent = "2026-11-20 04:00:00";
+    const stillNovember = "2026-11-30 15:59:59";
+    const decemberStart = "2026-11-30 16:00:00";
+    appDb
+      .prepare(
+        `INSERT INTO staff_reply_sla_events (staff_id, comment_id, reply_sla_id, recorded_at)
+         VALUES (?, ?, NULL, ?)`
+      )
+      .run(idOf("wing"), caughtUp, novemberEvent);
+    appDb
+      .prepare(
+        `INSERT INTO staff_reply_sla_events (staff_id, comment_id, reply_sla_id, recorded_at)
+         VALUES (?, ?, NULL, ?)`
+      )
+      .run(idOf("eddie"), notYet, stillNovember);
+    appDb
+      .prepare(
+        `INSERT INTO staff_reply_sla_events (staff_id, comment_id, reply_sla_id, recorded_at)
+         VALUES (?, ?, NULL, ?)`
+      )
+      .run(idOf("wing"), notYet, decemberStart);
+    const monthBefore = (
+      appDb.prepare(`SELECT open_month FROM staff_reply_sla_month WHERE id = 1`).get() as { open_month: string }
+    ).open_month;
+    setFullSuspension(idOf("sam"), "2026-11-28 00:00:00", "2026-12-05 00:00:00", 2, 1);
+    const decNow = atHkt("2026-12-01 00:00:00");
+    const decReset = slaMod.scanReplySla(decNow);
+    const samAfterMonth = slaRow(idOf("sam"));
+    const monthAfter = (
+      appDb.prepare(`SELECT open_month, report_from_month FROM staff_reply_sla_month WHERE id = 1`).get() as {
+        open_month: string;
+        report_from_month: string;
+      }
+    );
+    check(
+      "香港時間 12 月 1 日 00:00 先歸零進行中次數，進行中的暫停繼續，上線月份唔會被改寫",
+      monthBefore === "2026-11" &&
+        decReset.delays === 0 &&
+        samAfterMonth?.delay_count === 0 &&
+        samAfterMonth.suspended_until === "2026-12-05 00:00:00" &&
+        monthAfter.open_month === "2026-12" &&
+        monthAfter.report_from_month === "2026-11",
+      JSON.stringify({ monthBefore, decReset, sam: samAfterMonth, monthAfter })
+    );
+    const justBefore = slaMod.scanReplySla(atHkt("2026-11-30 23:59:59"));
+    check(
+      "時鐘倒退返 11 月唔會再歸零，亦唔會把月份倒退",
+      justBefore.delays === 0 &&
+        (
+          appDb.prepare(`SELECT open_month FROM staff_reply_sla_month WHERE id = 1`).get() as { open_month: string }
+        ).open_month === "2026-12" &&
+        slaRow(idOf("sam"))?.delay_count === 0 &&
+        slaRow(idOf("sam"))?.suspended_until === "2026-12-05 00:00:00"
+    );
+    const decLate = addComment(idOf("jason"), "2026-11-30 02:00:00");
+    appDb
+      .prepare(
+        `INSERT INTO reply_sla (comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds)
+         VALUES (?, NULL, '2026-11-30 02:00:00', '2026-11-30 02:00:00', '2026-11-30 04:00:00', 7200)`
+      )
+      .run(decLate);
+    const decLateScan = slaMod.scanReplySla(decNow);
+    const decReport = slaMod.lateReplyMonthReport("2026-12", decNow);
+    const novReport = slaMod.lateReplyMonthReport("2026-11", decNow);
+    const countOf = (report: typeof decReport, username: string) =>
+      report.rows.find((row) => row.username === username)?.lateCount;
+    check(
+      "12 月 1 日先記低的逾時只計入 12 月，11 月的事件唔會混入，冇逾時的同事係 0",
+      decLateScan.delays === 1 &&
+        opening(decLate)?.delay_recorded_at === formatUtcTimestamp(decNow) &&
+        slaRow(idOf("jason"))?.delay_count === 1 &&
+        decReport.finalized === false &&
+        decReport.month === "2026-12" &&
+        countOf(decReport, "jason") === 1 &&
+        countOf(decReport, "wing") === 1 &&
+        countOf(decReport, "eddie") === 0 &&
+        countOf(decReport, "tony") === 0 &&
+        novReport.finalized === true &&
+        countOf(novReport, "wing") === 1 &&
+        countOf(novReport, "eddie") === 1 &&
+        countOf(novReport, "jason") === 0 &&
+        decReport.rows.length === novReport.rows.length &&
+        decReport.rows.every((row) => novReport.rows.some((other) => other.username === row.username)) &&
+        decReport.months.join(",") === "2026-11,2026-12",
+      JSON.stringify({
+        dec: decReport.rows.map((row) => [row.username, row.lateCount]),
+        nov: novReport.rows.map((row) => [row.username, row.lateCount]),
+      })
+    );
+    const earlyDecember = slaMod.lateReplyMonthReport("2026-10", decNow);
+    check("上線前的月份唔會出現喺月報", earlyDecember.month === "2026-12" && !earlyDecember.months.includes("2026-10"));
+
+    const duringPauseAt = parseStoredTimestamp("2026-12-02 04:00:00", "utc") as Date;
+    const duringLate = addComment(idOf("sam"), "2026-12-02 01:00:00");
+    appDb
+      .prepare(
+        `INSERT INTO reply_sla (comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds)
+         VALUES (?, NULL, '2026-12-02 01:00:00', '2026-12-02 01:00:00', '2026-12-02 03:00:00', 7200)`
+      )
+      .run(duringLate);
+    slaMod.scanReplySla(duringPauseAt);
+    check(
+      "換月之後暫停仍然生效，期間的新逾時會計入，但未夠 3 次唔會再開暫停",
+      slaRow(idOf("sam"))?.delay_count === 1 && slaRow(idOf("sam"))?.suspended_until === "2026-12-05 00:00:00"
+    );
+    appDb.prepare(`UPDATE staff_reply_sla SET suspended_until = ? WHERE staff_id = ?`).run("2026-12-02 04:00:00", idOf("sam"));
+    slaMod.scanReplySla(parseStoredTimestamp("2026-12-02 04:01:00", "utc") as Date);
+    check(
+      "暫停完結後進行中次數歸零，換月之前的次數唔會返嚟",
+      slaRow(idOf("sam"))?.suspended_until == null && slaRow(idOf("sam"))?.delay_count === 0
+    );
+
+    const doneAgain = addComment(idOf("eddie"), "2026-12-02 01:00:00");
+    appDb.prepare(`UPDATE comments SET status = 'done' WHERE id = ?`).run(doneAgain);
+    appDb
+      .prepare(
+        `INSERT INTO reply_sla (comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds)
+         VALUES (?, NULL, '2026-12-02 01:00:00', '2026-12-02 01:00:00', '2026-12-02 02:00:00', 7200)`
+      )
+      .run(doneAgain);
+    const eventsBeforeDone = (
+      appDb.prepare(`SELECT COUNT(*) AS n FROM staff_reply_sla_events`).get() as { n: number }
+    ).n;
+    slaMod.scanReplySla(parseStoredTimestamp("2026-12-02 05:00:00", "utc") as Date);
+    check(
+      "已完成的對話到期唔會寫入月報，亦唔加逾時次數",
+      opening(doneAgain)?.delay_recorded_at == null &&
+        (
+          appDb.prepare(`SELECT COUNT(*) AS n FROM staff_reply_sla_events WHERE comment_id = ?`).get(doneAgain) as {
+            n: number;
+          }
+        ).n === 0 &&
+        (appDb.prepare(`SELECT COUNT(*) AS n FROM staff_reply_sla_events`).get() as { n: number }).n === eventsBeforeDone &&
+        slaRow(idOf("eddie"))?.delay_count === 0
+    );
+
+    const wingReport = await fetch(`${base}/staff/late-report`, { headers: { cookie: wingCookie } });
+    const wingReportHtml = await wingReport.text();
+    const liveReport = slaMod.lateReplyMonthReport(null, new Date());
+    const [liveYear, liveMonth] = liveReport.month.split("-");
+    const liveLabel = `${liveYear}年${Number(liveMonth)}月`;
+    const tonyReport = await fetch(`${base}/staff/late-report?month=${liveReport.month}`, {
+      headers: { cookie: tonyCookie },
+    });
+    const tonyReportHtml = await tonyReport.text();
+    const eddieCookie = await login("eddie");
+    const eddieReport = await fetch(`${base}/staff/late-report?month=${liveReport.month}`, {
+      headers: { cookie: eddieCookie },
+    });
+    const eddieReportHtml = await eddieReport.text();
+    const wingCount = liveReport.rows.find((row) => row.username === "wing")?.lateCount ?? -1;
+    check(
+      "逾時月報只限管理員，同事睇唔到其他人的次數",
+      wingReport.status === 403 &&
+        wingReportHtml.includes("逾時月報只限管理員查看") &&
+        !wingReportHtml.includes("<th>該月逾時次數</th>") &&
+        tonyReport.status === 200 &&
+        tonyReportHtml.includes("該月逾時次數") &&
+        tonyReportHtml.includes("不會補回舊數") &&
+        tonyReportHtml.includes(liveLabel) &&
+        tonyReportHtml.includes("Wing Cheng") &&
+        tonyReportHtml.includes("Eddie Lau") &&
+        tonyReportHtml.includes("Ken Kan") &&
+        tonyReportHtml.includes(`>${wingCount}</td>`) &&
+        (liveReport.finalized ? tonyReportHtml.includes("已結算") : tonyReportHtml.includes("進行中")) &&
+        eddieReport.status === 200 &&
+        eddieReportHtml.includes("Jason Cheng") &&
+        !eddieReportHtml.includes("逾時月報只限管理員查看"),
+      `wing=${wingReport.status} tony=${tonyReport.status} eddie=${eddieReport.status} month=${liveReport.month} count=${wingCount}`
     );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

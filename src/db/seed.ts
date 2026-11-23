@@ -4,7 +4,7 @@ import { looksLikeRenderPostgres, readPostgresUrl } from "./pg-config";
 import { db, getDbPath, shutdownDatabase, usingPostgres } from "./index";
 import { hashPassword } from "../auth/passwords";
 import { autoAssignUnassigned } from "../services/assign";
-import { resetKenReplySlaOnce, resetStaffReplySlaOnce } from "../services/reply-sla";
+import { applyPause3MonthlyOnce, resetKenReplySlaOnce, resetStaffReplySlaOnce } from "../services/reply-sla";
 import { assignPinnedSourceThreadsOnce } from "../services/source-assign";
 import { notifyNewComment } from "../services/push";
 import { createStaffReply } from "../services/replies";
@@ -647,16 +647,16 @@ export function removeRetiredStaffById(): RetiredStaffRemoval {
 }
 
 /**
- * 2026-11-20 一次過：清走暫停同本輪逾時次數，下一輪 3 次逾時暫停 7 日。
+ * 2026-11-20 一次過：清走暫停同本輪逾時次數，並把 suspensions_started 未滿 1 的人設成 1。
  * 標記寫入 app_boot_once 之後，重啟唔會再清。唔會重開舊訊息時限。
  * 必須喺同事名單對齊之後先跑，先至包括今次先補上嘅 Ken 同 Raymond。
- * 跟住先至跑 Ken 的一次過歸零，所以 11 月 20 日嗰次唔會把 Ken 的輪次留喺「下次 7 日」。
+ * 跟住先至跑 Ken 的一次過歸零。暫停長度而家一律 3 日，唔再睇 suspensions_started。
  */
 function resetReplySlaOnceOnBoot(): void {
   const result = resetStaffReplySlaOnce();
   if (result.applied) {
     console.log(
-      `[boot] 已一次過清除 ${result.staff} 位同事嘅回覆逾時暫停同本輪次數。下一輪累積 3 次逾時會暫停 7 日，唔會再當第一次 3 日。唔會重開舊訊息的時限，亦唔會補記逾時。呢次重置唔會再跑。`
+      `[boot] 已一次過清除 ${result.staff} 位同事嘅回覆逾時暫停同本輪次數。suspensions_started 未滿 1 的人設成 1（呢個舊標記保留，唔會再跑）。每次累積 3 次逾時都暫停 3 日。唔會重開舊訊息的時限，亦唔會補記逾時。`
     );
   }
   resetKenReplySlaOnceOnBoot();
@@ -688,7 +688,20 @@ function resetKenReplySlaOnceOnBoot(): void {
     return;
   }
   console.log(
-    "[boot] 已一次過清走 Ken Kan 的回覆逾時次數、自動派單暫停同暫停輪次。同事名單會顯示逾時次數 0、自動派單輪候中。下一次累積 3 次先暫停 3 日。佢而家未記結果的未覆留言，會由之後第一次檢查重新計時，唔會即時補記逾時。其他同事唔會改。呢次歸零唔會再跑。"
+    "[boot] 已一次過清走 Ken Kan 的回覆逾時次數、自動派單暫停同暫停輪次。同事名單會顯示逾時次數 0、自動派單輪候中。下一次累積 3 次先暫停 3 日，再犯同樣係 3 日。佢而家未記結果的未覆留言，會由之後第一次檢查重新計時，唔會即時補記逾時。其他同事唔會改。呢次歸零唔會再跑。"
+  );
+}
+
+/**
+ * 2026-11-23 一次過：仍在生效的 7 日暫停改為由原開始起計 3 日。
+ * 已經過咗 3 日或以上就結束暫停並把該同事的 delay_count 歸零。
+ * 標記寫入之後唔會再縮短。唔改密碼、角色或派單次序，亦唔改 reply_sla。
+ */
+function shortenSevenDayPausesOnceOnBoot(): void {
+  const result = applyPause3MonthlyOnce();
+  if (!result.applied) return;
+  console.log(
+    `[boot] 已核對 7 日暫停：縮短 ${result.shortened} 位到由原開始起計 3 日，${result.ended} 位已滿 3 日所以結束暫停並把逾時次數歸零。之後每次累積 3 次都暫停 3 日。呢次唔會再跑。`
   );
 }
 
@@ -696,7 +709,8 @@ function resetKenReplySlaOnceOnBoot(): void {
  * npm start 用。空庫寫入全部同事；已有同事（Render Postgres）確保 Benjamin、Vivian、Raymond Chan 係管理員，Ken 係同事。
  * 兩種情況都唔寫示範留言。新帳號用示範密碼；已有 password_hash 唔覆寫。
  * 已有庫會再嘗試刪走 staff.id 5–13（受保護同事喺範圍內就唔刪）。
- * 同事對齊之後跑一次 SLA 重置（已跑過就跳過），再一次過把指定帖文／Reel 的未完成對話改派（已跑過就跳過）。
+ * 同事對齊之後跑一次 SLA 重置（已跑過就跳過），再把仍在生效的 7 日暫停改為 3 日（已跑過就跳過），
+ * 然後一次過把指定帖文／Reel 的未完成對話改派（已跑過就跳過）。
  */
 export function syncStaffOnBoot(): void {
   const row = db.prepare(`SELECT COUNT(*) AS n FROM staff`).get() as { n: number };
@@ -704,6 +718,7 @@ export function syncStaffOnBoot(): void {
     console.log("[boot] staff 表係空，寫入同事同公司 WhatsApp 總機（唔寫示範留言）");
     seedStaff();
     resetReplySlaOnceOnBoot();
+    shortenSevenDayPausesOnceOnBoot();
     assignPinnedSourcesOnceOnBoot();
     return;
   }
@@ -717,6 +732,7 @@ export function syncStaffOnBoot(): void {
   ensureCompanyWhatsAppLine();
   removeRetiredStaffById();
   resetReplySlaOnceOnBoot();
+  shortenSevenDayPausesOnceOnBoot();
   assignPinnedSourcesOnceOnBoot();
 }
 

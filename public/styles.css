@@ -183,6 +183,18 @@ label.btn input[type="file"] { display: none; }
 .staff-policy ul { margin: 0; padding-left: 1.25rem; }
 .staff-policy li + li { margin-top: 6px; }
 
+.month-switch { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 16px; }
+.month-switch a {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 12px;
+  background: var(--card);
+  text-decoration: none;
+  color: var(--ink);
+}
+.month-switch a.active { background: var(--brand); color: #fff; border-color: var(--brand); }
+.month-switch a:hover { text-decoration: none; }
+
 .filters {
   display: flex;
   flex-wrap: wrap;

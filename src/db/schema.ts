@@ -291,9 +291,10 @@ CREATE INDEX IF NOT EXISTS idx_comment_replies_inbound_created
   WHERE direction = 'inbound';
 
 -- 本輪逾時次數同暫停自動派單到期（UTC）。到期即自動回到輪流，唔使管理員恢復。
--- suspensions_started 記已經開過幾次 3 次暫停：0 即下次係 3 日，1 或以上即下次係 7 日。重啟唔會清。
--- 2026-11-20 一次過重置會把未滿 1 的人設成 1（見 app_boot_once），之後下次暫停係 7 日。
--- 2026-11-23 只把 Ken Kan（username=ken）的 suspensions_started 設回 0 一次，下次暫停先至再係 3 日。
+-- 每次累積 3 次逾時都暫停 3 日。suspensions_started 只記開過幾次，唔再決定 3 日定 7 日。重啟唔會清。
+-- 2026-11-20 一次過重置會把未滿 1 的人設成 1（見 app_boot_once）。呢個欄位保留，但暫停長度唔再睇佢。
+-- 2026-11-23 只把 Ken Kan（username=ken）的 suspensions_started 設回 0 一次。
+-- 暫停結束（suspended_until 已到）會把 delay_count 歸零。每月 1 日 00:00 香港時間亦會把進行中次數歸零，但唔會提早結束未到期的暫停。
 CREATE TABLE IF NOT EXISTS staff_reply_sla (
   staff_id INTEGER PRIMARY KEY REFERENCES staff(id) ON DELETE CASCADE,
   delay_count INTEGER NOT NULL DEFAULT 0,
@@ -305,10 +306,41 @@ CREATE TABLE IF NOT EXISTS staff_reply_sla (
 
 CREATE INDEX IF NOT EXISTS idx_staff_reply_sla_until ON staff_reply_sla(suspended_until);
 
+-- 由呢次規則上線起先記低的逾時事件。唔會用舊 reply_sla 補回上線前的次數。
+-- recorded_at 係 UTC。月報按香港曆月加總。同一則 reply_sla 只記一次。
+CREATE TABLE IF NOT EXISTS staff_reply_sla_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  staff_id INTEGER NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+  comment_id INTEGER NOT NULL,
+  reply_sla_id INTEGER,
+  recorded_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_reply_sla_events_recorded
+  ON staff_reply_sla_events(recorded_at);
+
+CREATE INDEX IF NOT EXISTS idx_staff_reply_sla_events_staff
+  ON staff_reply_sla_events(staff_id, recorded_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_reply_sla_events_case
+  ON staff_reply_sla_events(reply_sla_id)
+  WHERE reply_sla_id IS NOT NULL;
+
+-- open_month：檢查器最後對齊的香港曆月。report_from_month：呢次月報上線的月份，唔會前移。
+-- 第一次寫入只記低當月，唔會把進行中次數歸零。之後先至係每月 1 日歸零。
+CREATE TABLE IF NOT EXISTS staff_reply_sla_month (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  open_month TEXT NOT NULL,
+  report_from_month TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 -- 啟動時只跑一次嘅標記。key 唔好改：改咗就會再清一次逾時次數。
 -- staff_reply_sla_clear_20261120：清走暫停同本輪次數，並把 suspensions_started 提到至少 1。
 -- staff_reply_sla_clear_ken_20261123：只清 Ken 的次數、暫停同輪次（suspensions_started=0）。
 -- staff_reply_sla_rebaseline_ken_20261123：Ken 歸零之後，第一次檢查先重計佢未覆個案的時限。
+-- staff_reply_sla_pause3_monthly_20261123：把仍在生效的 7 日暫停改為由原開始起計 3 日；已滿 3 日就結束並歸零。
 -- assign_ferrari_360_cs_reel_ken_20261123：未完成、來源係 2026-11-23 Ferrari 360 Challenge Stradale Reel 的對話改派畀 ken。已完成唔改、唔重開。
 CREATE TABLE IF NOT EXISTS app_boot_once (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

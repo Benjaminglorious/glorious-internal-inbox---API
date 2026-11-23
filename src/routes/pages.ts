@@ -21,6 +21,7 @@ import { registerTwentyeightcarPages } from "./twentyeightcar-pages";
 import { listingIndex, stockIdFromText } from "../services/twentyeightcar";
 import {
   latestSlaNoticeId,
+  lateReplyMonthReport,
   loadStaffSlaOverview,
   overdueUnansweredCommentIds,
   ownSlaStatus,
@@ -418,6 +419,11 @@ function layout(opts: {
         <a href="/" class="${opts.active === "inbox" ? "active" : ""}">留言箱</a>
         <a href="/28car" class="${opts.active === "28car" ? "active" : ""}">28car 車盤</a>
         <a href="/staff" class="${opts.active === "staff" ? "active" : ""}">同事</a>
+        ${
+          opts.user.isAdmin
+            ? `<a href="/staff/late-report" class="${opts.active === "late-report" ? "active" : ""}">逾時月報</a>`
+            : ""
+        }
         <a href="/password" class="${opts.active === "password" ? "active" : ""}">改密碼</a>
         ${
           opts.user.isAdmin
@@ -1063,6 +1069,74 @@ pagesRouter.post("/comments/:id/assign", requireAuth, (req: Request, res: Respon
   res.redirect(`/comments/${id}`);
 });
 
+function lateReportMonthLabel(month: string): string {
+  const [year, rawMonth] = month.split("-");
+  return `${year}年${Number(rawMonth)}月`;
+}
+
+pagesRouter.get("/staff/late-report", requireAuth, (req: Request, res: Response) => {
+  if (!req.session.isAdmin) {
+    res.status(403).send(
+      layout({
+        title: "沒有權限",
+        body: `<p>逾時月報只限管理員查看。</p><p><a href="/">返回留言箱</a></p>`,
+        user: sessionUser(req),
+      })
+    );
+    return;
+  }
+  const requested = typeof req.query.month === "string" ? req.query.month : null;
+  const report = lateReplyMonthReport(requested);
+  const currentMonth = report.months[report.months.length - 1] ?? report.month;
+  const switches = report.months
+    .map((month) => {
+      const suffix = month === currentMonth ? "（進行中）" : "（已結算）";
+      const current = month === report.month ? " active" : "";
+      const aria = month === report.month ? ` aria-current="page"` : "";
+      return `<a class="${current.trim()}" href="/staff/late-report?month=${encodeURIComponent(month)}"${aria}>${escapeHtml(lateReportMonthLabel(month))}${suffix}</a>`;
+    })
+    .join("");
+  const rows = report.rows
+    .map(
+      (row) => `<tr>
+      <td>${escapeHtml(row.displayName)}</td>
+      <td><code>${escapeHtml(row.username)}</code></td>
+      <td>${row.lateCount}</td>
+    </tr>`
+    )
+    .join("");
+  const statusText = report.finalized
+    ? "呢個月已在隨後的每月1日凌晨0時（香港時間）結算。"
+    : "呢個月仍在計算，數字會隨新的逾時增加。";
+  const body = `
+    <div class="page-head"><h1>逾時月報</h1></div>
+    <section class="staff-policy" aria-labelledby="late-report-note">
+      <h2 id="late-report-note">${escapeHtml(lateReportMonthLabel(report.month))}${report.finalized ? "（已結算）" : "（進行中）"}</h2>
+      <p>${escapeHtml(statusText)}</p>
+      <p>合計 ${report.total} 次。</p>
+      <p>報告由是次規則上線起計，按香港時間的曆月加總。上線前沒有完整逾時紀錄，不會補回舊數。</p>
+    </section>
+    <nav class="month-switch" aria-label="月份">${switches}</nav>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>姓名</th><th>帳號</th><th>該月逾時次數</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="3" class="empty">尚未有同事</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+  res.send(
+    layout({
+      title: "逾時月報",
+      body,
+      user: sessionUser(req),
+      active: "late-report",
+      liveCursor: latestCommentId(),
+      liveReplyCursor: latestReplyId(),
+      liveNoticeCursor: latestSlaNoticeId(req.session.staffId ?? 0),
+    })
+  );
+});
+
 pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
   const staff = listStaff();
   const staffLines = activeStaffLinesByStaffId();
@@ -1076,8 +1150,7 @@ pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
       if (sla) {
         if (status?.poolExcluded) pool = "不參與自動派單";
         else if (status?.suspendedUntil) {
-          const days = status.suspendDays === 7 ? "7 日" : "3 日";
-          pool = `暫停至 ${formatStaffTimestamp(status.suspendedUntil, "utc")}（到期自動恢復輪候，今次 ${days}）`;
+          pool = `暫停至 ${formatStaffTimestamp(status.suspendedUntil, "utc")}（到期自動恢復輪候，今次 3 日）`;
         } else pool = "輪候中";
       }
       const slaCells = sla
@@ -1102,7 +1175,9 @@ pagesRouter.get("/staff", requireAuth, (req: Request, res: Response) => {
         <li>每日晚上11點到翌日早上9點，所有留言不會自動計算沒有回覆訊息。</li>
         <li>星期一至六，早上9時到晚上10:59，如同事沒有在二小時內回覆客戶訊息，便會計算逾時回覆。</li>
         <li>星期日，早上9時到晚上10:59，如同事沒有在三小時內回覆客戶訊息，便會計算逾時回覆。</li>
-        <li>如同事逾時回覆到達3次，第一次會暫停派單3天，第二次便會暫停派單7天，當暫停日子完結後都會把之前所逾時次數歸零。</li>
+        <li>如同事逾時回覆到達3次，會暫停公司線自動派單3天。之後再累積3次，同樣暫停3天，不會暫停7天。暫停日子完結後，逾時次數會歸零。</li>
+        <li>每月1日凌晨0時（香港時間）起，逾時次數由零重新計算。已經開始的暫停會繼續至原定到期，不會因為換月而提早恢復；該次暫停完結後，逾時次數仍然是零。</li>
+        <li>每月完結時，會整理該月每位同事的逾時回覆次數。管理員可以查看當月進行中的數字，以及以往月份已結算的報告。</li>
         <li>所有已完成的留言不會計算在內。</li>
       </ul>
     </section>`;

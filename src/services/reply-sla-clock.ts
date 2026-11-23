@@ -20,6 +20,24 @@ export function formatUtcTimestamp(instant: Date): string {
   return `${iso.slice(0, 10)} ${iso.slice(11, 19)}`;
 }
 
+/**
+ * 香港曆月的 UTC 半開區間：[當月 1 日 00:00, 下月 1 日 00:00)。
+ * 正正下月 1 日 00:00 屬下一個月。
+ */
+export function hktMonthRangeUtc(yearMonth: string): { start: string; end: string } {
+  if (!/^\d{4}-\d{2}$/.test(yearMonth)) throw new Error(`月份格式不正確：${yearMonth}`);
+  const year = Number(yearMonth.slice(0, 4));
+  const month = Number(yearMonth.slice(5, 7));
+  if (month < 1 || month > 12) throw new Error(`月份格式不正確：${yearMonth}`);
+  const start = parseStoredTimestamp(`${yearMonth}-01 00:00:00`, "hkt");
+  const nextYear = month === 12 ? year + 1 : year;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextKey = `${String(nextYear).padStart(4, "0")}-${String(nextMonth).padStart(2, "0")}`;
+  const end = parseStoredTimestamp(`${nextKey}-01 00:00:00`, "hkt");
+  if (!start || !end) throw new Error(`月份無法解析：${yearMonth}`);
+  return { start: formatUtcTimestamp(start), end: formatUtcTimestamp(end) };
+}
+
 function pad(value: number, width = 2): string {
   return String(value).padStart(width, "0");
 }
