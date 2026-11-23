@@ -585,6 +585,288 @@ async function dbCases(): Promise<void> {
     );
   }
 
+  const kenHashBefore = (
+    appDb.prepare(`SELECT password_hash AS hash, is_admin, active FROM staff WHERE username = 'ken'`).get() as {
+      hash: string;
+      is_admin: number;
+      active: number;
+    }
+  ).hash;
+  try {
+    appDb.prepare(`UPDATE staff SET password_hash = 'kept-ken-sla-hash' WHERE username = 'ken'`).run();
+    appDb.prepare(`INSERT INTO app_boot_once (key, applied_at) VALUES (?, ?)`).run(slaMod.STAFF_SLA_RESET_ONCE_KEY, PAST);
+    appDb.prepare(`INSERT INTO reply_sla_epoch (id, effective_at, settlement_live_at) VALUES (1, ?, ?)`).run(GO_LIVE, GO_LIVE);
+    const suspensionOf = (staffId: number) =>
+      appDb
+        .prepare(
+          `SELECT delay_count, suspended_from, suspended_until, suspensions_started AS n
+           FROM staff_reply_sla WHERE staff_id = ?`
+        )
+        .get(staffId) as {
+        delay_count: number;
+        suspended_from: string | null;
+        suspended_until: string | null;
+        n: number;
+      };
+    const restoreSuspension = (
+      staffId: number,
+      row: { delay_count: number; suspended_from: string | null; suspended_until: string | null; n: number }
+    ) => {
+      appDb
+        .prepare(
+          `UPDATE staff_reply_sla
+           SET delay_count = ?, suspended_from = ?, suspended_until = ?, suspensions_started = ?, updated_at = ?
+           WHERE staff_id = ?`
+        )
+        .run(row.delay_count, row.suspended_from, row.suspended_until, row.n, PAST, staffId);
+    };
+    const kenPausedUntil = "2999-06-01 00:00:00";
+    const eddiePausedUntil = "2999-07-01 00:00:00";
+    const insertState = appDb.prepare(
+      `INSERT INTO staff_reply_sla (staff_id, delay_count, suspended_from, suspended_until, suspensions_started, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    insertState.run(idOf("ken"), 2, PAST, kenPausedUntil, 4, PAST);
+    insertState.run(idOf("eddie"), 1, PAST, eddiePausedUntil, 2, PAST);
+    insertState.run(idOf("wing"), 3, null, null, 1, PAST);
+    const insertOpened = (
+      commentId: number,
+      inboundAt: string,
+      countStart: string,
+      dueAt: string,
+      inboundReplyId: number | null = null
+    ) => {
+      appDb
+        .prepare(
+          `INSERT INTO reply_sla (
+             comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds
+           ) VALUES (?, ?, ?, ?, ?, 7200)`
+        )
+        .run(commentId, inboundReplyId, inboundAt, countStart, dueAt);
+    };
+    const kenOverdue = addComment(idOf("ken"), "2026-11-01 02:00:00");
+    const kenFollow = addInbound(kenOverdue, "2026-11-02 02:00:00");
+    const kenStillOpen = addComment(idOf("ken"), "2026-11-23 01:00:00");
+    const kenBare = addComment(idOf("ken"), "2026-11-01 02:00:00");
+    const kenAnswered = addComment(idOf("ken"), "2026-11-01 02:00:00");
+    addOutbound(kenAnswered, idOf("ken"), "2026-11-01 08:00:00");
+    const kenDone = addComment(idOf("ken"), "2026-11-01 02:00:00");
+    appDb.prepare(`UPDATE comments SET status = 'done' WHERE id = ?`).run(kenDone);
+    const kenAlreadyLate = addComment(idOf("ken"), "2026-11-01 02:00:00");
+    const eddieOverdue = addComment(idOf("eddie"), "2026-11-20 02:00:00");
+    const eddieFuture = addComment(idOf("eddie"), "2026-11-23 04:00:00");
+    const keptBody = (appDb.prepare(`SELECT body FROM comments WHERE id = ?`).get(kenOverdue) as { body: string }).body;
+    insertOpened(kenOverdue, "2026-11-01 02:00:00", "2026-11-01 02:00:00", "2026-11-01 04:00:00");
+    insertOpened(kenOverdue, "2026-11-02 02:00:00", "2026-11-02 02:00:00", "2026-11-02 04:00:00", kenFollow);
+    insertOpened(kenStillOpen, "2026-11-23 01:00:00", "2026-11-23 01:00:00", "2026-11-23 03:00:00");
+    insertOpened(kenAnswered, "2026-11-01 02:00:00", "2026-11-01 02:00:00", "2026-11-01 04:00:00");
+    insertOpened(kenDone, "2026-11-01 02:00:00", "2026-11-01 02:00:00", "2026-11-01 04:00:00");
+    appDb
+      .prepare(
+        `INSERT INTO reply_sla (
+           comment_id, inbound_reply_id, inbound_at, count_start_at, due_at, limit_seconds, delay_staff_id, delay_recorded_at
+         ) VALUES (?, NULL, '2026-11-01 02:00:00', '2026-11-01 02:00:00', '2026-11-01 04:00:00', 7200, ?, '2026-11-01 05:00:00')`
+      )
+      .run(kenAlreadyLate, idOf("ken"));
+    insertOpened(eddieOverdue, "2026-11-20 02:00:00", "2026-11-20 02:00:00", "2026-11-20 04:00:00");
+    insertOpened(eddieFuture, "2026-11-23 04:00:00", "2026-11-23 04:00:00", "2026-11-23 06:00:00");
+    const followRow = (replyId: number) =>
+      appDb
+        .prepare(
+          `SELECT due_at, count_start_at, delay_recorded_at, met_at
+           FROM reply_sla WHERE inbound_reply_id = ?`
+        )
+        .get(replyId) as {
+        due_at: string;
+        count_start_at: string;
+        delay_recorded_at: string | null;
+        met_at: string | null;
+      };
+    const resetAt = parseStoredTimestamp("2026-11-23 01:00:00", "utc") as Date;
+    const globalAgain = slaMod.resetStaffReplySlaOnce(resetAt);
+    const firstReset = slaMod.resetKenReplySlaOnce(resetAt);
+    const kenCleared = slaRow(idOf("ken"));
+    const eddieHeld = slaRow(idOf("eddie"));
+    const wingHeld = slaRow(idOf("wing"));
+    const kenStaff = appDb.prepare(`SELECT is_admin, active, password_hash FROM staff WHERE username = 'ken'`).get() as {
+      is_admin: number;
+      active: number;
+      password_hash: string;
+    };
+    const kenOverview = slaMod.loadStaffSlaOverview(resetAt).get(idOf("ken"));
+    const pool =
+      kenOverview?.poolExcluded ? "不參與自動派單" : kenOverview?.suspendedUntil ? "暫停" : "輪候中";
+    check(
+      "11 月 20 日重置已跑過就唔再清其他人；Ken 的次數、暫停同輪次歸零，下次先至再係 3 日",
+      slaMod.STAFF_SLA_RESET_ONCE_KEY === "staff_reply_sla_clear_20261120" &&
+        globalAgain.applied === false &&
+        globalAgain.staff === 0 &&
+        firstReset.applied === true &&
+        firstReset.staff === 1 &&
+        kenCleared?.delay_count === 0 &&
+        kenCleared.suspended_until == null &&
+        Number(kenCleared.n) === 0 &&
+        eddieHeld?.delay_count === 1 &&
+        eddieHeld.suspended_until === eddiePausedUntil &&
+        Number(eddieHeld.n) === 2 &&
+        wingHeld?.delay_count === 3 &&
+        wingHeld.suspended_until == null &&
+        Number(wingHeld.n) === 1 &&
+        kenStaff.is_admin === 0 &&
+        kenStaff.active === 1 &&
+        kenStaff.password_hash === "kept-ken-sla-hash" &&
+        kenOverview?.delayCount === 0 &&
+        kenOverview.suspendedUntil == null &&
+        kenOverview.suspendDays == null &&
+        kenOverview.poolExcluded === false &&
+        pool === "輪候中" &&
+        opening(kenOverdue)?.due_at === "2026-11-01 04:00:00" &&
+        opening(eddieFuture)?.due_at === "2026-11-23 06:00:00" &&
+        (appDb.prepare(`SELECT body FROM comments WHERE id = ?`).get(kenOverdue) as { body: string }).body === keptBody,
+      JSON.stringify({
+        globalAgain,
+        firstReset,
+        ken: kenCleared,
+        eddie: eddieHeld,
+        wing: wingHeld,
+        role: { is_admin: kenStaff.is_admin, active: kenStaff.active },
+        pool,
+      })
+    );
+    const heldEddie = suspensionOf(idOf("eddie"));
+    const heldWing = suspensionOf(idOf("wing"));
+    for (const name of ["eddie", "wing", "jason", "sam"]) setSuspension(idOf(name), FUTURE, 0);
+    setCursor(idOf("jason"), "jason");
+    const picked = assignMod.pickNextAutoAssignStaffId();
+    check(
+      "Ken 只因逾時暫停時，歸零之後可以再入公司線輪流",
+      picked === idOf("ken"),
+      String(picked)
+    );
+    restoreSuspension(idOf("eddie"), heldEddie);
+    restoreSuspension(idOf("wing"), heldWing);
+    const scanAt = parseStoredTimestamp("2026-11-23 02:00:00", "utc") as Date;
+    const restarted = computeReplyDeadline(parseStoredTimestamp("2026-11-01 02:00:00", "utc") as Date, scanAt);
+    const restartedStart = formatUtcTimestamp(restarted.countStart);
+    const restartedDue = formatUtcTimestamp(restarted.due);
+    const pushesBefore = pushes.length;
+    const scan = slaMod.scanReplySla(scanAt);
+    const kenUrls = new Set([kenOverdue, kenStillOpen, kenBare, kenAnswered, kenDone, kenAlreadyLate].map((id) => `/comments/${id}`));
+    const epochAfter = appDb.prepare(`SELECT effective_at, settlement_live_at FROM reply_sla_epoch WHERE id = 1`).get() as {
+      effective_at: string;
+      settlement_live_at: string;
+    };
+    check(
+      "第一次檢查由呢刻重計 Ken 未覆個案，唔即時逾時；其他同事照記，已記低的逾時唔會重開",
+      scan.delays === 1 &&
+        restarted.limitSeconds === 7200 &&
+        restartedStart === "2026-11-23 02:00:00" &&
+        restartedDue === "2026-11-23 04:00:00" &&
+        opening(kenOverdue)?.count_start_at === restartedStart &&
+        opening(kenOverdue)?.due_at === restartedDue &&
+        opening(kenOverdue)?.delay_recorded_at == null &&
+        followRow(kenFollow).count_start_at === restartedStart &&
+        followRow(kenFollow).due_at === restartedDue &&
+        followRow(kenFollow).delay_recorded_at == null &&
+        opening(kenStillOpen)?.due_at === restartedDue &&
+        opening(kenStillOpen)?.delay_recorded_at == null &&
+        opening(kenBare)?.count_start_at === restartedStart &&
+        opening(kenBare)?.due_at === restartedDue &&
+        opening(kenBare)?.delay_recorded_at == null &&
+        opening(kenAnswered)?.met_at === "2026-11-01 08:00:00" &&
+        opening(kenAnswered)?.delay_recorded_at == null &&
+        opening(kenDone)?.delay_recorded_at == null &&
+        opening(kenAlreadyLate)?.delay_recorded_at === "2026-11-01 05:00:00" &&
+        opening(kenAlreadyLate)?.due_at === "2026-11-01 04:00:00" &&
+        opening(eddieOverdue)?.delay_recorded_at === "2026-11-23 02:00:00" &&
+        opening(eddieOverdue)?.delay_staff_id === idOf("eddie") &&
+        opening(eddieFuture)?.due_at === "2026-11-23 06:00:00" &&
+        opening(eddieFuture)?.count_start_at === "2026-11-23 04:00:00" &&
+        slaRow(idOf("ken"))?.delay_count === 0 &&
+        slaRow(idOf("ken"))?.suspended_until == null &&
+        Number(slaRow(idOf("ken"))?.n) === 0 &&
+        slaRow(idOf("eddie"))?.delay_count === 2 &&
+        slaRow(idOf("eddie"))?.suspended_until === eddiePausedUntil &&
+        Number(slaRow(idOf("eddie"))?.n) === 2 &&
+        slaRow(idOf("wing"))?.delay_count === 3 &&
+        Number(slaRow(idOf("wing"))?.n) === 1 &&
+        noticeBodies(kenOverdue).length === 0 &&
+        noticeBodies(kenBare).length === 0 &&
+        noticeBodies(kenAnswered).length === 0 &&
+        !pushes.slice(pushesBefore).some((item) => kenUrls.has(item.url)) &&
+        epochAfter.effective_at === GO_LIVE &&
+        epochAfter.settlement_live_at === GO_LIVE,
+      JSON.stringify({
+        scan,
+        ken: opening(kenOverdue),
+        bare: opening(kenBare),
+        eddie: { row: opening(eddieOverdue), state: slaRow(idOf("eddie")) },
+        kenState: slaRow(idOf("ken")),
+      })
+    );
+    const heldDue = opening(kenOverdue)?.due_at;
+    slaMod.scanReplySla(parseStoredTimestamp("2026-11-23 02:30:00", "utc") as Date);
+    check(
+      "重計之後、新期限未到之前再檢查，Ken 的期限唔會再推前，亦未逾時",
+      opening(kenOverdue)?.due_at === heldDue &&
+        opening(kenOverdue)?.delay_recorded_at == null &&
+        slaRow(idOf("ken"))?.delay_count === 0 &&
+        slaRow(idOf("ken"))?.suspended_until == null
+    );
+    const cycle = [addComment(idOf("ken"), T_IN), addComment(idOf("ken"), T_IN), addComment(idOf("ken"), T_IN)];
+    for (const commentId of cycle) insertOpened(commentId, T_IN, T_IN, "2026-11-23 03:00:00");
+    const cycleAt = parseStoredTimestamp("2026-11-23 03:30:00", "utc") as Date;
+    const cycleScan = slaMod.scanReplySla(cycleAt);
+    const pauseUntil = formatUtcTimestamp(new Date(cycleAt.getTime() + REPLY_SLA_FIRST_SUSPEND_MS));
+    const kenPaused = slaRow(idOf("ken"));
+    const thirdBodies = noticeBodies(cycle[2]);
+    check(
+      "歸零之後再累積三次，暫停公司線自動派單三日，唔會直接用七日",
+      cycleScan.delays === 3 &&
+        kenPaused?.delay_count === 0 &&
+        kenPaused.suspended_until === pauseUntil &&
+        Number(kenPaused.n) === 1 &&
+        thirdBodies.some((body) => body.includes("暫停自動派單三日")) &&
+        !thirdBodies.some((body) => body.includes("七日")) &&
+        opening(eddieFuture)?.due_at === "2026-11-23 06:00:00" &&
+        slaRow(idOf("eddie"))?.delay_count === 2 &&
+        slaRow(idOf("wing"))?.delay_count === 3,
+      JSON.stringify({ cycleScan, ken: kenPaused, notice: thirdBodies[0] })
+    );
+    const secondReset = slaMod.resetKenReplySlaOnce(cycleAt);
+    const kenStill = slaRow(idOf("ken"));
+    const eddieStill = slaRow(idOf("eddie"));
+    check(
+      "Ken 的歸零只跑一次，之後的暫停同次數唔會被再清走",
+      secondReset.applied === false &&
+        secondReset.staff === 0 &&
+        kenStill?.delay_count === 0 &&
+        kenStill.suspended_until === pauseUntil &&
+        Number(kenStill.n) === 1 &&
+        eddieStill?.delay_count === 2 &&
+        eddieStill.suspended_until === eddiePausedUntil &&
+        Number(eddieStill.n) === 2 &&
+        (appDb.prepare(`SELECT 1 AS ok FROM app_boot_once WHERE key = ?`).get(slaMod.KEN_SLA_RESET_ONCE_KEY) as
+          | { ok: number }
+          | undefined) != null &&
+        (appDb.prepare(`SELECT 1 AS ok FROM app_boot_once WHERE key = ?`).get(slaMod.KEN_SLA_REBASELINE_ONCE_KEY) as
+          | { ok: number }
+          | undefined) != null
+    );
+  } finally {
+    appDb.prepare(`UPDATE staff SET password_hash = ? WHERE username = 'ken'`).run(kenHashBefore);
+    pushes.length = 0;
+    appDb.exec(
+      `DELETE FROM staff_notices;
+       DELETE FROM staff_reply_sla;
+       DELETE FROM reply_sla;
+       DELETE FROM reply_sla_epoch;
+       DELETE FROM comment_replies;
+       DELETE FROM comments;
+       DELETE FROM app_boot_once;`
+    );
+  }
+
   const oldUnanswered = addComment(idOf("eddie"), "2026-11-01 02:00:00");
   const oldAnswered = addComment(idOf("eddie"), "2026-11-02 03:00:00");
   addOutbound(oldAnswered, idOf("eddie"), "2026-11-02 05:00:00");

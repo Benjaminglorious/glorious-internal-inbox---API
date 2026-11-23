@@ -64,6 +64,7 @@ npm run dev
 - **staff 表係空**先至寫入全部同事名單同公司總機 `85221740001`（新帳號先用示範密碼；已有 `password_hash` 唔覆寫）
 - **已有同事**（包括 Render Postgres）啟動時確保 Benjamin（`benjamin`）、Vivian（`vivian`）、Raymond Chan（`raymond`）係在職管理員，Ken Kan（`ken`）係在職同事（`is_admin=0`，參與公司線自動派單）：未有就新增並用示範密碼；用戶名不分大小寫，或者顯示名係 Benjamin／Vivian（或 Vivian …）／Raymond（或 Raymond …）／Ken Kan（或 Ken Kan …），就對齊同一列而唔另開帳號，唔改已有密碼。唔會降 Tony、Benjamin、Vivian、Eddie，亦唔改 Ken 做返管理員
 - **一次過重置**（`app_boot_once.key = staff_reply_sla_clear_20261120`，唔好改呢個 key）：第一次用呢個版本啟動時，清走全部同事而家嘅自動派單暫停同本輪逾時次數，並把 `suspensions_started` 未滿 1 的人設成 1。之後再累積 3 次逾時會暫停 **7 日**，唔會再當第一次 3 日。已經大於或等於 1 的輪次保留。唔會改 `reply_sla`、`reply_sla_epoch`、留言內容，唔會重開舊訊息時限，亦唔會補記逾時。標記寫入之後，之後每次重啟都唔會再清
+- **Ken Kan 一次過歸零**（`app_boot_once.key = staff_reply_sla_clear_ken_20261123`，唔好改呢個 key）：第一次用呢個版本啟動時，只清 Ken（`username=ken`）而家嘅逾時次數、自動派單暫停同暫停輪次（`suspensions_started` 設回 0）。同事名單會顯示逾時次數 **0**、自動派單 **輪候中**。下一次佢自己累積 3 次逾時先至再暫停 **3 日**，之後的循環先至 7 日。唔改密碼、角色、在職或派單次序，其他同事（包括 11 月 20 日已經記低的輪次）唔會改。已經記低達標、逾時或跳過的個案維持原紀錄。佢而家未記結果、仍未回覆的留言，要等啟動之後第一次回覆時限檢查（另有標記 `staff_reply_sla_rebaseline_ken_20261123`）先由嗰次檢查重新計時，唔會即時補記逾時或暫停派單。兩個標記寫入之後，之後每次重啟都唔會再清，亦唔會再推前時限
 - **已有庫**如果 `staff.id` 5–13 冇 Eddie、Wing、Jason、Tony、Benjamin、Vivian、Ken、Raymond，啟動時會刪走呢個範圍（正式庫係舊收藏種子：張嘉欣、王明軒、陳美玲、何志豪、林雅雯、黃俊傑、鄭詩敏、吳家傑、趙雪兒）。留言留低，負責人改做未派。如果範圍入面有上述受保護同事，成個範圍唔刪
 - **唔會**寫示範 Facebook／IG／WhatsApp／28car 留言或觀察車盤
 

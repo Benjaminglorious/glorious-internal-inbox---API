@@ -1059,7 +1059,7 @@ async function main(): Promise<number> {
     const wingSla = slaOf("wing");
     const kenSla = slaOf("ken");
     check(
-      "啟動一次過清走暫停同本輪次數，未用過第一輪的人下次當 7 日，已有輪次保留",
+      "啟動一次過清走暫停同本輪次數，未用過第一輪的人下次當 7 日，已有輪次保留；Ken 的輪次回到第一次 3 日",
       eddieSla?.delay_count === 0 &&
         eddieSla.until == null &&
         Number(eddieSla.n) === 1 &&
@@ -1068,7 +1068,7 @@ async function main(): Promise<number> {
         Number(wingSla.n) === 4 &&
         kenSla?.delay_count === 0 &&
         kenSla.until == null &&
-        Number(kenSla.n) === 1,
+        Number(kenSla.n) === 0,
       JSON.stringify({ eddie: eddieSla, wing: wingSla, ken: kenSla })
     );
     check(
@@ -1078,13 +1078,29 @@ async function main(): Promise<number> {
         epochCount === 0 &&
         (appDb.prepare(`SELECT body FROM comments WHERE id = ?`).get(jasonId) as { body: string }).body === heldBody
     );
+    const kenIdAfterBoot = (appDb.prepare(`SELECT id FROM staff WHERE username = 'ken'`).get() as { id: number }).id;
+    appDb
+      .prepare(
+        `UPDATE staff_reply_sla
+         SET delay_count = 2, suspended_until = '2999-01-01 00:00:00', suspensions_started = 0
+         WHERE staff_id = ?`
+      )
+      .run(kenIdAfterBoot);
     appDb.prepare(`UPDATE staff_reply_sla SET delay_count = 2 WHERE staff_id = ?`).run(eddie.id);
     seedMod.syncStaffOnBoot();
     const eddieAfterSecondBoot = slaOf("eddie");
+    const kenAfterSecondBoot = slaOf("ken");
     check(
       "同一次重置唔會喺下次啟動再清本輪次數",
       eddieAfterSecondBoot?.delay_count === 2 && Number(eddieAfterSecondBoot.n) === 1,
       JSON.stringify(eddieAfterSecondBoot)
+    );
+    check(
+      "Ken 的一次過歸零唔會喺下次啟動再清次數或暫停",
+      kenAfterSecondBoot?.delay_count === 2 &&
+        kenAfterSecondBoot.until === "2999-01-01 00:00:00" &&
+        Number(kenAfterSecondBoot.n) === 0,
+      JSON.stringify(kenAfterSecondBoot)
     );
     check("啟動對齊唔寫新留言", commentsAfter === commentsBefore);
     check(

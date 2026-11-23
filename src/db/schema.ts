@@ -293,6 +293,7 @@ CREATE INDEX IF NOT EXISTS idx_comment_replies_inbound_created
 -- 本輪逾時次數同暫停自動派單到期（UTC）。到期即自動回到輪流，唔使管理員恢復。
 -- suspensions_started 記已經開過幾次 3 次暫停：0 即下次係 3 日，1 或以上即下次係 7 日。重啟唔會清。
 -- 2026-11-20 一次過重置會把未滿 1 的人設成 1（見 app_boot_once），之後下次暫停係 7 日。
+-- 2026-11-23 只把 Ken Kan（username=ken）的 suspensions_started 設回 0 一次，下次暫停先至再係 3 日。
 CREATE TABLE IF NOT EXISTS staff_reply_sla (
   staff_id INTEGER PRIMARY KEY REFERENCES staff(id) ON DELETE CASCADE,
   delay_count INTEGER NOT NULL DEFAULT 0,
@@ -306,6 +307,8 @@ CREATE INDEX IF NOT EXISTS idx_staff_reply_sla_until ON staff_reply_sla(suspende
 
 -- 啟動時只跑一次嘅標記。key 唔好改：改咗就會再清一次逾時次數。
 -- staff_reply_sla_clear_20261120：清走暫停同本輪次數，並把 suspensions_started 提到至少 1。
+-- staff_reply_sla_clear_ken_20261123：只清 Ken 的次數、暫停同輪次（suspensions_started=0）。
+-- staff_reply_sla_rebaseline_ken_20261123：Ken 歸零之後，第一次檢查先重計佢未覆個案的時限。
 CREATE TABLE IF NOT EXISTS app_boot_once (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   key TEXT NOT NULL UNIQUE,
