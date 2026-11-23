@@ -147,6 +147,7 @@ function chooseNextStaffId(): number | null {
  * Tony、Benjamin、Vivian、Raymond、active = 0，同暫停未到期嘅同事唔參與。Ken 會參與。
  * 暫停到期自動再參與。Eddie 雖然係管理員都參與。
  * 公司 WhatsApp 總機入站、網站留言 ingest、同未派留言補派都用呢條。
+ * 指定帖文／Reel（見 source-assign.ts）唔經呢度：直接派畀對照同事，唔推進游標，亦唔會因為暫停而跳過。
  * 同事個人 WhatsApp 唔經呢度。
  * 游標同今次選擇一齊提交；呼叫方如果包住 transaction，失敗會一齊回滾。
  * 冇游標時由第一位符合資格嘅同事開始（通常係 Eddie）。

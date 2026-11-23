@@ -3,6 +3,7 @@ import type { CommentSource, CommentStatus, CommentWithAssignee, MetaSurface } f
 import { isCommentSource, isMetaSurface, type EntryPath } from "../types";
 import { resolveEntryPath } from "../intake";
 import { pickNextAutoAssignStaffId } from "./assign";
+import { pinnedSourceAssigneeStaffId } from "./source-assign";
 import {
   appendInboundMessage,
   commenterKey,
@@ -161,8 +162,34 @@ export function cleanMetaPostCaption(value: unknown): string | null {
 }
 
 /**
+ * 指定帖文／Reel 的新對話直接派畀對照同事，唔推進公司輪流，亦唔睇逾時暫停。
+ * 對照唔吻合先至用輪流。指定同事未在職就當冇指定。
+ */
+function assigneeForNewThread(metaPostId: string | null, metaPostPermalink: string | null): number | null {
+  return pinnedSourceAssigneeStaffId(metaPostId, metaPostPermalink) ?? pickNextAutoAssignStaffId();
+}
+
+/** 未完成對話收到指定來源時改派。已完成唔郁。唔改狀態。 */
+function pinOpenThread(
+  commentId: number,
+  metaPostId: string | null,
+  metaPostPermalink: string | null
+): void {
+  const pinned = pinnedSourceAssigneeStaffId(metaPostId, metaPostPermalink);
+  if (pinned == null) return;
+  db.prepare(
+    `UPDATE comments
+     SET assignee_staff_id = ?, updated_at = datetime('now')
+     WHERE id = ? AND status <> 'done'`
+  ).run(pinned, commentId);
+}
+
+/**
  * 入庫網站／FB／IG 留言（intake_kind=site_comment，origin_site=NULL）。
- * 以 (source, external_id) 冪等：已存在則更新內容，保留負責人；新留言用輪流次序派單（唔計未完成數）。
+ * 以 (source, external_id) 冪等：已存在則更新內容。
+ * 新留言一般用輪流次序派單（唔計未完成數）。
+ * Facebook／Instagram 如果 post id 或 permalink 係指定帖文／Reel，就派畀對照同事，唔經輪流。
+ * 已完成的對話唔會為咗改派而重開。跟進如果產品本身會重開，重開之後先至改派；產品保持已完成就唔改負責人。
  */
 export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteCommentResult {
   const sourceNorm = normalizeSiteCommentSource(input.source);
@@ -272,6 +299,7 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
                  meta_post_caption = COALESCE(meta_post_caption, ?)
              WHERE id = ?`
           ).run(metaSenderId, metaSurface, metaPostId, metaPostPermalink, metaPostCaption, open.id);
+          pinOpenThread(open.id, metaPostId, metaPostPermalink);
           const comment = getComment(open.id);
           if (!comment) return { ok: false, error: "更新後讀唔返留言" };
           return {
@@ -292,6 +320,7 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
           commenterKey: identityKey,
           fills,
         });
+        pinOpenThread(open.id, metaPostId, metaPostPermalink);
         const comment = getComment(open.id);
         if (!comment) return { ok: false, error: "更新後讀唔返留言" };
         return {
@@ -304,7 +333,7 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
         };
       }
 
-      const assigneeStaffId = pickNextAutoAssignStaffId();
+      const assigneeStaffId = assigneeForNewThread(metaPostId, metaPostPermalink);
       const info = db
         .prepare(
           `INSERT INTO comments (
@@ -385,6 +414,8 @@ export function upsertSiteComment(input: UpsertSiteCommentInput): UpsertSiteComm
          WHERE id = ?`
       ).run(authorName, body, vehicleRef, status, entryPath, metaSenderId, metaSurface, keyToStore, existing.id);
     }
+
+    if (storePost && status !== "done") pinOpenThread(existing.id, metaPostId, metaPostPermalink);
 
     const comment = getComment(existing.id);
     if (!comment) return { ok: false, error: "更新後讀唔返留言" };
