@@ -1,5 +1,6 @@
 /**
- * 留言箱：未處理同處理中排喺已完成上面，組內按客戶最新活動。
+ * 留言箱：未處理，同埋處理中但有未覆客戶新回覆嘅，排最上面。
+ * 其他處理中居中。已完成沉底，唔會因為客戶再留言而重開或標「新回覆」。
  * 同事回覆唔會抬上去。對話頁由舊到新。
  * 用臨時 SQLite，唔會郁到正式 data/inbox.db。
  */
@@ -59,8 +60,10 @@ function bubbleBodies(html: string): string[] {
 }
 
 function rowHtml(html: string, id: number): string {
-  const needle = `href="/comments/${id}"`;
-  return html.split("<tr>").find((part) => part.includes(needle)) ?? "";
+  const needle = new RegExp(`href="/comments/${id}(?:#|")`);
+  const part = html.split("<tr>").find((item) => needle.test(item)) ?? "";
+  const end = part.indexOf("</tr>");
+  return end === -1 ? part : part.slice(0, end);
 }
 
 async function main(): Promise<number> {
@@ -221,6 +224,7 @@ async function main(): Promise<number> {
       afterCustomer,
       "客戶新訊息把舊建立嘅未處理抬到未完成組最上面"
     );
+    check("未處理即使有客戶新訊息都唔標新回覆", comments.getComment(openOldId)?.new_customer_reply === false);
 
     comments.updateStatus(repliedId, "done");
     appDb.prepare(`UPDATE comments SET updated_at = '2026-11-01 09:00:00' WHERE id = ?`).run(openNewId);
@@ -243,6 +247,10 @@ async function main(): Promise<number> {
       afterCustomer,
       "重開做處理中會按客戶活動放返未完成組，唔會因為改狀態而跳到最頂"
     );
+    check(
+      "處理中但未有客戶再留言唔標新回覆",
+      comments.getComment(repliedId)?.status === "in_progress" && comments.getComment(repliedId)?.new_customer_reply === false
+    );
 
     comments.updateStatus(repliedId, "done");
     appDb.prepare(`INSERT INTO comment_replies (comment_id, staff_id, direction, body, delivery_status, created_at)
@@ -258,6 +266,7 @@ async function main(): Promise<number> {
       "已完成收到客戶再留言時，呢次寫入唔會自動改狀態",
       doneAfterCustomer?.status === "done" && doneAfterCustomer.latest_inbound_body === "已完成之後客戶再留言"
     );
+    check("已完成有客戶再留言都唔標新回覆", doneAfterCustomer?.new_customer_reply === false);
 
     const freshId = Number(
       insert
@@ -313,6 +322,169 @@ async function main(): Promise<number> {
       apiReplies.join("|") === ["比主體更舊", "客戶再留言", "同事最新", "同一秒先寫", "同一秒後寫"].join("|"),
       apiReplies.join("|")
     );
+    check("同事已覆客戶再留言嘅處理中唔標新回覆", comments.getComment(threadId)?.new_customer_reply === false);
+
+    const wing = appDb
+      .prepare(
+        `INSERT INTO staff (username, display_name, password_hash, is_admin, active)
+         VALUES ('wing', 'Wing Chan', ?, 0, 1)`
+      )
+      .run(hash);
+    const wingId = Number(wing.lastInsertRowid);
+    const attn = appDb.prepare(
+      `INSERT INTO comments (
+         source, external_id, author_name, body, status, assignee_staff_id, intake_kind,
+         created_at, updated_at
+       ) VALUES ('glorious_web', ?, ?, ?, ?, ?, 'site_comment', ?, ?)`
+    );
+    const followId = Number(
+      attn
+        .run("attn-follow", "舊處理中客", "ATTNKEY 舊處理中", "in_progress", wingId, "2026-10-01 00:00:00", "2026-10-01 00:00:00")
+        .lastInsertRowid
+    );
+    const openQuietId = Number(
+      attn
+        .run("attn-open", "未處理舊客", "ATTNKEY 未處理舊", "open", wingId, "2026-10-15 00:00:00", "2026-10-15 00:00:00")
+        .lastInsertRowid
+    );
+    const answeredRecentId = Number(
+      attn
+        .run(
+          "attn-answered",
+          "已覆客",
+          "ATTNKEY 已覆處理中",
+          "in_progress",
+          wingId,
+          "2026-11-06 01:00:00",
+          "2026-11-06 01:00:00"
+        )
+        .lastInsertRowid
+    );
+    const doneFollowId = Number(
+      attn
+        .run(
+          "attn-done",
+          "完成再留言客",
+          "ATTNKEY 已完成再留言",
+          "done",
+          wingId,
+          "2026-10-02 00:00:00",
+          "2026-10-02 00:00:00"
+        )
+        .lastInsertRowid
+    );
+    const tieWaitingId = Number(
+      attn
+        .run(
+          "attn-tie-wait",
+          "同秒未覆客",
+          "ATTNKEY 同秒未覆",
+          "in_progress",
+          wingId,
+          "2026-09-01 00:00:00",
+          "2026-09-01 00:00:00"
+        )
+        .lastInsertRowid
+    );
+    const tieAnsweredId = Number(
+      attn
+        .run(
+          "attn-tie-done",
+          "同秒已覆客",
+          "ATTNKEY 同秒已覆",
+          "in_progress",
+          wingId,
+          "2026-09-01 01:00:00",
+          "2026-09-01 01:00:00"
+        )
+        .lastInsertRowid
+    );
+    const replyAt = appDb.prepare(
+      `INSERT INTO comment_replies (comment_id, staff_id, direction, body, delivery_status, created_at)
+       VALUES (?, ?, ?, ?, 'stored', ?)`
+    );
+    replyAt.run(followId, wingId, "outbound", "舊同事回覆", "2026-10-01 01:00:00");
+    replyAt.run(followId, null, "inbound", "ATTNKEY 客戶新回覆", "2026-11-05 02:00:00");
+    replyAt.run(answeredRecentId, wingId, "outbound", "已覆同事回覆", "2026-11-06 03:00:00");
+    replyAt.run(doneFollowId, wingId, "outbound", "完成同事回覆", "2026-10-02 01:00:00");
+    replyAt.run(doneFollowId, null, "inbound", "ATTNKEY 已完成客戶再留言", "2026-11-07 01:00:00");
+    replyAt.run(tieWaitingId, wingId, "outbound", "同秒同事先寫", "2026-09-02 04:00:00");
+    replyAt.run(tieWaitingId, null, "inbound", "ATTNKEY 同秒客戶後寫", "2026-09-02 04:00:00");
+    replyAt.run(tieAnsweredId, null, "inbound", "ATTNKEY 同秒客戶先寫", "2026-09-03 04:00:00");
+    replyAt.run(tieAnsweredId, wingId, "outbound", "同秒同事後寫", "2026-09-03 04:00:00");
+
+    const attnWaiting = [followId, openQuietId, tieWaitingId, answeredRecentId, tieAnsweredId, doneFollowId];
+    sameIds(
+      comments.listComments({ q: "ATTNKEY" }).map((row) => row.id),
+      attnWaiting,
+      "未處理同有新回覆嘅處理中排最前；已覆處理中居中；已完成沉底"
+    );
+    sameIds(
+      comments.listComments({ q: "ATTNKEY", status: "in_progress" }).map((row) => row.id),
+      [followId, tieWaitingId, answeredRecentId, tieAnsweredId],
+      "只睇處理中時，有新回覆嘅仍然排喺已覆處理中上面"
+    );
+    sameIds(
+      comments.listComments({ q: "ATTNKEY", status: "pending" }).map((row) => row.id),
+      [followId, openQuietId, tieWaitingId, answeredRecentId, tieAnsweredId],
+      "擱置／未處理篩選用同一把次序，已完成唔出現"
+    );
+    check(
+      "處理中有未覆客戶再留言先標新回覆",
+      comments.getComment(followId)?.new_customer_reply === true &&
+        comments.getComment(tieWaitingId)?.new_customer_reply === true
+    );
+    const doneFollowRow = comments.getComment(doneFollowId);
+    check(
+      "未處理、已覆處理中、同秒已覆、已完成都唔標新回覆",
+      comments.getComment(openQuietId)?.new_customer_reply === false &&
+        comments.getComment(answeredRecentId)?.new_customer_reply === false &&
+        comments.getComment(tieAnsweredId)?.new_customer_reply === false &&
+        doneFollowRow?.status === "done" &&
+        doneFollowRow.new_customer_reply === false &&
+        doneFollowRow.latest_inbound_body === "ATTNKEY 已完成客戶再留言"
+    );
+    check(
+      "已覆處理中即使客戶活動較新，都唔會插到未處理或新回覆上面",
+      attnWaiting.indexOf(answeredRecentId) > attnWaiting.indexOf(openQuietId) &&
+        attnWaiting.indexOf(answeredRecentId) > attnWaiting.indexOf(followId)
+    );
+
+    replyAt.run(followId, wingId, "outbound", "同事覆完新回覆", "2026-11-05 03:00:00");
+    const attnAnswered = [openQuietId, tieWaitingId, answeredRecentId, followId, tieAnsweredId, doneFollowId];
+    sameIds(
+      comments.listComments({ q: "ATTNKEY" }).map((row) => row.id),
+      attnAnswered,
+      "同事覆完客戶最新一句之後，新回覆收起並排返其他處理中"
+    );
+    check("同事回覆之後唔再標新回覆", comments.getComment(followId)?.new_customer_reply === false);
+
+    replyAt.run(followId, null, "inbound", "ATTNKEY 客戶再問", "2026-11-08 01:00:00");
+    sameIds(
+      comments.listComments({ q: "ATTNKEY" }).map((row) => row.id),
+      attnWaiting,
+      "客戶再留言會再標新回覆，並返回最上面"
+    );
+    check("客戶再留言之後新回覆再出現", comments.getComment(followId)?.new_customer_reply === true);
+
+    comments.updateStatus(followId, "done");
+    sameIds(
+      comments.listComments({ q: "ATTNKEY" }).map((row) => row.id),
+      [openQuietId, tieWaitingId, answeredRecentId, tieAnsweredId, followId, doneFollowId],
+      "標已完成會收起新回覆並沉到已完成組，即使客戶最新一句未覆"
+    );
+    check("改做已完成之後唔再標新回覆", comments.getComment(followId)?.new_customer_reply === false);
+
+    comments.updateStatus(followId, "in_progress");
+    sameIds(
+      comments.listComments({ q: "ATTNKEY" }).map((row) => row.id),
+      attnWaiting,
+      "手動改回處理中，客戶最新一句仍未覆就再標新回覆並返回最上面"
+    );
+    const wingIds = comments
+      .listComments({ viewer: { staffId: wingId, isAdmin: false } })
+      .map((row) => row.id);
+    sameIds(wingIds, attnWaiting, "同事只見到自己嘅留言，次序同管理員一樣");
 
     const app = express();
     app.use(express.urlencoded({ extended: false }));
@@ -345,10 +517,14 @@ async function main(): Promise<number> {
     const inboxHtml = await inbox.text();
     sameIds(listedIds(inboxHtml), withFresh, "留言箱網頁搜尋結果跟主列表次序");
     check(
-      "留言箱說明未完成排前，同事回覆唔會抬上去，對話由舊到新",
-      inboxHtml.includes("未處理同處理中排喺已完成上面") &&
-        inboxHtml.includes("同事回覆唔會") &&
+      "留言箱說明需要處理嘅排前，新回覆標記會收起，對話由舊到新",
+      inboxHtml.includes("未處理，同埋處理中但有未覆客戶新回覆嘅，排喺最上面") &&
+        inboxHtml.includes("其他處理中排喺中間") &&
+        inboxHtml.includes("已完成排喺最下面") &&
+        inboxHtml.includes("唔會標「新回覆」或抬上去") &&
+        inboxHtml.includes("同事回覆本身唔會把留言抬上去") &&
         inboxHtml.includes("由舊到新，第一句喺對話最上面") &&
+        !inboxHtml.includes("未處理同處理中排喺已完成上面") &&
         !inboxHtml.includes("同事新回覆都會放到最上面") &&
         !inboxHtml.includes("最新一句喺對話最上面")
     );
@@ -392,6 +568,7 @@ async function main(): Promise<number> {
       bubbles.join("|")
     );
     check("有回覆時唔再寫未有同事回覆", !detailHtml.includes("未有同事回覆"));
+    check("同事已覆最新客戶一句嘅處理中，詳情頁唔標新回覆", !detailHtml.includes("新回覆"));
 
     const quiet = await fetch(`${base}/comments/${openNewId}`, { headers: { cookie } });
     const quietHtml = await quiet.text();
@@ -422,6 +599,76 @@ async function main(): Promise<number> {
       apiThread.status === 200 &&
         apiBodies.join("|") === ["比主體更舊", "客戶再留言", "同事最新", "同一秒先寫", "同一秒後寫"].join("|"),
       apiBodies.join("|")
+    );
+
+    const attnPage = await fetch(`${base}/?q=` + encodeURIComponent("ATTNKEY"), { headers: { cookie } });
+    const attnHtml = await attnPage.text();
+    sameIds(listedIds(attnHtml), attnWaiting, "管理員留言箱搜尋跟新回覆次序");
+    const followHtml = rowHtml(attnHtml, followId);
+    const followWhen = followHtml.match(/<td class="when">([\s\S]*?)<\/td>/)?.[1] ?? "";
+    const followPreview = followHtml.match(/<span class="content-preview">([\s\S]*?)<\/span>/)?.[1] ?? "";
+    check(
+      "有新回覆嘅處理中喺狀態旁邊標新回覆",
+      followHtml.includes("處理中") && followHtml.includes(`class="badge new-reply"`) && followHtml.includes("新回覆"),
+      followHtml
+    );
+    check(
+      "新回覆列嘅時間欄仍然係建立時間，內容係客戶最新一句",
+      followWhen.includes(`datetime="2026-10-01T08:00:00+08:00"`) && followPreview === "ATTNKEY 客戶再問",
+      `${followWhen} ${followPreview}`
+    );
+    check("同秒未覆嘅處理中都標新回覆", rowHtml(attnHtml, tieWaitingId).includes(`class="badge new-reply"`));
+    check("未處理列唔標新回覆", !rowHtml(attnHtml, openQuietId).includes("新回覆"));
+    check("已覆處理中列唔標新回覆", !rowHtml(attnHtml, answeredRecentId).includes(`class="badge new-reply"`));
+    check("同秒已覆嘅處理中列唔標新回覆", !rowHtml(attnHtml, tieAnsweredId).includes(`class="badge new-reply"`));
+    check("已完成有客戶再留言都唔喺列表標新回覆", !rowHtml(attnHtml, doneFollowId).includes(`class="badge new-reply"`));
+
+    const followDetail = await fetch(`${base}/comments/${followId}`, { headers: { cookie } });
+    const followDetailHtml = await followDetail.text();
+    check(
+      "留言詳情同樣標新回覆",
+      followDetail.status === 200 && followDetailHtml.includes(`class="badge new-reply"`) && followDetailHtml.includes("新回覆")
+    );
+    const doneDetail = await fetch(`${base}/comments/${doneFollowId}`, { headers: { cookie } });
+    const doneDetailHtml = await doneDetail.text();
+    check("已完成詳情唔標新回覆", doneDetail.status === 200 && !doneDetailHtml.includes("新回覆"));
+
+    const attnApi = await fetch(`${base}/api/comments?q=` + encodeURIComponent("ATTNKEY"), {
+      headers: { cookie, accept: "application/json" },
+    });
+    const attnApiJson = (await attnApi.json()) as {
+      comments?: Array<{ id: number; new_customer_reply?: boolean }>;
+    };
+    const attnApiRows = attnApiJson.comments ?? [];
+    sameIds(
+      attnApiRows.map((row) => row.id),
+      attnWaiting,
+      "API 搜尋跟新回覆次序"
+    );
+    const apiFollow = attnApiRows.find((row) => row.id === followId);
+    const apiDone = attnApiRows.find((row) => row.id === doneFollowId);
+    check(
+      "API 只對未覆嘅處理中標新回覆",
+      apiFollow?.new_customer_reply === true && apiDone?.new_customer_reply === false
+    );
+
+    const wingLogin = await fetch(`${base}/login`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ username: "wing", password: DEMO_PASSWORD }),
+    });
+    const wingCookie = cookieHeader(wingLogin);
+    check("同事可以登入", wingLogin.status === 302 && wingCookie.includes("connect.sid="));
+    const wingPage = await fetch(`${base}/`, { headers: { cookie: wingCookie } });
+    const wingHtml = await wingPage.text();
+    sameIds(listedIds(wingHtml), attnWaiting, "同事嘅留言箱用同一把次序");
+    check(
+      "同事見到同一個新回覆標記，而且只係自己嘅留言",
+      wingHtml.includes("你只會見到派咗畀你嘅留言") &&
+        rowHtml(wingHtml, followId).includes(`class="badge new-reply"`) &&
+        !rowHtml(wingHtml, doneFollowId).includes(`class="badge new-reply"`) &&
+        !wingHtml.includes("ORDERKEY")
     );
   } finally {
     await new Promise<void>((resolve) => {

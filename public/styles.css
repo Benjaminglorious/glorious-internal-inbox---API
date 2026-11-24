@@ -261,6 +261,12 @@ td.when time, .who time, .meta time, .reply-preview time { color: inherit; }
 .badge.status-open { background: #ffedd5; color: var(--open); }
 .badge.status-in_progress { background: #fef3c7; color: var(--warn); }
 .badge.status-done { background: #d1fae5; color: var(--ok); }
+.badge.new-reply {
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fdba74;
+  margin-left: 6px;
+}
 
 .detail {
   background: var(--card);
