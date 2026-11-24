@@ -376,6 +376,12 @@ function renderConversation(
   return original + thread + empty;
 }
 
+/** 處理中而且客戶最新再留言未覆。未處理同已完成唔標。 */
+function newReplyBadge(c: CommentWithAssignee): string {
+  if (!c.new_customer_reply) return "";
+  return `<span class="badge new-reply">新回覆</span>`;
+}
+
 function replyPreview(c: CommentWithAssignee): string {
   if (!c.reply_count || !c.last_reply_body) {
     return `<div class="reply-preview none">未有同事回覆</div>`;
@@ -655,7 +661,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
         <td>${escapeHtml(c.author_name)}</td>
         <td class="preview"><span class="content-preview">${linkifyMessageHtml(preview)}</span>${renderPostHint(c)}${replyPreview(c)}</td>
         <td>${vehicleCell}</td>
-        <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span>${
+        <td><span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span>${newReplyBadge(c)}${
           overdueIds.has(c.id) ? `<span class="badge sla-overdue">已逾時</span>` : ""
         }</td>
         <td class="when">${showTime(c.created_at)}</td>
@@ -753,7 +759,7 @@ pagesRouter.get("/", requireAuth, (req: Request, res: Response) => {
     </div>
     <p class="muted small">搜尋會搵你睇到嘅留言同回覆：留言者、電話、內容、車輛、來源，以及 Facebook／Instagram 帖文編號、連結同內容。可以同上面嘅篩選一齊用。</p>
     <p class="muted small">同一個留言者未完成（未處理或處理中）嘅新訊息會併入最早嗰個 ID。狀態係已完成之後，下一則先至開新 ID。</p>
-    <p class="muted small">時間欄同留言詳情嘅建立、更新、回覆時間都係香港時間（HKT，UTC+8）。「剛剛」「分鐘前」「昨天」按香港日曆計。資料庫仍然儲存 UTC。留言箱：未處理同處理中排喺已完成上面。客戶新訊息或者新開嘅留言會放到未處理／處理中最上面；同事回覆唔會。時間欄仍然係建立時間。打開一則留言，由舊到新，第一句喺對話最上面。</p>
+    <p class="muted small">時間欄同留言詳情嘅建立、更新、回覆時間都係香港時間（HKT，UTC+8）。「剛剛」「分鐘前」「昨天」按香港日曆計。資料庫仍然儲存 UTC。留言箱：未處理，同埋處理中但有未覆客戶新回覆嘅，排喺最上面，組內按客戶最新活動。其他處理中排喺中間。已完成排喺最下面；已完成收到客戶再留言唔會自動重開，亦唔會標「新回覆」或抬上去。處理中有未覆嘅客戶新回覆，狀態旁邊會標「新回覆」；同事回覆咗客戶最新一句之後，標記會收起，並排返其他處理中。同事回覆本身唔會把留言抬上去。時間欄仍然係建立時間。打開一則留言，由舊到新，第一句喺對話最上面。</p>
     <p class="muted small">「網站留言」＝客戶喺 28car、東榮官網或 Facebook 留低。「IG 留言」＝客戶喺東榮 Instagram 留言或私訊。「WhatsApp 聯絡」＝用 WhatsApp 搵我哋；撳過網站或 IG 簡介連結會再標「來自…」。「email 留言」＝公司郵箱 gloriousinformation@gmail.com 入面、同車有關嘅信，畫面會寫「這是email的留言」。Instagram 簡介去 glorious.hk?utm_source=ig 再入 WhatsApp，算東榮 IG，唔算官網。每條留言只展開「回覆」。回覆客戶、公司 WhatsApp、同事 WhatsApp 收喺「更多」。「回覆客戶」會打開你而家登入嘅 WhatsApp 發畀客戶。公司「WhatsApp」同「同事 WhatsApp」係聯絡總機或負責人，唔係發畀客戶。改狀態同改派喺留言頁嘅「更多」。</p>
     <p class="muted small">快捷：${
       viewer.isAdmin ? `<a href="${qs({ mine: "1" })}">我的留言</a> · ` : ""
@@ -854,6 +860,7 @@ pagesRouter.get("/comments/:id", requireAuth, (req: Request, res: Response) => {
         ${detailOverdue ? `<span class="badge sla-overdue">已逾時</span>` : ""}
         ${renderSourceBadges(c)}
         <span class="badge status-${c.status}">${STATUS_LABEL[c.status]}</span>
+        ${newReplyBadge(c)}
       </div>
       <p class="muted small">${
         isEmailChannel(c)

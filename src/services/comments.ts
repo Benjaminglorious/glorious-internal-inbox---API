@@ -105,9 +105,23 @@ export interface CommentUpdates {
   follow_ups_has_more: boolean;
 }
 
-interface CommentRow extends Omit<CommentWithAssignee, "reply_count"> {
+interface CommentRow extends Omit<CommentWithAssignee, "reply_count" | "new_customer_reply"> {
   reply_count: number | null;
+  new_customer_reply: number | boolean | null;
 }
+
+/**
+ * 處理中，而且最新一則客戶再留言（inbound）之後未有同事回覆。
+ * 同一秒以較大 id 為後，同對話頁由舊到新嘅次序一致。
+ * 未處理唔用呢個條件；已完成即使有更新嘅 inbound 都唔算。
+ */
+const UNANSWERED_CUSTOMER_REPLY_SQL = `c.status = 'in_progress'
+    AND li.id IS NOT NULL
+    AND (
+      lo.id IS NULL
+      OR lo.created_at < li.created_at
+      OR (lo.created_at = li.created_at AND lo.id < li.id)
+    )`;
 
 const COMMENT_SELECT = `
   SELECT c.*,
@@ -120,7 +134,8 @@ const COMMENT_SELECT = `
          lr.direction AS last_reply_direction,
          rs.display_name AS last_reply_staff_name,
          li.body AS latest_inbound_body,
-         li.created_at AS latest_inbound_at
+         li.created_at AS latest_inbound_at,
+         CASE WHEN ${UNANSWERED_CUSTOMER_REPLY_SQL} THEN 1 ELSE 0 END AS new_customer_reply
   FROM comments c
   LEFT JOIN staff s ON s.id = c.assignee_staff_id
   LEFT JOIN (
@@ -134,6 +149,13 @@ const COMMENT_SELECT = `
     SELECT r.id
     FROM comment_replies r
     WHERE r.comment_id = c.id AND r.direction = 'inbound'
+    ORDER BY r.created_at DESC, r.id DESC
+    LIMIT 1
+  )
+  LEFT JOIN comment_replies lo ON lo.id = (
+    SELECT r.id
+    FROM comment_replies r
+    WHERE r.comment_id = c.id AND r.direction = 'outbound'
     ORDER BY r.created_at DESC, r.id DESC
     LIMIT 1
   )
@@ -162,6 +184,7 @@ function mapComment(row: CommentRow): CommentWithAssignee {
     last_reply_direction: asDirection(row.last_reply_direction),
     latest_inbound_body: typeof row.latest_inbound_body === "string" ? row.latest_inbound_body : null,
     latest_inbound_at: asOptionalText(row.latest_inbound_at),
+    new_customer_reply: Number(row.new_customer_reply) === 1,
     wa_from_phone: asOptionalText(row.wa_from_phone),
     wa_to_phone: asOptionalText(row.wa_to_phone),
     meta_sender_id: asOptionalText(row.meta_sender_id),
@@ -427,11 +450,15 @@ export function listComments(filters: CommentFilters = {}): CommentWithAssignee[
   const query = normalizeInboxQuery(filters.q);
   if (query) appendInboxSearch(where, params, query);
 
-  // 未處理同處理中排喺已完成上面。已完成唔隱藏，只係沉底。
-  // 每一組內按客戶最新活動：原留言 created_at，或者更新嘅 inbound 再留言。
-  // 同事回覆、改派、只改 updated_at 都唔算新活動。搜尋用同一把尺。
-  // 客戶再留言如果狀態仍然係已完成，就留喺已完成組，呢度唔會自動重開。
-  const order = `CASE WHEN c.status = 'done' THEN 1 ELSE 0 END,
+  // 最上面：未處理，同埋處理中但有未覆客戶再留言。組內按客戶最新活動。
+  // 中間：其他處理中（同事已覆客戶最新一句）。已完成沉底，唔會因為再留言而重開或標新回覆。
+  // 客戶活動係原留言 created_at，或者更新嘅 inbound。同事回覆、改派、只改 updated_at 都唔算新活動。
+  // 搜尋同狀態篩選用同一把尺。
+  const order = `CASE
+      WHEN c.status = 'done' THEN 2
+      WHEN c.status = 'open' OR (${UNANSWERED_CUSTOMER_REPLY_SQL}) THEN 0
+      ELSE 1
+    END,
     CASE
       WHEN li.created_at > c.created_at THEN li.created_at
       ELSE c.created_at

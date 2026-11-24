@@ -152,6 +152,11 @@ export interface CommentWithAssignee extends Comment {
    */
   latest_inbound_body: string | null;
   latest_inbound_at: string | null;
+  /**
+   * 處理中，而且最新一則客戶再留言之後未有同事回覆。
+   * 未處理同已完成係 false。已完成唔會因為客戶再留言而變成 true。
+   */
+  new_customer_reply: boolean;
 }
 
 export interface CommentReply {
